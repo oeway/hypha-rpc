@@ -19,10 +19,10 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -U twine
         python -m pip install -U wheel
-        python3 -m pip install build==1.0.3 # pin build
+        python3 -m pip install -U build
         rm -rf ./build
         rm -rf ./dist/*
-        python setup.py sdist bdist_wheel
+        python -m build
 
     - name: Publish package on PyPI
       uses: pypa/gh-action-pypi-publish@v1.6.4

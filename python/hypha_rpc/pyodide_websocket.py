@@ -150,7 +150,7 @@ class PyodideWebsocketRPCConnection:
 
         def onmessage(evt):
             # Handle the first message as connection info
-            first_message = json.loads(evt.data.to_py().tobytes())
+            first_message = json.loads(evt.data)
             if not first_message.get("success"):
                 error = first_message.get("error", "Unknown error")
                 self.logger.error("Failed to connect: %s", error)

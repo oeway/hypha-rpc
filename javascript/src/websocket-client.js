@@ -3,7 +3,6 @@ import { assert, loadRequirements, randId, waitFor } from "./utils.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
 export { RPC, API_VERSION };
-export { version as VERSION } from "../package.json";
 export { loadRequirements };
 export { getRTCService, registerRTCService };
 
@@ -139,7 +138,7 @@ class WebsocketRPCConnection {
               if (!first_message.success) {
                 const error = first_message.error || "Unknown error";
                 console.error("Failed to connect, " + error);
-                this.connection_info = None;
+                this.connection_info = null;
                 reject(new Error(error));
               } else if (first_message) {
                 console.log(
@@ -277,10 +276,6 @@ export async function connectToServer(config) {
     api.description = api.description || config.description;
     api.docs = api.docs || config.docs;
     await rpc.register_service(api, true);
-    // const svc = await rpc.get_remote_service(rpc._client_id + ":default");
-    // if (svc.setup) {
-    //   await svc.setup();
-    // }
   }
 
   async function getPlugin(query) {

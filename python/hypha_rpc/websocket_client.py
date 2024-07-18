@@ -300,10 +300,7 @@ async def connect_to_server(config):
         # Convert class instance to a dict
         if not isinstance(api, dict) and inspect.isclass(type(api)):
             api = {a: getattr(api, a) for a in dir(api)}
-        # api.name = api.name || config.name || api.id;
-        # api.description = api.description || config.description
-        # api.docs = api.docs || config.docs
-        api["id"] = api.get("id") or api.get("name") or config.get("name") or api.id
+        api["id"] = "default"
         api["description"] = api.get("description") or config.get("description")
         api["docs"] = api.get("docs") or config.get("docs")
         return asyncio.ensure_future(rpc.register_service(api, overwrite=True))

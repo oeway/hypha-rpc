@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hypha_rpc"
-version = "0.1.0"  # Replace with the correct version
+version = "0.1.0-post1"  # Replace with the correct version
 description = "Hypha RPC client for connecting to Hypha server for data management and AI model serving"
 readme = "README.md"
 requires-python = ">=3.6"
@@ -14,7 +14,7 @@ authors = [
 ]
 
 dependencies = [
-  "numpy>=1.18.0",
+  "numpy",
   "msgpack>=1.0.2",
   "shortuuid>=1.0.8",
   "websockets; platform_system != 'Emscripten'",
