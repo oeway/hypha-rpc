@@ -17,7 +17,7 @@ jobs:
       - name: Get Python version
         id: python-version
         run: |
-          echo "::set-output name=version::$(cat python/imjoy_rpc/VERSION | jq -r '.version')"
+          echo "::set-output name=version::$(cat python/hypha_rpc/VERSION | jq -r '.version')"
       - name: Get Javascript version
         id: js-version
         run: |

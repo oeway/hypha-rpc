@@ -16,7 +16,7 @@ jobs:
       - name: Get Python version
         id: python-version
         run: |
-          echo "::set-output name=version::$(cat python/imjoy_rpc/VERSION | jq -r '.version')"
+          echo "::set-output name=version::$(cat python/hypha_rpc/VERSION | jq -r '.version')"
       - name: Get Javascript version
         id: js-version
         run: |
@@ -68,7 +68,7 @@ jobs:
         with:
           create-tag: false
           version-command: |
-            bash -o pipefail -c "cat python/imjoy_rpc/VERSION | jq -r '.version'"
+            bash -o pipefail -c "cat python/hypha_rpc/VERSION | jq -r '.version'"
 
       - name: Push tag
         id: tag-version

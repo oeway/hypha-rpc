@@ -206,7 +206,7 @@ def get_rtc_service(server, service_id, config=None):
 
 
 if __name__ == "__main__":
-    server_url = "https://ai.imjoy.io"
+    server_url = "https://hypha.aicell.io"
     server = connect_to_server({"server_url": server_url})
 
     services = server.list_services("public")

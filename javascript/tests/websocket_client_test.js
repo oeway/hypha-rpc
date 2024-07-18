@@ -5,7 +5,7 @@ import {
   getRTCService,
 } from "../src/webrtc-client.js";
 
-const SERVER_URL = "https://ai.imjoy.io";
+const SERVER_URL = "https://hypha.aicell.io";
 
 class ImJoyPlugin {
   async setup() {}

@@ -69,29 +69,7 @@ interface API {
 }
 
 declare module "hypha-rpc" {
-  const imjoyRPCModule: {
-    imjoyRPC: {
-      RPC: string;
-      API_VERSION: string;
-      VERSION: string;
-      loadRequirements: (config: any) => Promise<any>;
-      waitForInitialization: (config: any) => void;
-      setupRPC: (config: any) => Promise<any>;
-    },
-    imjoyRPCSocketIO: {
-      RPC: any;
-      API_VERSION: string;
-      VERSION: string;
-      loadRequirements: (config: any) => Promise<any>;
-      waitForInitialization: (config: any) => void;
-      setupRPC: (config: any) => Promise<any>;
-      Connection: any;
-      connectToServer: (config: any) => Promise<any>;
-    };
-    hyphaRPC: {
-      API_VERSION: string;
-      RPC: hRPC;
-    };
+  const hyphaRPCModule: {
     hyphaWebsocketClient: {
       RPC: hRPC;
       API_VERSION: string;
@@ -114,5 +92,5 @@ declare module "hypha-rpc" {
     };
   };
 
-  export = imjoyRPCModule;
+  export = hyphaRPCModule;
 }

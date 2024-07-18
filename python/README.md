@@ -1,6 +1,6 @@
-# ImJoy RPC
+# Hypha RPC
 
-Remote Procedure Calls for ImJoy
+Remote Procedure Calls for Hypha
 
 
 [More details](../README.md)
