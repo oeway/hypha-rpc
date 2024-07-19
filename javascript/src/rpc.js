@@ -169,7 +169,7 @@ export class RPC extends MessageEmitter {
     assert(client_id, "client_id is required");
     this._client_id = client_id;
     this._name = name;
-    this._app_id = app_id;
+    this._app_id = app_id || "*";
     this._local_workspace = workspace;
     this.manager_id = manager_id;
     this._silent = silent;
@@ -208,7 +208,7 @@ export class RPC extends MessageEmitter {
       this._emit_message = connection.emit_message.bind(connection);
       connection.on_message(this._on_message.bind(this));
       this._connection = connection;
-      connection.on_connect(async () => {
+      const updateServices = async () => {
         if (!this._silent && this.manager_id) {
           console.log("Connection established, reporting services...");
           for (let service of Object.values(this._services)) {
@@ -220,7 +220,9 @@ export class RPC extends MessageEmitter {
             });
           }
         }
-      });
+      }
+      connection.on_connect(updateServices);
+      updateServices();
     } else {
       this._emit_message = function () {
         console.log("No connection to emit message");
@@ -1020,8 +1022,8 @@ export class RPC extends MessageEmitter {
       try {
         method = indexObject(this._object_store, data["method"]);
       } catch (e) {
-        console.debug("Failed to find method", method_name, e);
-        throw new Error(`Method not found: ${method_name}`);
+        console.debug("Failed to find method", method_name, this._client_id, e);
+        throw new Error(`Method not found: ${method_name} at ${this._client_id}`);
       }
 
       assert(

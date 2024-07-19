@@ -56,7 +56,6 @@ class WebsocketRPCConnection:
         self._reconnection_token = None
         self._timeout = timeout
         self._closing = False
-        self._opening = False
         self._legacy_auth = None
         self.connection_info = None
 
@@ -64,10 +63,6 @@ class WebsocketRPCConnection:
         """Handle message."""
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
-
-    def set_reconnection_token(self, token):
-        """Set reconnect token."""
-        self._reconnection_token = token
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
@@ -77,8 +72,6 @@ class WebsocketRPCConnection:
         """Register a connection open event handler."""
         self._handle_connect = handler
         assert inspect.iscoroutinefunction(handler), "reconnect handler must be a coroutine"
-        if self._websocket and not self._websocket.closed:
-            asyncio.ensure_future(handler(self))
 
     async def _attempt_connection(self, server_url, attempt_fallback=True):
         """Attempt to establish a WebSocket connection."""
@@ -128,7 +121,6 @@ class WebsocketRPCConnection:
         if self._closing:
             raise Exception("Connection is closing, cannot open a new connection.")
         logger.info("Creating a new connection to %s", self._server_url.split("?")[0])
-        self._opening = True
         try:
             if self._websocket and not self._websocket.closed:
                 await self._websocket.close(code=1000)
@@ -154,6 +146,8 @@ class WebsocketRPCConnection:
                 elif first_message:
                     logger.info("Successfully connected: %s", first_message)
                     self.connection_info = first_message
+                    if "reconnection_token" in self.connection_info:
+                        self._reconnection_token = self.connection_info["reconnection_token"]
 
             self._listen_task = asyncio.ensure_future(self._listen())
             if self._handle_connect:
@@ -161,23 +155,16 @@ class WebsocketRPCConnection:
         except Exception as exp:
             logger.exception("Failed to connect to %s", self._server_url.split("?")[0])
             raise
-        finally:
-            self._opening = False
 
     async def emit_message(self, data):
         """Emit a message."""
         if self._closing:
             raise Exception("Connection is closing")
-        if self._opening:
-            while self._opening:
-                logger.info("Waiting for connection to open...")
-                await asyncio.sleep(0.1)
         if (
-            not self._handle_message
-            or self._closing
-            or not self._websocket
+            not self._websocket
             or self._websocket.closed
         ):
+            logger.info("Reconnecting to %s", self._server_url.split("?")[0])
             await self.open()
 
         try:
@@ -202,9 +189,8 @@ class WebsocketRPCConnection:
             logger.warning("Connection closed or error occurred: %s", str(e))
             if self._disconnect_handler:
                 await self._disconnect_handler(self, str(e))
-            logger.info("Reconnecting to %s", self._server_url.split("?")[0])
-            await self.open()
-
+            self._websocket = None
+    
     async def disconnect(self, reason=None):
         """Disconnect."""
         self._closing = True
@@ -302,12 +288,13 @@ async def connect_to_server(config):
             api = {a: getattr(api, a) for a in dir(api)}
         api["id"] = "default"
         api["description"] = api.get("description") or config.get("description")
-        api["docs"] = api.get("docs") or config.get("docs")
         return asyncio.ensure_future(rpc.register_service(api, overwrite=True))
 
-    async def get_plugin(query):
-        """Get a plugin."""
-        return await wm.get_service(query + ":default")
+    async def get_app(client_id):
+        """Get an app."""
+        assert ":" not in client_id, "client_id should not contain ':'"
+        assert client_id.count("/") <= 1, "client_id should not contain more than one '/'"
+        return await wm.get_service(client_id + ":default")
 
     async def disconnect():
         """Disconnect the rpc and server connection."""
@@ -317,7 +304,7 @@ async def connect_to_server(config):
     wm.config = dotdict(wm.config)
     wm.config["client_id"] = client_id
     wm.export = export
-    wm.get_plugin = get_plugin
+    wm.get_app = get_app
     wm.list_plugins = wm.list_services
     wm.disconnect = disconnect
     wm.register_codec = rpc.register_codec

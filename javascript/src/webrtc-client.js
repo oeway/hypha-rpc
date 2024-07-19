@@ -20,10 +20,6 @@ class WebRTCConnection {
     };
   }
 
-  set_reconnection_token(token) {
-    this._reconnection_token = token;
-  }
-
   on_message(handler) {
     assert(handler, "handler is required");
     this._handle_message = handler;

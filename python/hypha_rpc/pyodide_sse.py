@@ -1,6 +1,8 @@
 """Provide a pyodide websocket."""
 import asyncio
 import inspect
+import sys
+import logging
 from js import WebSocket
 
 try:
@@ -8,6 +10,9 @@ try:
 except ImportError:
     from pyodide import to_js
 
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger("websocket-client")
+logger.setLevel(logging.WARNING)
 
 class PyodideSSERPCConnection:
     """Represent a pyodide websocket RPC connection."""

@@ -29,7 +29,6 @@ class WebsocketRPCConnection {
     this._disconnect_handler = null; // Disconnection event handler
     this._timeout = timeout * 1000; // Convert seconds to milliseconds
     this._WebSocketClass = WebSocketClass || WebSocket; // Allow overriding the WebSocket class
-    this._opening = null;
     this._closing = false;
     this._legacy_auth = null;
     this.connection_info = null;
@@ -42,17 +41,10 @@ class WebsocketRPCConnection {
 
   on_connect(handler) {
     this._handle_connect = handler;
-    if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
-      this._handle_connect(this);
-    }
   }
 
   on_disconnected(handler) {
     this._disconnect_handler = handler;
-  }
-
-  set_reconnection_token(token) {
-    this._reconnection_token = token;
   }
 
   async _attempt_connection(server_url, attempt_fallback = true) {
@@ -118,7 +110,6 @@ class WebsocketRPCConnection {
       return; // Avoid opening a new connection if closing or already open
     }
     try {
-      this._opening = true;
       this._websocket = await this._attempt_connection(this._server_url);
       if (!this._legacy_auth) {
         // Send authentication info as the first message if connected without query params
@@ -145,6 +136,9 @@ class WebsocketRPCConnection {
                   "Successfully connected: " + JSON.stringify(first_message),
                 );
                 this.connection_info = first_message;
+                if(this.connection_info.reconnection_token) {
+                  this._reconnection_token = this.connection_info.reconnection_token;
+                };
               }
               resolve();
             };
@@ -155,8 +149,7 @@ class WebsocketRPCConnection {
       }
 
       this._websocket.onmessage = (event) => {
-        const data = event.data;
-        this._handle_message(data);
+        this._handle_message(event.data);
       };
 
       if (this._handle_connect) {
@@ -164,8 +157,6 @@ class WebsocketRPCConnection {
       }
     } catch (error) {
       console.error("Failed to connect to", this._server_url, error);
-    } finally {
-      this._opening = false;
     }
   }
 
@@ -173,9 +164,8 @@ class WebsocketRPCConnection {
     if (this._closing) {
       throw new Error("Connection is closing");
     }
-    await this._opening;
     if (!this._websocket || this._websocket.readyState !== WebSocket.OPEN) {
-      throw new Error("WebSocket connection is not open");
+      await this.open();
     }
     try {
       this._websocket.send(data);
@@ -274,7 +264,6 @@ export async function connectToServer(config) {
     api.id = "default";
     api.name = api.name || config.name || api.id;
     api.description = api.description || config.description;
-    api.docs = api.docs || config.docs;
     await rpc.register_service(api, true);
   }
 

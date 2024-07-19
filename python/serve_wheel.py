@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # encoding: utf-8
-"""This script is used for debugging hypha in Pyodide locally.
+"""This script is used for debugging hypha-rpc in Pyodide locally.
 
 Use instead of `python3 -m http.server` when you need CORS.
 """

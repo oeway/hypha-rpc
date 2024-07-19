@@ -153,7 +153,7 @@ class RPC(MessageEmitter):
         assert client_id is not None, "client_id is required"
         self._client_id = client_id
         self._name = name
-        self._app_id = app_id
+        self._app_id = app_id or "*"
         self._local_workspace = workspace
         self.manager_id = manager_id
         self._silent = silent
@@ -205,6 +205,7 @@ class RPC(MessageEmitter):
                         service_info = self._extract_service_info(service)
                         await self.emit({"type": "service-added", "to": self.manager_id, "service": service_info})
             connection.on_connect(update_services)
+            self.loop.create_task(update_services(None))
         else:
 
             async def _emit_message(_):
@@ -988,8 +989,8 @@ class RPC(MessageEmitter):
             try:
                 method = index_object(self._object_store, data["method"])
             except Exception:
-                logger.debug("Failed to find method %s", method_name)
-                raise Exception(f"Method not found: {method_name}")
+                logger.debug("Failed to find method %s at %s", method_name, self._client_id)
+                raise Exception(f"Method not found: {method_name} at {self._client_id}")
             assert callable(method), f"Invalid method: {method_name}"
 
             # Check permission

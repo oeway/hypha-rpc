@@ -62,10 +62,6 @@ class SSERPCConnection:
         self._handle_message = handler
         self._is_async = inspect.iscoroutinefunction(handler)
 
-    def set_reconnection_token(self, token):
-        """Set reconnect token."""
-        self._reconnection_token = token
-
     async def open(self):
         """Open the connection."""
         try:
@@ -241,9 +237,11 @@ async def connect_to_server(config):
         api["name"] = config.get("name", "default")
         return asyncio.ensure_future(rpc.register_service(api, overwrite=True))
 
-    async def get_plugin(query):
-        """Get a plugin."""
-        return await wm.get_service(query + ":default")
+    async def get_app(client_id):
+        """Get an app."""
+        assert ":" not in client_id, "client_id should not contain ':'"
+        assert client_id.count("/") <= 1, "client_id should not contain more than one '/'"
+        return await wm.get_service(client_id + ":default")
 
     async def disconnect():
         """Disconnect the rpc and server connection."""
@@ -251,7 +249,7 @@ async def connect_to_server(config):
         await connection.disconnect()
 
     wm.export = export
-    wm.get_plugin = get_plugin
+    wm.get_app = get_app
     wm.list_plugins = wm.list_services
     wm.disconnect = disconnect
     wm.register_codec = rpc.register_codec

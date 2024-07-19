@@ -107,7 +107,6 @@ class LocalWebSocket {
 }
 """
 
-
 class PyodideWebsocketRPCConnection:
     """Represent a Pyodide websocket RPC connection, with local and remote server connection capabilities."""
 
@@ -118,13 +117,13 @@ class PyodideWebsocketRPCConnection:
         self.workspace = workspace
         self.token = token
         self.reconnection_token = reconnection_token
-        self.logger = logger
         self.timeout = timeout
         self._websocket = None
         self._handle_message = None
         self._handle_connect = None
         self._is_async = False
         self._legacy_auth = False
+        self._logger = logger
         self.connection_info = None
 
     def on_message(self, handler):
@@ -153,12 +152,18 @@ class PyodideWebsocketRPCConnection:
             first_message = json.loads(evt.data)
             if not first_message.get("success"):
                 error = first_message.get("error", "Unknown error")
-                self.logger.error("Failed to connect: %s", error)
+                if self._logger:
+                    self._logger.error("Failed to connect: %s", error)
                 self.connection_info = None
                 raise ConnectionAbortedError(error)
             elif first_message:
-                self.logger.info("Successfully connected: %s", first_message)
+                if self._logger:
+                    self._logger.info("Successfully connected: %s", first_message)
                 self.connection_info = first_message
+            websocket.onmessage = lambda evt: print(evt)
+            websocket.onerror = None
+            websocket.onclose = None
+            websocket.onopen = None
             fut.set_result(websocket)
 
         websocket.onopen = onopen
@@ -172,11 +177,16 @@ class PyodideWebsocketRPCConnection:
         try:
             self._websocket = await self._attempt_connection(self.server_url)
         except ConnectionError as e:
-            self.logger.error(f"Failed to open connection: {e}")
+            if self._logger:
+                self._logger.error(f"Failed to open connection: {e}")
             server_url_with_params = self._create_url_with_params()
             self._websocket = await self._attempt_connection(server_url_with_params)
         self._websocket.onmessage = lambda evt: self._handle_message(evt.data.to_py().tobytes())
-        await self._handle_connect(self)
+        if self._logger:
+            self._websocket.onerror = lambda evt: self._logger.error(f"WebSocket error: {evt}")
+            self._websocket.onclose = lambda evt: self._logger.info(f"WebSocket closed: {evt}")
+        if self._handle_connect:
+            await self._handle_connect(self)
 
     def on_connect(self, handler):
         """Register a connect handler."""
@@ -203,9 +213,12 @@ class PyodideWebsocketRPCConnection:
         if not self._websocket:
             await self.open()
         try:
-            self._websocket.send(to_js(json.dumps(data)))
+            data = to_js(data)
+            self._websocket.send(data)
         except Exception as exp:
-            self.logger.error("Failed to send data, error: %s", exp)
+            if self._logger:
+                self._logger.error("Failed to send data, error: %s", exp)
+            print("Failed to send data, error: %s", exp)
             raise
 
     async def disconnect(self, reason=None):
@@ -213,5 +226,5 @@ class PyodideWebsocketRPCConnection:
         if self._websocket:
             self._websocket.close(1000, reason)
         self._websocket = None
-        if self.logger:
-            self.logger.info(f"WebSocket connection disconnected ({reason})")
+        if self._logger:
+            self._logger.info(f"WebSocket connection disconnected ({reason})")
