@@ -244,20 +244,22 @@ export async function connectToServer(config) {
     config.WebSocketClass,
   );
   await connection.open();
-  let workspace = config.workspace;
-  if (connection.connection_info) {
-    workspace = connection.connection_info.workspace;
+  assert(connection.connection_info, "Failed to connect to the server");
+  if(config.workspace && connection.connection_info.workspace !== config.workspace) {
+    throw new Error(`Connected to the wrong workspace: ${connection.connection_info.workspace}, expected: ${config.workspace}`);
   }
+  const workspace = connection.connection_info.workspace;
+  const manager_id = connection.connection_info.manager_id;
   const rpc = new RPC(connection, {
     client_id: clientId,
     workspace,
-    manager_id: "workspace-manager",
+    manager_id,
     default_context: { connection_type: "websocket" },
     name: config.name,
     method_timeout: config.method_timeout,
     app_id: config.app_id,
   });
-  const wm = await rpc.get_remote_service("workspace-manager:default");
+  const wm = await rpc.get_remote_service(manager_id + ":default");
   wm.rpc = rpc;
 
   async function _export(api) {

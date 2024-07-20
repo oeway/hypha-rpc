@@ -263,22 +263,25 @@ async def connect_to_server(config):
         timeout=config.get("method_timeout", 60),
     )
     await connection.open()
-    if connection.connection_info:
-        workspace = connection.connection_info.get("workspace")
-    else:
-        workspace = config.get("workspace")
+    assert connection.connection_info, "Failed to connect to the server"
+    if config.get("workspace") and connection.connection_info["workspace"] != config["workspace"]:
+        raise Exception(
+            f"Connected to the wrong workspace: {connection.connection_info['workspace']}, expected: {config['workspace']}"
+        )
+    workspace = connection.connection_info["workspace"]
+    manager_id = connection.connection_info["manager_id"]
     rpc = RPC(
         connection,
         client_id=client_id,
         workspace=workspace,
-        manager_id="workspace-manager",
+        manager_id=manager_id,
         default_context={"connection_type": "websocket"},
         name=config.get("name"),
         method_timeout=config.get("method_timeout"),
         loop=config.get("loop"),
         app_id=config.get("app_id"),
     )
-    wm = await rpc.get_remote_service("workspace-manager:default")
+    wm = await rpc.get_remote_service(manager_id +":default")
     wm.rpc = rpc
 
     def export(api):
