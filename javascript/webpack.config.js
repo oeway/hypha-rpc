@@ -4,7 +4,6 @@ module.exports = {
   mode: process.env.NODE_ENV || 'development',
   entry: {
       'hyphaWebsocketClient': path.resolve(__dirname, 'src', 'websocket-client.js'),
-      'hyphaSSEClient': path.resolve(__dirname, 'src', 'sse-client.js'),
   },
   output: {
       globalObject: 'this',
@@ -12,7 +11,6 @@ module.exports = {
       filename: (pathData) => {
         const outputNames = {
           "hyphaWebsocketClient": "hypha-rpc-websocket",
-          "hyphaSSEClient": "hypha-rpc-sse",
         };
         const name = outputNames[pathData.chunk.name];
         return process.env.NODE_ENV === 'production' ? name + '.min.js' : name + '.js';
