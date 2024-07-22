@@ -1,4 +1,5 @@
 """Provide the RPC."""
+
 import asyncio
 import inspect
 import io
@@ -197,12 +198,20 @@ class RPC(MessageEmitter):
             self._emit_message = connection.emit_message
             connection.on_message(self._on_message)
             self._connection = connection
+
             async def update_services(_):
                 if not self._silent and self.manager_id:
                     logger.info("Connection established, reporting services...")
                     for service in self._services.values():
                         service_info = self._extract_service_info(service)
-                        await self.emit({"type": "service-added", "to": "*/" + self.manager_id, "service": service_info})
+                        await self.emit(
+                            {
+                                "type": "service-added",
+                                "to": "*/" + self.manager_id,
+                                "service": service_info,
+                            }
+                        )
+
             connection.on_connect(update_services)
             self.loop.create_task(update_services(None))
         else:
@@ -361,7 +370,7 @@ class RPC(MessageEmitter):
         service = self._services.get(service_id)
         if not service:
             raise KeyError("Service not found: %s", service_id)
-        
+
         service["config"]["workspace"] = ws
         # allow access for the same workspace
         if service["config"].get("visibility", "protected") == "public":
@@ -371,7 +380,9 @@ class RPC(MessageEmitter):
         if context["ws"] == ws:
             return service
 
-        raise Exception(f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}")
+        raise Exception(
+            f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}"
+        )
 
     async def get_remote_service(self, service_uri=None, timeout=None):
         """Get a remote service."""
@@ -383,8 +394,10 @@ class RPC(MessageEmitter):
         provider, service_id = service_uri.split(":")
         if "@" in service_id:
             service_id, app_id = service_id.split("@")
-            if self._app_id:
-                assert app_id == str(self._app_id), f"App id mismatch: {app_id} != {self._app_id}"
+            if self._app_id and self._app_id != "*":
+                assert app_id == str(
+                    self._app_id
+                ), f"App id mismatch: {app_id} != {self._app_id}"
         assert provider
         try:
             method = self._generate_remote_method(
@@ -415,9 +428,11 @@ class RPC(MessageEmitter):
             # mark the method as a remote method that requires context
             method_name = ".".join(object_id.split(".")[1:])
             self._method_annotations[a_object] = {
-                "require_context": (method_name in require_context)
-                if isinstance(require_context, (list, tuple))
-                else bool(require_context),
+                "require_context": (
+                    (method_name in require_context)
+                    if isinstance(require_context, (list, tuple))
+                    else bool(require_context)
+                ),
                 "run_in_executor": run_in_executor,
                 "method_id": "services." + object_id,
                 "visibility": visibility,
@@ -514,7 +529,7 @@ class RPC(MessageEmitter):
             )
         self._services[api["id"]] = api
         return api
-    
+
     def _extract_service_info(self, service):
         return {
             "id": f'{self._client_id}:{service["id"]}',
@@ -538,9 +553,17 @@ class RPC(MessageEmitter):
         service_info = self._extract_service_info(service)
         if notify:
             if self.manager_id:
-                await self.emit({"type": "service-added", "to": "*/" + self.manager_id, "service": service_info})
+                await self.emit(
+                    {
+                        "type": "service-added",
+                        "to": "*/" + self.manager_id,
+                        "service": service_info,
+                    }
+                )
             else:
-                await self.emit({"type": "service-added", "to":"*", "service": service_info})
+                await self.emit(
+                    {"type": "service-added", "to": "*", "service": service_info}
+                )
         return service_info
 
     async def unregister_service(self, service, notify=True):
@@ -553,9 +576,17 @@ class RPC(MessageEmitter):
         if notify:
             service_info = self._extract_service_info(service)
             if self.manager_id:
-                self.emit({"type": "service-removed", "to": "*/" + self.manager_id, "service": service_info})
+                self.emit(
+                    {
+                        "type": "service-removed",
+                        "to": "*/" + self.manager_id,
+                        "service": service_info,
+                    }
+                )
             else:
-                self.emit({"type": "service-removed", "to":"*", "service": service_info})
+                self.emit(
+                    {"type": "service-removed", "to": "*", "service": service_info}
+                )
 
     def check_modules(self):
         """Check if all the modules exists."""
@@ -581,9 +612,11 @@ class RPC(MessageEmitter):
         method_id = f"{session_id}.{name}"
         encoded = {
             "_rtype": "method",
-            "_rtarget": f"{local_workspace}/{self._client_id}"
-            if local_workspace
-            else self._client_id,
+            "_rtarget": (
+                f"{local_workspace}/{self._client_id}"
+                if local_workspace
+                else self._client_id
+            ),
             "_rmethod": method_id,
             "_rpromise": False,
         }
@@ -916,7 +949,7 @@ class RPC(MessageEmitter):
                         f"{data.get('to').split('/')[0]} != {self._local_workspace}"
                     )
                 local_workspace = self._local_workspace
-            
+
             local_parent = data.get("parent")
 
             if "promise" in data:
@@ -970,7 +1003,9 @@ class RPC(MessageEmitter):
             try:
                 method = index_object(self._object_store, data["method"])
             except Exception:
-                logger.debug("Failed to find method %s at %s", method_name, self._client_id)
+                logger.debug(
+                    "Failed to find method %s at %s", method_name, self._client_id
+                )
                 raise Exception(f"Method not found: {method_name} at {self._client_id}")
             assert callable(method), f"Invalid method: {method_name}"
 
@@ -981,7 +1016,9 @@ class RPC(MessageEmitter):
                     self._method_annotations[method].get("visibility", "protected")
                     == "protected"
                 ):
-                    if local_workspace != remote_workspace and (remote_workspace != "*" or remote_client_id != self.manager_id):
+                    if local_workspace != remote_workspace and (
+                        remote_workspace != "*" or remote_client_id != self.manager_id
+                    ):
                         raise PermissionError(
                             f"Permission denied for invoking protected method {method_name}, "
                             "workspace mismatch: "
@@ -1126,9 +1163,11 @@ class RPC(MessageEmitter):
                 annotation = self._method_annotations[a_object]
                 b_object = {
                     "_rtype": "method",
-                    "_rtarget": f"{local_workspace}/{self._client_id}"
-                    if local_workspace
-                    else self._client_id,
+                    "_rtarget": (
+                        f"{local_workspace}/{self._client_id}"
+                        if local_workspace
+                        else self._client_id
+                    ),
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
                 }
@@ -1144,9 +1183,11 @@ class RPC(MessageEmitter):
                     object_id = shortuuid.uuid()
                 b_object = {
                     "_rtype": "method",
-                    "_rtarget": f"{local_workspace}/{self._client_id}"
-                    if local_workspace
-                    else self._client_id,
+                    "_rtarget": (
+                        f"{local_workspace}/{self._client_id}"
+                        if local_workspace
+                        else self._client_id
+                    ),
                     "_rmethod": f"{session_id}.{object_id}",
                     "_rpromise": True,
                 }

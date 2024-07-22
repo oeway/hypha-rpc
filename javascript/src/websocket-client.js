@@ -136,9 +136,10 @@ class WebsocketRPCConnection {
                   "Successfully connected: " + JSON.stringify(first_message),
                 );
                 this.connection_info = first_message;
-                if(this.connection_info.reconnection_token) {
-                  this._reconnection_token = this.connection_info.reconnection_token;
-                };
+                if (this.connection_info.reconnection_token) {
+                  this._reconnection_token =
+                    this.connection_info.reconnection_token;
+                }
               }
               resolve();
             };
@@ -245,8 +246,13 @@ export async function connectToServer(config) {
   );
   await connection.open();
   assert(connection.connection_info, "Failed to connect to the server");
-  if(config.workspace && connection.connection_info.workspace !== config.workspace) {
-    throw new Error(`Connected to the wrong workspace: ${connection.connection_info.workspace}, expected: ${config.workspace}`);
+  if (
+    config.workspace &&
+    connection.connection_info.workspace !== config.workspace
+  ) {
+    throw new Error(
+      `Connected to the wrong workspace: ${connection.connection_info.workspace}, expected: ${config.workspace}`,
+    );
   }
   const workspace = connection.connection_info.workspace;
   const manager_id = connection.connection_info.manager_id;
@@ -277,7 +283,7 @@ export async function connectToServer(config) {
     await rpc.disconnect();
     await connection.disconnect();
   }
-  if(connection.connection_info){
+  if (connection.connection_info) {
     wm.config = Object.assign(wm.config, connection.connection_info);
   }
   wm.export = _export;

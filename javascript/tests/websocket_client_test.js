@@ -1,9 +1,6 @@
 import { expect } from "chai";
 import { login, connectToServer } from "../src/websocket-client.js";
-import {
-  registerRTCService,
-  getRTCService,
-} from "../src/webrtc-client.js";
+import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
 
 const SERVER_URL = "https://hypha.aicell.io";
 

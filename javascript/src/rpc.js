@@ -219,7 +219,7 @@ export class RPC extends MessageEmitter {
             });
           }
         }
-      }
+      };
       connection.on_connect(updateServices);
       updateServices();
     } else {
@@ -424,7 +424,7 @@ export class RPC extends MessageEmitter {
     if (service_id.includes("@")) {
       service_id = service_id.split("@")[0];
       const app_id = service_uri.split("@")[1];
-      if (this._app_id)
+      if (this._app_id && this._app_id !== "*")
         assert(
           app_id === this._app_id,
           `Invalid app id: ${app_id} != ${this._app_id}`,
@@ -597,7 +597,11 @@ export class RPC extends MessageEmitter {
           service: serviceInfo,
         });
       } else {
-        await this.emit({ type: "service-added", to: "*", service: serviceInfo });
+        await this.emit({
+          type: "service-added",
+          to: "*",
+          service: serviceInfo,
+        });
       }
     }
     return serviceInfo;
@@ -999,7 +1003,9 @@ export class RPC extends MessageEmitter {
         method = indexObject(this._object_store, data["method"]);
       } catch (e) {
         console.debug("Failed to find method", method_name, this._client_id, e);
-        throw new Error(`Method not found: ${method_name} at ${this._client_id}`);
+        throw new Error(
+          `Method not found: ${method_name} at ${this._client_id}`,
+        );
       }
 
       assert(
@@ -1011,7 +1017,10 @@ export class RPC extends MessageEmitter {
       if (this._method_annotations.has(method)) {
         // For services, it should not be protected
         if (this._method_annotations.get(method).visibility === "protected") {
-          if (local_workspace !== remote_workspace && (remote_workspace !== "*" || remote_client_id !== this.manager_id)) {
+          if (
+            local_workspace !== remote_workspace &&
+            (remote_workspace !== "*" || remote_client_id !== this.manager_id)
+          ) {
             throw new Error(
               "Permission denied for invoking protected method " +
                 method_name +
