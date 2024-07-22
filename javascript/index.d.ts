@@ -23,7 +23,7 @@ interface hRPC extends MessageEmitter {
   ping(client_id: any, timeout: any): Promise<any>;
   reset(): void;
   disconnect(): Promise<void>;
-  get_manager_service(timeout: any): Promise<void>;
+  get_manager_service(timeout?: any): Promise<void>;
   get_all_local_services(): any;
   get_local_service(service_id: any, context: any): any;
   get_remote_service(service_uri: any, timeout?: any): Promise<any>;

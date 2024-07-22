@@ -154,7 +154,7 @@ async function getRTCService(server, service_id, config) {
           const rpc = await _setupRPC(config);
           pc.rpc = rpc;
           async function getService(name) {
-            return await rpc.get_remote_service(config.peer_id + ":" + name);
+            return await rpc.get_remote_service(config.workspace + "/" + config.peer_id + ":" + name);
           }
           async function disconnect() {
             await rpc.disconnect();

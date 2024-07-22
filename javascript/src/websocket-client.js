@@ -259,7 +259,7 @@ export async function connectToServer(config) {
     method_timeout: config.method_timeout,
     app_id: config.app_id,
   });
-  const wm = await rpc.get_remote_service(manager_id + ":default");
+  const wm = await rpc.get_manager_service();
   wm.rpc = rpc;
 
   async function _export(api) {
@@ -277,8 +277,9 @@ export async function connectToServer(config) {
     await rpc.disconnect();
     await connection.disconnect();
   }
-
-  wm.config["client_id"] = clientId;
+  if(connection.connection_info){
+    wm.config = Object.assign(wm.config, connection.connection_info);
+  }
   wm.export = _export;
   wm.getPlugin = getPlugin;
   wm.listPlugins = wm.listServices;
@@ -288,7 +289,7 @@ export async function connectToServer(config) {
   wm.on = rpc.on;
   if (rpc.manager_id) {
     rpc.on("force-exit", async (message) => {
-      if (message.from.endsWith("/" + rpc.manager_id)) {
+      if (message.from === "*/" + rpc.manager_id) {
         console.log("Disconnecting from server, reason:", message.reason);
         await disconnect();
       }
@@ -541,11 +542,6 @@ export function setupLocalClient({
               }
               resolve(server);
             } catch (e) {
-              // If any script fails to load, send an error message
-              await server.update_client_info({
-                id: client_id,
-                error: e.message,
-              });
               reject(e);
             }
           });

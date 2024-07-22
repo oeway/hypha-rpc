@@ -241,8 +241,30 @@ async def login(config):
     finally:
         await server.disconnect()
 
+class ServerContextManager:
+    """Server context manager."""
+    def __init__(self, config):
+        self.config = config
 
-async def connect_to_server(config):
+    async def __aenter__(self):
+        self.wm = await _connect_to_server(self.config)
+        return self.wm
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.wm.disconnect()
+
+    def __await__(self):
+        self.wm = _connect_to_server(self.config).__await__()
+        return self.wm
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.wm.disconnect()
+
+def connect_to_server(config):
+    """Connect to the server."""
+    return ServerContextManager(config)
+        
+async def _connect_to_server(config):
     """Connect to RPC via a hypha server."""
     client_id = config.get("client_id")
     if client_id is None:
@@ -281,7 +303,7 @@ async def connect_to_server(config):
         loop=config.get("loop"),
         app_id=config.get("app_id"),
     )
-    wm = await rpc.get_remote_service(manager_id +":default")
+    wm = await rpc.get_manager_service()
     wm.rpc = rpc
 
     def export(api):
@@ -305,7 +327,8 @@ async def connect_to_server(config):
         await connection.disconnect()
 
     wm.config = dotdict(wm.config)
-    wm.config["client_id"] = client_id
+    if connection.connection_info:
+        wm.config.update(connection.connection_info)
     wm.export = export
     wm.get_app = get_app
     wm.list_plugins = wm.list_services
@@ -313,17 +336,9 @@ async def connect_to_server(config):
     wm.register_codec = rpc.register_codec
     wm.emit = rpc.emit
     wm.on = rpc.on
-#     if(this.manager_id){
-#     wm.on("disconnect", async (message) => {
-#       if (message.from.endswith(this.manager_id)){
-#         console.log("Disconnecting from server, reason:", message.reason)
-#         await disconnect()
-#       }
-#     });
-#   }
     if rpc.manager_id:
         async def handle_disconnect(message):
-            if message["from"].endswith("/" + rpc.manager_id):
+            if message["from"] == "*/" + rpc.manager_id:
                 logger.info("Disconnecting from server, reason: %s", message.get("reason"))
                 await disconnect()
         rpc.on("force-exit", handle_disconnect)
@@ -422,7 +437,6 @@ def setup_local_client(enable_execution=False, on_ready=None):
                 if on_ready:
                     await on_ready(server, config)
             except Exception as e:
-                await server.update_client_info({"id": client_id, "error": str(e)})
                 fut.set_exception(e)
                 return
             fut.set_result(server)

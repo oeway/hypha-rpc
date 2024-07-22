@@ -159,7 +159,6 @@ class RPC(MessageEmitter):
         self._silent = silent
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
-        self._manager_service = None
         self._max_message_buffer_size = max_message_buffer_size
         self._chunk_store = {}
         self._method_timeout = 30 if method_timeout is None else method_timeout
@@ -203,7 +202,7 @@ class RPC(MessageEmitter):
                     logger.info("Connection established, reporting services...")
                     for service in self._services.values():
                         service_info = self._extract_service_info(service)
-                        await self.emit({"type": "service-added", "to": self.manager_id, "service": service_info})
+                        await self.emit({"type": "service-added", "to": "*/" + self.manager_id, "service": service_info})
             connection.on_connect(update_services)
             self.loop.create_task(update_services(None))
         else:
@@ -343,10 +342,11 @@ class RPC(MessageEmitter):
 
     async def get_manager_service(self, timeout=None):
         """Get remote root service."""
-        if self.manager_id and not self._manager_service:
-            self._manager_service = await self.get_remote_service(
-                service_uri=f"{self.manager_id}:default", timeout=timeout
-            )
+        assert self.manager_id, "Manager id is not set"
+        svc = await self.get_remote_service(
+            f"*/{self.manager_id}:default", timeout=timeout
+        )
+        return svc
 
     def get_all_local_services(self):
         """Get all the local services."""
@@ -368,16 +368,16 @@ class RPC(MessageEmitter):
             return service
 
         # allow access for the same workspace
-        if context["from"].startswith(ws + "/"):
+        if context["ws"] == ws:
             return service
 
-        raise Exception(f"Permission denied for protected service: {service_id}, workspace mismatch: {ws} != {context['from']}")
+        raise Exception(f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}")
 
     async def get_remote_service(self, service_uri=None, timeout=None):
         """Get a remote service."""
         timeout = timeout or self._method_timeout
         if service_uri is None and self.manager_id:
-            service_uri = self.manager_id
+            service_uri = "*/" + self.manager_id
         elif ":" not in service_uri:
             service_uri = self._client_id + ":" + service_uri
         provider, service_id = service_uri.split(":")
@@ -532,15 +532,15 @@ class RPC(MessageEmitter):
             workspace, client_id = context["to"].split("/")
             assert client_id == self._client_id
             assert (
-                workspace == context["from"].split("/")[0]
+                workspace == context["ws"]
             ), "Services can only be registered from the same workspace"
         service = self.add_service(api, overwrite=overwrite)
         service_info = self._extract_service_info(service)
         if notify:
             if self.manager_id:
-                self.emit({"type": "service-added", "to": self.manager_id, "service": service_info})
+                await self.emit({"type": "service-added", "to": "*/" + self.manager_id, "service": service_info})
             else:
-                self.emit({"type": "service-added", "to":"*", "service": service_info})
+                await self.emit({"type": "service-added", "to":"*", "service": service_info})
         return service_info
 
     async def unregister_service(self, service, notify=True):
@@ -553,7 +553,7 @@ class RPC(MessageEmitter):
         if notify:
             service_info = self._extract_service_info(service)
             if self.manager_id:
-                self.emit({"type": "service-removed", "to": self.manager_id, "service": service_info})
+                self.emit({"type": "service-removed", "to": "*/" + self.manager_id, "service": service_info})
             else:
                 self.emit({"type": "service-removed", "to":"*", "service": service_info})
 
@@ -732,8 +732,6 @@ class RPC(MessageEmitter):
                 )
                 if self._local_workspace is None:
                     from_client = self._client_id
-                elif self._local_workspace == "*":
-                    from_client = target_id.split("/")[0] + "/" + self._client_id
                 else:
                     from_client = self._local_workspace + "/" + self._client_id
 
@@ -884,22 +882,6 @@ class RPC(MessageEmitter):
             if resolve is not None:
                 return resolve(result)
 
-    async def _notify_service_update(self):
-        if self.manager_id:
-            # try to get the root service
-            try:
-                await self.get_manager_service(timeout=30.0)
-                assert self._manager_service
-                await self._manager_service.update_client_info(self.get_client_info())
-            except Exception as exp:  # pylint: disable=broad-except
-                logger.warning(
-                    "Failed to notify service update to %s: %s",
-                    self.manager_id,
-                    exp,
-                )
-        else:
-            logger.warning("No manager id provided, cannot notify service update")
-
     def get_client_info(self):
         """Get client info."""
         return {
@@ -918,7 +900,8 @@ class RPC(MessageEmitter):
         try:
             assert "method" in data and "ctx" in data and "from" in data
             method_name = f'{data["from"]}:{data["method"]}'
-            remote_workspace = data.get("from").split("/")[0]
+            remote_workspace = data["from"].split("/")[0]
+            remote_client_id = data["from"].split("/")[1]
             # Make sure the target id is an absolute id
             data["to"] = (
                 data["to"] if "/" in data["to"] else remote_workspace + "/" + data["to"]
@@ -926,10 +909,8 @@ class RPC(MessageEmitter):
             data["ctx"]["to"] = data["to"]
             if self._local_workspace is None:
                 local_workspace = data.get("to").split("/")[0]
-            elif self._local_workspace == "*":
-                local_workspace = remote_workspace
             else:
-                if self._local_workspace:
+                if self._local_workspace and self._local_workspace != "*":
                     assert data.get("to").split("/")[0] == self._local_workspace, (
                         "Workspace mismatch: "
                         f"{data.get('to').split('/')[0]} != {self._local_workspace}"
@@ -1000,9 +981,9 @@ class RPC(MessageEmitter):
                     self._method_annotations[method].get("visibility", "protected")
                     == "protected"
                 ):
-                    if local_workspace != remote_workspace:
+                    if local_workspace != remote_workspace and (remote_workspace != "*" or remote_client_id != self.manager_id):
                         raise PermissionError(
-                            f"Permission denied for protected method {method_name}, "
+                            f"Permission denied for invoking protected method {method_name}, "
                             "workspace mismatch: "
                             f"{local_workspace} != {remote_workspace}"
                         )
@@ -1017,7 +998,7 @@ class RPC(MessageEmitter):
                     and "/" not in session_target_id
                 ):
                     session_target_id = local_workspace + "/" + session_target_id
-                if self._local_workspace != "*" and session_target_id != data["from"]:
+                if session_target_id != data["from"]:
                     raise PermissionError(
                         f"Access denied for method call ({method_name}) "
                         f"from {data['from']}"

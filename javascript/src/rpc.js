@@ -175,7 +175,6 @@ export class RPC extends MessageEmitter {
     this._silent = silent;
     this.default_context = default_context || {};
     this._method_annotations = new WeakMap();
-    this._manager_service = null;
     this._max_message_buffer_size = max_message_buffer_size;
     this._chunk_store = {};
     this._method_timeout = method_timeout || 30;
@@ -215,7 +214,7 @@ export class RPC extends MessageEmitter {
             const serviceInfo = this._extract_service_info(service);
             await this.emit({
               type: "service-added",
-              to: this.manager_id,
+              to: "*/" + this.manager_id,
               service: serviceInfo,
             });
           }
@@ -374,12 +373,12 @@ export class RPC extends MessageEmitter {
   }
 
   async get_manager_service(timeout) {
-    if (this.manager_id && !this._manager_service) {
-      this._manager_service = await this.get_remote_service(
-        `${this.manager_id}:default`,
-        timeout,
-      );
-    }
+    assert(this.manager_id, "Manager id is not set");
+    const svc = await this.get_remote_service(
+      `*/${this.manager_id}:default`,
+      timeout,
+    );
+    return svc;
   }
 
   get_all_local_services() {
@@ -405,18 +404,18 @@ export class RPC extends MessageEmitter {
     }
 
     // allow access for the same workspace
-    if (context["from"].startsWith(ws + "/")) {
+    if (context["ws"] === ws) {
       return service;
     }
 
     throw new Error(
-      `Permission denied for protected service: ${service_id}, workspace mismatch: ${ws} != ${context["from"]}`,
+      `Permission denied for getting protected service: ${service_id}, workspace mismatch: ${ws} != ${context["ws"]}`,
     );
   }
   async get_remote_service(service_uri, timeout) {
     timeout = timeout === undefined ? this._method_timeout : timeout;
     if (!service_uri && this.manager_id) {
-      service_uri = this.manager_id;
+      service_uri = "*/" + this.manager_id;
     } else if (!service_uri.includes(":")) {
       service_uri = this._client_id + ":" + service_uri;
     }
@@ -584,7 +583,7 @@ export class RPC extends MessageEmitter {
       const [workspace, client_id] = context["to"].split("/");
       assert(client_id === this._client_id);
       assert(
-        workspace === context["from"].split("/")[0],
+        workspace === context["ws"],
         "Services can only be registered from the same workspace",
       );
     }
@@ -592,13 +591,13 @@ export class RPC extends MessageEmitter {
     const serviceInfo = this._extract_service_info(service);
     if (notify) {
       if (this.manager_id) {
-        this.emit({
+        await this.emit({
           type: "service-added",
-          to: this.manager_id,
+          to: "*/" + this.manager_id,
           service: serviceInfo,
         });
       } else {
-        this.emit({ type: "service-added", to: "*", service: serviceInfo });
+        await this.emit({ type: "service-added", to: "*", service: serviceInfo });
       }
     }
     return serviceInfo;
@@ -617,7 +616,7 @@ export class RPC extends MessageEmitter {
       if (this.manager_id) {
         this.emit({
           type: "service-removed",
-          to: this.manager_id,
+          to: "*/" + this.manager_id,
           service: serviceInfo,
         });
       } else {
@@ -825,8 +824,6 @@ export class RPC extends MessageEmitter {
         let from_client;
         if (!self._local_workspace) {
           from_client = self._client_id;
-        } else if (self._local_workspace === "*") {
-          from_client = target_id.split("/")[0] + "/" + self._client_id;
         } else {
           from_client = self._local_workspace + "/" + self._client_id;
         }
@@ -928,26 +925,6 @@ export class RPC extends MessageEmitter {
     return remote_method;
   }
 
-  async _notify_service_update() {
-    if (this.manager_id) {
-      // try to get the root service
-      try {
-        await this.get_manager_service(30.0);
-        assert(this._manager_service);
-        await this._manager_service.update_client_info(this.get_client_info());
-      } catch (exp) {
-        // pylint: disable=broad-except
-        console.warn(
-          "Failed to notify service update to",
-          this.manager_id,
-          exp,
-        );
-      }
-    } else {
-      console.warn("No manager id provided, cannot notify service update");
-    }
-  }
-
   get_client_info() {
     const services = [];
     for (let service of Object.values(this._services)) {
@@ -964,9 +941,10 @@ export class RPC extends MessageEmitter {
     let reject = null;
     let heartbeat_task = null;
     try {
-      assert(data["method"] && data["ctx"] && data["from"]);
+      assert(data.method && data.ctx && data.from);
       const method_name = data.from + ":" + data.method;
       const remote_workspace = data.from.split("/")[0];
+      const remote_client_id = data.from.split("/")[1];
       // Make sure the target id is an absolute id
       data["to"] = data["to"].includes("/")
         ? data["to"]
@@ -975,10 +953,8 @@ export class RPC extends MessageEmitter {
       let local_workspace;
       if (!this._local_workspace) {
         local_workspace = data["to"].split("/")[0];
-      } else if (this._local_workspace === "*") {
-        local_workspace = remote_workspace;
       } else {
-        if (this._local_workspace) {
+        if (this._local_workspace && this._local_workspace !== "*") {
           assert(
             data["to"].split("/")[0] === this._local_workspace,
             "Workspace mismatch: " +
@@ -1035,9 +1011,9 @@ export class RPC extends MessageEmitter {
       if (this._method_annotations.has(method)) {
         // For services, it should not be protected
         if (this._method_annotations.get(method).visibility === "protected") {
-          if (local_workspace !== remote_workspace) {
+          if (local_workspace !== remote_workspace && (remote_workspace !== "*" || remote_client_id !== this.manager_id)) {
             throw new Error(
-              "Permission denied for protected method " +
+              "Permission denied for invoking protected method " +
                 method_name +
                 ", workspace mismatch: " +
                 local_workspace +
@@ -1057,7 +1033,7 @@ export class RPC extends MessageEmitter {
         ) {
           session_target_id = local_workspace + "/" + session_target_id;
         }
-        if (this._local_workspace !== "*" && session_target_id !== data.from) {
+        if (session_target_id !== data.from) {
           throw new Error(
             "Access denied for method call (" +
               method_name +
