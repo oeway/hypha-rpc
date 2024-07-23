@@ -100,6 +100,13 @@ class SyncHyphaServer:
         # Note: we need at least 2 workers to avoid deadlock
         self.executor = ThreadPoolExecutor(max_workers=sync_max_workers)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.server:
+            self.server.disconnect()
+
     async def _connect(self, config):
         config["loop"] = self.loop
         self.server = await connect_to_server_async(config)
