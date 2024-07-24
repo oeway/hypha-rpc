@@ -56,7 +56,7 @@ async def test_login(websocket_server):
     # We use ai.imjoy.io to test the login for now
     token = await login(
         {
-            "server_url": "https://ai.imjoy.io",
+            "server_url": WS_SERVER_URL,
             "login_callback": callback,
             "login_timeout": 20,
         }
@@ -77,7 +77,7 @@ def test_login_sync(websocket_server):
     # We use ai.imjoy.io to test the login for now
     token = login_sync(
         {
-            "server_url": "https://ai.imjoy.io",
+            "server_url": WS_SERVER_URL,
             "login_callback": callback,
             "login_timeout": 20,
         }
@@ -115,31 +115,31 @@ async def test_numpy_array_sync(websocket_server):
 def test_connect_to_server_sync(websocket_server):
     """Test connecting to the server sync."""
     # Now all the functions are sync
-    server = connect_to_server_sync(
+    with connect_to_server_sync(
         {"client_id": "test-plugin", "server_url": WS_SERVER_URL}
-    )
-    workspace = server.config.workspace
-    token = server.generate_token()
-    assert workspace and token
+    ) as server:
+        workspace = server.config.workspace
+        token = server.generate_token()
+        assert workspace and token
 
-    services = server.list_services("public")
-    assert isinstance(services, list)
+        services = server.list_services("public")
+        assert isinstance(services, list)
 
-    def hello(name):
-        print("Hello " + name)
-        return "Hello " + name
+        def hello(name):
+            print("Hello " + name)
+            return "Hello " + name
 
-    server.register_service(
-        {
-            "name": "Hello World",
-            "id": "hello-world",
-            "config": {
-                "visibility": "protected",
-                "run_in_executor": True,
-            },
-            "hello": hello,
-        }
-    )
+        server.register_service(
+            {
+                "name": "Hello World",
+                "id": "hello-world",
+                "config": {
+                    "visibility": "protected",
+                    "run_in_executor": True,
+                },
+                "hello": hello,
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -268,8 +268,8 @@ async def test_rtc_service(websocket_server):
             "echo": lambda x: x,
         }
     )
-    await register_rtc_service(server, service_id)
-    pc = await get_rtc_service(server, service_id)
+    svc = await register_rtc_service(server, service_id)
+    pc = await get_rtc_service(server, svc["id"])
     svc = await pc.get_service("echo-service")
     assert await svc.echo("hello") == "hello", "echo service failed"
     await pc.close()

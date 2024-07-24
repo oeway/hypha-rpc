@@ -46,6 +46,9 @@ class WebRTCConnection:
         self._data_channel = data_channel
         self._handle_message = None
         self._logger = logger
+        self._disconnect_handler = None
+        self._handle_connect = lambda x: None
+        self._data_channel.on("open", self._handle_connect)
         self._data_channel.on("message", self.handle_message)
         self._data_channel.on("close", self.closed)
 
@@ -56,9 +59,22 @@ class WebRTCConnection:
 
     def closed(self):
         """Handle closed event."""
+        if self._disconnect_handler:
+            self._disconnect_handler("closed")
         if self._logger:
             self._logger.info("websocket closed")
         self._data_channel = None
+    
+    def on_disconnected(self, handler):
+        """Register a disconnection event handler."""
+        self._disconnect_handler = handler
+
+    def on_connect(self, handler):
+        """Register a connection open event handler."""
+        self._handle_connect = handler
+        assert inspect.iscoroutinefunction(
+            handler
+        ), "Connect handler must be a coroutine"
 
     def on_message(self, handler):
         """Register a message handler."""
@@ -208,8 +224,16 @@ async def get_rtc_service(server, service_id, config=None):
         @pc.on("connectionstatechange")
         def on_connectionstatechange():
             if pc.connectionState == "failed":
-                logger.error("Connection failed")
+                logger.error("WebRTC Connection failed")
+                if not fut.done():
+                    fut.set_exception(Exception("WebRTC Connection failed"))
                 pc.close()
+            elif pc.connectionState == "closed":
+                logger.info("WebRTC Connection closed")
+                if not fut.done():
+                    fut.set_exception(Exception("WebRTC Connection closed"))
+            else:
+                logger.info("WebRTC Connection state: %s", pc.connectionState)
 
         if config.get("on_init"):
             await config["on_init"](pc)
@@ -245,7 +269,7 @@ async def register_rtc_service(server, service_id, config=None):
     on_init = config.get("on_init")
     if on_init:
         del config["on_init"]
-    await server.register_service(
+    return await server.register_service(
         {
             "id": service_id,
             "config": config,

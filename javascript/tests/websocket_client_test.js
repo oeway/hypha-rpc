@@ -2,7 +2,7 @@ import { expect } from "chai";
 import { login, connectToServer } from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
 
-const SERVER_URL = "https://hypha.aicell.io";
+const SERVER_URL = "http://127.0.0.1:9394";
 
 class ImJoyPlugin {
   async setup() {}

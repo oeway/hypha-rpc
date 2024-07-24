@@ -8,7 +8,7 @@
 import { hyphaWebsocketClient } from "hypha-rpc";
 
 hyphaWebsocketClient.connectToServer({
-  server_url: 'https://hypha.aicell.io',
+  server_url: 'https://ai.imjoy.io',
 }).then(async (api)=>{
   await api.register_service(
       {

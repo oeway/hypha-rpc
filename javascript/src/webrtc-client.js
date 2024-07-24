@@ -6,6 +6,11 @@ class WebRTCConnection {
     this._data_channel = channel;
     this._handle_message = null;
     this._reconnection_token = null;
+    this._disconnect_handler = null;
+    this._handle_connect = () => {};
+    this._data_channel.onopen = async ()=>{
+      this._handle_connect && this._handle_connect();
+    }
     this._data_channel.onmessage = async (event) => {
       let data = event.data;
       if (data instanceof Blob) {
@@ -15,9 +20,19 @@ class WebRTCConnection {
     };
     const self = this;
     this._data_channel.onclose = function () {
+      if(this._disconnect_handler)
+      this._disconnect_handler("closed");
       console.log("websocket closed");
       self._data_channel = null;
     };
+  }
+
+  on_disconnected(handler) {
+    this._disconnect_handler = handler;
+  }
+
+  on_connect(handler) {
+    this._handle_connect = handler;
   }
 
   on_message(handler) {
@@ -125,7 +140,13 @@ async function getRTCService(server, service_id, config) {
         () => {
           if (pc.connectionState === "failed") {
             pc.close();
-            reject(new Error("Connection failed"));
+            reject(new Error("WebRTC Connection failed"));
+          }
+          else if (pc.connectionState === "closed") {
+            reject(new Error("WebRTC Connection closed"));
+          }
+          else{
+            console.log("WebRTC Connection state: ", pc.connectionState);
           }
         },
         false,
@@ -192,7 +213,7 @@ async function registerRTCService(server, service_id, config) {
   };
   const onInit = config.on_init;
   delete config.on_init;
-  await server.registerService({
+  return await server.registerService({
     id: service_id,
     config,
     offer: (params, context) =>

@@ -188,7 +188,7 @@ class WebsocketRPCConnection:
         except Exception as e:
             logger.warning("Connection closed or error occurred: %s", str(e))
             if self._disconnect_handler:
-                await self._disconnect_handler(self, str(e))
+                await self._disconnect_handler(str(e))
             self._websocket = None
     
     async def disconnect(self, reason=None):
@@ -285,7 +285,7 @@ async def _connect_to_server(config):
         timeout=config.get("method_timeout", 60),
     )
     await connection.open()
-    assert connection.connection_info, "Failed to connect to the server"
+    assert connection.connection_info, "Failed to connect to the server, no connection info obtained"
     if config.get("workspace") and connection.connection_info["workspace"] != config["workspace"]:
         raise Exception(
             f"Connected to the wrong workspace: {connection.connection_info['workspace']}, expected: {config['workspace']}"

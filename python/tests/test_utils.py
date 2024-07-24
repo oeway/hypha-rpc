@@ -114,8 +114,8 @@ def test_callable_sig():
     assert callable_sig(callable_instance, skip_context=True) == "CallableClass(a, b)"
 
     # Built-in function
-    assert callable_sig(print) == "print(*args, **kwargs)"
-    assert callable_sig(print, skip_context=True) == "print(*args, **kwargs)"
+    assert callable_sig(print) == "print(*args, sep=' ', end='\\n', file=None, flush=False)"
+    assert callable_sig(print, skip_context=True) == "print(*args, sep=' ', end='\\n', file=None, flush=False)"
 
     # Partial function
     partial_func = partial(func, b=3)

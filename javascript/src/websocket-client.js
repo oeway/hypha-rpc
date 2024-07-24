@@ -72,7 +72,7 @@ class WebsocketRPCConnection {
             .then(resolve)
             .catch(reject);
         } else if (this._disconnect_handler) {
-          this._disconnect_handler(this, event.reason);
+          this._disconnect_handler(event.reason);
         }
       };
     });
@@ -245,7 +245,7 @@ export async function connectToServer(config) {
     config.WebSocketClass,
   );
   await connection.open();
-  assert(connection.connection_info, "Failed to connect to the server");
+  assert(connection.connection_info, "Failed to connect to the server, no connection info obtained");
   if (
     config.workspace &&
     connection.connection_info.workspace !== config.workspace
