@@ -333,6 +333,7 @@ class RPC(MessageEmitter):
                 logger.error("Error from server: %s", msg["error"])
             else:
                 logger.info("Message from server: %s", msg)
+            return
         unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
         main = unpacker.unpack()
         # Add trusted context to the method call

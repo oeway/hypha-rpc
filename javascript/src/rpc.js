@@ -353,6 +353,7 @@ export class RPC extends MessageEmitter {
         else{
           console.info("Message from server: ", msg);
         }
+        return;
       }
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
