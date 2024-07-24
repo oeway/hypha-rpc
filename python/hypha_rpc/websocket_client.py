@@ -285,7 +285,10 @@ async def _connect_to_server(config):
         timeout=config.get("method_timeout", 60),
     )
     await connection.open()
-    assert connection.connection_info, "Failed to connect to the server, no connection info obtained"
+    assert connection.connection_info, ("Failed to connect to the server, no connection info obtained."
+        " This issue is most likely due to an outdated Hypha server version. "
+        "Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version."
+    )
     if config.get("workspace") and connection.connection_info["workspace"] != config["workspace"]:
         raise Exception(
             f"Connected to the wrong workspace: {connection.connection_info['workspace']}, expected: {config['workspace']}"

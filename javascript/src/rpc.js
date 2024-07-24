@@ -345,7 +345,15 @@ export class RPC extends MessageEmitter {
 
   _on_message(message) {
     try {
-      assert(message instanceof ArrayBuffer);
+      if(!(message instanceof ArrayBuffer)){
+        const msg = JSON.parse(message);
+        if (msg.success === false) {
+          console.error("Error from server: ", msg.error);
+        }
+        else{
+          console.info("Message from server: ", msg);
+        }
+      }
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
@@ -397,7 +405,7 @@ export class RPC extends MessageEmitter {
       throw new Error("Service not found: " + service_id);
     }
 
-    service.config["workspace"] = ws;
+    service.config["workspace"] = context["ws"];
     // allow access for the same workspace
     if (service.config.visibility == "public") {
       return service;

@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import json
 import io
 import logging
 import math
@@ -326,7 +327,12 @@ class RPC(MessageEmitter):
 
     def _on_message(self, message):
         """Handle message."""
-        assert isinstance(message, bytes)
+        if not isinstance(message, bytes):
+            msg = json.loads(message)
+            if msg.get("success") == False:
+                logger.error("Error from server: %s", msg["error"])
+            else:
+                logger.info("Message from server: %s", msg)
         unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
         main = unpacker.unpack()
         # Add trusted context to the method call
@@ -371,7 +377,7 @@ class RPC(MessageEmitter):
         if not service:
             raise KeyError("Service not found: %s", service_id)
 
-        service["config"]["workspace"] = ws
+        service["config"]["workspace"] = context["ws"]
         # allow access for the same workspace
         if service["config"].get("visibility", "protected") == "public":
             return service
