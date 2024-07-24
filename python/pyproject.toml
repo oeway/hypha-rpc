@@ -1,34 +1,27 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = [ "setuptools>=42", "wheel",]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hypha_rpc"
-version = "0.1.1"  # Replace with the correct version
+version = "0.1.2"
 description = "Hypha RPC client for connecting to Hypha server for data management and AI model serving"
 readme = "README.md"
 requires-python = ">=3.6"
-license = {text = "MIT"}
-authors = [
-    {name = "Wei Ouyang", email = "oeway007@gmail.com"},
-]
+dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets; platform_system != 'Emscripten'",]
+[[project.authors]]
+name = "Wei Ouyang"
+email = "oeway007@gmail.com"
 
-dependencies = [
-  "numpy",
-  "msgpack>=1.0.2",
-  "shortuuid>=1.0.8",
-  "websockets; platform_system != 'Emscripten'",
-]
+[project.license]
+text = "MIT"
 
 [project.optional-dependencies]
-full = [
-    "aiortc; platform_system != 'Emscripten'",
-    "zarr",
-]
+full = [ "aiortc; platform_system != 'Emscripten'", "zarr",]
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["hypha_rpc*"]
-exclude = ["tests*", "scripts*"]
+include = [ "hypha_rpc*",]
+exclude = [ "tests*", "scripts*",]
