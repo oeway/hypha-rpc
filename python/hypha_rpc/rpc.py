@@ -137,7 +137,6 @@ class RPC(MessageEmitter):
         self,
         connection,
         client_id=None,
-        manager_id=None,
         default_context=None,
         name=None,
         codecs=None,
@@ -156,7 +155,6 @@ class RPC(MessageEmitter):
         self._name = name
         self._app_id = app_id or "*"
         self._local_workspace = workspace
-        self.manager_id = manager_id
         self._silent = silent
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
@@ -196,22 +194,25 @@ class RPC(MessageEmitter):
             assert hasattr(connection, "emit_message") and hasattr(
                 connection, "on_message"
             )
+            assert hasattr(connection, "manager_id"), "Connection must have manager_id"
             self._emit_message = connection.emit_message
             connection.on_message(self._on_message)
             self._connection = connection
 
             async def update_services(_):
-                if not self._silent and self.manager_id:
+                if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     for service in self._services.values():
                         service_info = self._extract_service_info(service)
                         await self.emit(
                             {
                                 "type": "service-added",
-                                "to": "*/" + self.manager_id,
+                                "to": "*/" + self._connection.manager_id,
                                 "service": service_info,
                             }
                         )
+                else:
+                    logger.info("Connection established, no manager id to report services")
 
             connection.on_connect(update_services)
             self.loop.create_task(update_services(None))
@@ -357,9 +358,9 @@ class RPC(MessageEmitter):
 
     async def get_manager_service(self, timeout=None):
         """Get remote root service."""
-        assert self.manager_id, "Manager id is not set"
+        assert self._connection.manager_id, "Manager id is not set"
         svc = await self.get_remote_service(
-            f"*/{self.manager_id}:default", timeout=timeout
+            f"*/{self._connection.manager_id}:default", timeout=timeout
         )
         return svc
 
@@ -392,8 +393,8 @@ class RPC(MessageEmitter):
     async def get_remote_service(self, service_uri=None, timeout=None):
         """Get a remote service."""
         timeout = timeout or self._method_timeout
-        if service_uri is None and self.manager_id:
-            service_uri = "*/" + self.manager_id
+        if service_uri is None and self._connection.manager_id:
+            service_uri = "*/" + self._connection.manager_id
         elif ":" not in service_uri:
             service_uri = self._client_id + ":" + service_uri
         provider, service_id = service_uri.split(":")
@@ -557,11 +558,11 @@ class RPC(MessageEmitter):
         service = self.add_service(api, overwrite=overwrite)
         service_info = self._extract_service_info(service)
         if notify:
-            if self.manager_id:
+            if self._connection.manager_id:
                 await self.emit(
                     {
                         "type": "service-added",
-                        "to": "*/" + self.manager_id,
+                        "to": "*/" + self._connection.manager_id,
                         "service": service_info,
                     }
                 )
@@ -580,11 +581,11 @@ class RPC(MessageEmitter):
         del self._services[service["id"]]
         if notify:
             service_info = self._extract_service_info(service)
-            if self.manager_id:
+            if self._connection.manager_id:
                 self.emit(
                     {
                         "type": "service-removed",
-                        "to": "*/" + self.manager_id,
+                        "to": "*/" + self._connection.manager_id,
                         "service": service_info,
                     }
                 )
@@ -1030,7 +1031,7 @@ class RPC(MessageEmitter):
                     == "protected"
                 ):
                     if local_workspace != remote_workspace and (
-                        remote_workspace != "*" or remote_client_id != self.manager_id
+                        remote_workspace != "*" or remote_client_id != self._connection.manager_id
                     ):
                         raise PermissionError(
                             f"Permission denied for invoking protected method {method_name}, "

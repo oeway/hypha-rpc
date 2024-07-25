@@ -8,9 +8,10 @@ class WebRTCConnection {
     this._reconnection_token = null;
     this._disconnect_handler = null;
     this._handle_connect = () => {};
-    this._data_channel.onopen = async ()=>{
+    this.manager_id = null;
+    this._data_channel.onopen = async () => {
       this._handle_connect && this._handle_connect();
-    }
+    };
     this._data_channel.onmessage = async (event) => {
       let data = event.data;
       if (data instanceof Blob) {
@@ -20,8 +21,7 @@ class WebRTCConnection {
     };
     const self = this;
     this._data_channel.onclose = function () {
-      if(this._disconnect_handler)
-      this._disconnect_handler("closed");
+      if (this._disconnect_handler) this._disconnect_handler("closed");
       console.log("websocket closed");
       self._data_channel = null;
     };
@@ -67,7 +67,6 @@ async function _setupRPC(config) {
   config.context.connection_type = "webrtc";
   const rpc = new RPC(connection, {
     client_id: clientId,
-    manager_id: null,
     default_context: config.context,
     name: config.name,
     method_timeout: config.method_timeout || 10.0,
@@ -94,7 +93,7 @@ async function _createOffer(params, server, config, onInit, context) {
     pc.addEventListener("datachannel", async (event) => {
       const channel = event.channel;
       let ctx = null;
-      if (context && context.user) ctx = { user: context.user, ws: context.ws};
+      if (context && context.user) ctx = { user: context.user, ws: context.ws };
       const rpc = await _setupRPC({
         channel: channel,
         client_id: channel.label,
@@ -141,11 +140,9 @@ async function getRTCService(server, service_id, config) {
           if (pc.connectionState === "failed") {
             pc.close();
             reject(new Error("WebRTC Connection failed"));
-          }
-          else if (pc.connectionState === "closed") {
+          } else if (pc.connectionState === "closed") {
             reject(new Error("WebRTC Connection closed"));
-          }
-          else{
+          } else {
             console.log("WebRTC Connection state: ", pc.connectionState);
           }
         },

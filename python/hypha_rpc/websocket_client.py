@@ -35,7 +35,7 @@ logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-client")
 logger.setLevel(logging.WARNING)
 
-MAX_RETRY = 10000
+MAX_RETRY = 1000000
 
 
 class WebsocketRPCConnection:
@@ -59,6 +59,7 @@ class WebsocketRPCConnection:
         self._legacy_auth = None
         self.connection_info = None
         self._enable_reconnect = False
+        self.manager_id = None
 
     def on_message(self, handler):
         """Handle message."""
@@ -123,39 +124,42 @@ class WebsocketRPCConnection:
         try:
             self._websocket = await self._attempt_connection(self._server_url)
             # Send authentication info as the first message if connected without query params
-            if not self._legacy_auth:
-                auth_info = json.dumps(
-                    {
-                        "client_id": self._client_id,
-                        "workspace": self._workspace,
-                        "token": self._token,
-                        "reconnection_token": self._reconnection_token,
-                    }
-                )
-                await self._websocket.send(auth_info)
-                first_message = await self._websocket.recv()
-                first_message = json.loads(first_message)
-                if first_message.get("type") == "connection_info":
-                    logger.info("Successfully connected: %s", first_message)
-                    self.connection_info = first_message
-                    if "reconnection_token" in self.connection_info:
-                        self._reconnection_token = self.connection_info["reconnection_token"]
-                elif first_message.get("type") == "error":
-                    error = first_message["message"]
-                    logger.error("Failed to connect: %s", error)
-                    raise ConnectionAbortedError(error)
-                else:
-                    logger.error("Unexpected message received from the server: %s", first_message)
-                    raise ConnectionAbortedError("Unexpected message received from the server")
-            else:
+            if self._legacy_auth:
                 raise NotImplementedError("Legacy authentication is not supported")
+            auth_info = json.dumps(
+                {
+                    "client_id": self._client_id,
+                    "workspace": self._workspace,
+                    "token": self._token,
+                    "reconnection_token": self._reconnection_token,
+                }
+            )
+            await self._websocket.send(auth_info)
+            first_message = await self._websocket.recv()
+            first_message = json.loads(first_message)
+            if first_message.get("type") == "connection_info":
+                self.connection_info = first_message
+                if self._workspace:
+                    assert self.connection_info.get("workspace") == self._workspace, f"Connected to the wrong workspace: {self.connection_info['workspace']}, expected: {self._workspace}"
+                if "reconnection_token" in self.connection_info:
+                    self._reconnection_token = self.connection_info["reconnection_token"]
+                self.manager_id = self.connection_info.get("manager_id", None)
+                logger.info(f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}")
+            elif first_message.get("type") == "error":
+                error = first_message["message"]
+                logger.error("Failed to connect: %s", error)
+                raise ConnectionAbortedError(error)
+            else:
+                logger.error("Unexpected message received from the server: %s", first_message)
+                raise ConnectionAbortedError("Unexpected message received from the server")
+
             self._listen_task = asyncio.ensure_future(self._listen())
             if self._handle_connect:
                 await self._handle_connect(self)
             return self.connection_info
         except Exception as exp:
-            logger.exception("Failed to connect to %s", self._server_url.split("?")[0])
-            raise
+            logger.error("Failed to connect to %s", self._server_url.split("?")[0])
+            raise exp
 
     async def emit_message(self, data):
         """Emit a message."""
@@ -170,10 +174,8 @@ class WebsocketRPCConnection:
         try:
             await self._websocket.send(data)
         except Exception as exp:
-            # If _websocket is None, it's means it's closed from the server side
-            if self._websocket:
-                logger.error(f"Failed to send message: {exp}")
-                raise exp
+            logger.error(f"Failed to send message: {exp}")
+            raise exp
 
     async def _listen(self):
         """Listen to the connection and handle disconnection."""
@@ -189,6 +191,8 @@ class WebsocketRPCConnection:
                         self._handle_message(data)
                 except Exception as exp:
                     logger.exception("Failed to handle message: %s, error: %s", data, exp)
+        except websockets.exceptions.ConnectionClosedError as e:
+            logger.info("Websocket connection closed: %s", e)
         finally:
             # Handle unexpected disconnection or disconnection caused by the server  
             if not self._closed and self._websocket.closed:
@@ -196,15 +200,20 @@ class WebsocketRPCConnection:
                 if self._websocket.close_code in [1000]:
                     logger.info("Websocket connection closed (code: %s): %s", self._websocket.close_code, self._websocket.close_reason)
                     if self._disconnect_handler:
-                        await self._disconnect_handler(str(e))
+                        self._disconnect_handler(str(e))
                     # make it as closed
                     self._closed = True
                 elif self._enable_reconnect:
                     logger.warning("Websocket connection closed unexpectedly (code: %s): %s", self._websocket.close_code, self._websocket.close_reason)
-                    while True:
+                    retry = 0
+                    while retry < MAX_RETRY:
                         try:
-                            logger.info("Reconnecting to %s", self._server_url.split("?")[0])
+                            logger.info("Reconnecting to %s (attempt #%s)", self._server_url.split("?")[0], retry)
                             await self.open()
+                            logger.info("Successfully reconnected to %s", self._server_url.split("?")[0])
+                            break
+                        except NotImplementedError:
+                            logger.error("Legacy authentication is not supported")
                             break
                         except ConnectionAbortedError as e:
                             logger.warning("Server refuse to reconnect: %s", e)
@@ -214,9 +223,10 @@ class WebsocketRPCConnection:
                             await asyncio.sleep(1)
                             if self._websocket and self._websocket.open:
                                 break
+                        retry += 1
             else:
                 if self._disconnect_handler:
-                    await self._disconnect_handler(str(e))
+                    self._disconnect_handler(str(e))
     
     async def disconnect(self, reason=None):
         """Disconnect."""
@@ -321,12 +331,10 @@ async def _connect_to_server(config):
             f"Connected to the wrong workspace: {connection_info['workspace']}, expected: {config['workspace']}"
         )
     workspace = connection_info["workspace"]
-    manager_id = connection_info["manager_id"]
     rpc = RPC(
         connection,
         client_id=client_id,
         workspace=workspace,
-        manager_id=manager_id,
         default_context={"connection_type": "websocket"},
         name=config.get("name"),
         method_timeout=config.get("method_timeout"),
@@ -366,9 +374,9 @@ async def _connect_to_server(config):
     wm.register_codec = rpc.register_codec
     wm.emit = rpc.emit
     wm.on = rpc.on
-    if rpc.manager_id:
+    if connection.manager_id:
         async def handle_disconnect(message):
-            if message["from"] == "*/" + rpc.manager_id:
+            if message["from"] == "*/" + connection.manager_id:
                 logger.info("Disconnecting from server, reason: %s", message.get("reason"))
                 await disconnect()
         rpc.on("force-exit", handle_disconnect)

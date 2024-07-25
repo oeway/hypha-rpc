@@ -7,7 +7,10 @@ from functools import partial
 import shortuuid
 from hypha_rpc import RPC
 
-logger = logging.getLogger("rtc-client")
+logging.basicConfig(stream=sys.stdout)
+logger = logging.getLogger("webrtc-client")
+logger.setLevel(logging.WARNING)
+
 try:
     from aiortc import (
         RTCConfiguration,
@@ -51,6 +54,7 @@ class WebRTCConnection:
         self._data_channel.on("open", self._handle_connect)
         self._data_channel.on("message", self.handle_message)
         self._data_channel.on("close", self.closed)
+        self.manager_id = None
 
     def handle_message(self, data):
         """Register a message handler."""
@@ -115,7 +119,6 @@ async def _setup_rpc(config):
     rpc = RPC(
         connection,
         client_id=client_id,
-        manager_id=None,
         default_context=config["context"],
         name=config.get("name"),
         method_timeout=config.get("method_timeout", 10.0),

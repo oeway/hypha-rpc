@@ -151,7 +151,6 @@ export class RPC extends MessageEmitter {
     connection,
     {
       client_id = null,
-      manager_id = null,
       default_context = null,
       name = null,
       codecs = null,
@@ -171,7 +170,6 @@ export class RPC extends MessageEmitter {
     this._name = name;
     this._app_id = app_id || "*";
     this._local_workspace = workspace;
-    this.manager_id = manager_id;
     this._silent = silent;
     this.default_context = default_context || {};
     this._method_annotations = new WeakMap();
@@ -205,20 +203,28 @@ export class RPC extends MessageEmitter {
       this.on("error", console.error);
 
       assert(connection.emit_message && connection.on_message);
+      assert(
+        connection.manager_id !== undefined,
+        "Connection must have manager_id",
+      );
       this._emit_message = connection.emit_message.bind(connection);
       connection.on_message(this._on_message.bind(this));
       this._connection = connection;
       const updateServices = async () => {
-        if (!this._silent && this.manager_id) {
+        if (!this._silent && this._connection.manager_id) {
           console.log("Connection established, reporting services...");
           for (let service of Object.values(this._services)) {
             const serviceInfo = this._extract_service_info(service);
             await this.emit({
               type: "service-added",
-              to: "*/" + this.manager_id,
+              to: "*/" + this._connection.manager_id,
               service: serviceInfo,
             });
           }
+        } else {
+          console.log(
+            "Connection established, no manager id to report services",
+          );
         }
       };
       connection.on_connect(updateServices);
@@ -345,11 +351,10 @@ export class RPC extends MessageEmitter {
   }
 
   _on_message(message) {
-    if(typeof message === "string"){
+    if (typeof message === "string") {
       const main = JSON.parse(message);
       this._fire(main["type"], main);
-    }
-    else if (message instanceof ArrayBuffer) {
+    } else if (message instanceof ArrayBuffer) {
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
@@ -361,8 +366,7 @@ export class RPC extends MessageEmitter {
         Object.assign(main, extra.value);
       }
       this._fire(main["type"], main);
-    }
-    else{
+    } else {
       throw new Error("Invalid message format");
     }
   }
@@ -378,9 +382,9 @@ export class RPC extends MessageEmitter {
   }
 
   async get_manager_service(timeout) {
-    assert(this.manager_id, "Manager id is not set");
+    assert(this._connection.manager_id, "Manager id is not set");
     const svc = await this.get_remote_service(
-      `*/${this.manager_id}:default`,
+      `*/${this._connection.manager_id}:default`,
       timeout,
     );
     return svc;
@@ -419,8 +423,8 @@ export class RPC extends MessageEmitter {
   }
   async get_remote_service(service_uri, timeout) {
     timeout = timeout === undefined ? this._method_timeout : timeout;
-    if (!service_uri && this.manager_id) {
-      service_uri = "*/" + this.manager_id;
+    if (!service_uri && this._connection.manager_id) {
+      service_uri = "*/" + this._connection.manager_id;
     } else if (!service_uri.includes(":")) {
       service_uri = this._client_id + ":" + service_uri;
     }
@@ -595,10 +599,10 @@ export class RPC extends MessageEmitter {
     const service = this.add_service(api, overwrite);
     const serviceInfo = this._extract_service_info(service);
     if (notify) {
-      if (this.manager_id) {
+      if (this._connection.manager_id) {
         await this.emit({
           type: "service-added",
-          to: "*/" + this.manager_id,
+          to: "*/" + this._connection.manager_id,
           service: serviceInfo,
         });
       } else {
@@ -622,10 +626,10 @@ export class RPC extends MessageEmitter {
     delete this._services[service];
     if (notify) {
       const serviceInfo = this._extract_service_info(api);
-      if (this.manager_id) {
+      if (this._connection.manager_id) {
         this.emit({
           type: "service-removed",
-          to: "*/" + this.manager_id,
+          to: "*/" + this._connection.manager_id,
           service: serviceInfo,
         });
       } else {
@@ -1024,7 +1028,8 @@ export class RPC extends MessageEmitter {
         if (this._method_annotations.get(method).visibility === "protected") {
           if (
             local_workspace !== remote_workspace &&
-            (remote_workspace !== "*" || remote_client_id !== this.manager_id)
+            (remote_workspace !== "*" ||
+              remote_client_id !== this._connection.manager_id)
           ) {
             throw new Error(
               "Permission denied for invoking protected method " +

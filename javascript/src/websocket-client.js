@@ -27,12 +27,13 @@ class WebsocketRPCConnection {
     this._handle_message = null;
     this._handle_connect = null; // Connection open event handler
     this._disconnect_handler = null; // Disconnection event handler
-    this._timeout = timeout * 1000; // Convert seconds to milliseconds
+    this._timeout = timeout;
     this._WebSocketClass = WebSocketClass || WebSocket; // Allow overriding the WebSocket class
     this._closed = false;
     this._legacy_auth = null;
     this.connection_info = null;
     this._enable_reconnect = false;
+    this.manager_id = null;
   }
 
   on_message(handler) {
@@ -61,7 +62,7 @@ class WebsocketRPCConnection {
 
       websocket.onerror = (event) => {
         console.error("WebSocket connection error:", event);
-        reject(event);
+        reject(new Error(`ConnectionAbortedError: ${event}`));
       };
 
       websocket.onclose = (event) => {
@@ -112,61 +113,61 @@ class WebsocketRPCConnection {
         const data = event.data;
         const first_message = JSON.parse(data);
         if (first_message.type == "connection_info") {
-          console.log(
-            "Successfully connected: " + JSON.stringify(first_message),
-          );
           this.connection_info = first_message;
-          if (this.connection_info.reconnection_token) {
-            this._reconnection_token =
-              this.connection_info.reconnection_token;
+          if (this._workspace) {
+            assert(
+              this.connection_info.workspace === this._workspace,
+              `Connected to the wrong workspace: ${this.connection_info.workspace}, expected: ${this._workspace}`,
+            );
           }
+          if (this.connection_info.reconnection_token) {
+            this._reconnection_token = this.connection_info.reconnection_token;
+          }
+          this.manager_id = this.connection_info.manager_id || null;
+          console.log(
+            `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
+          );
           resolve(this.connection_info);
-        }
-        else if (first_message.type == "error") {
+        } else if (first_message.type == "error") {
           const error = first_message.error || "Unknown error";
           console.error("Failed to connect, " + error);
-          this.connection_info = null;
           reject(new Error(error));
           return;
         } else {
-          console.error(
-            "Unexpected message received from the server:",
-            data,
-          );
+          console.error("Unexpected message received from the server:", data);
           reject(new Error("Unexpected message received from the server"));
           return;
         }
-        
       };
-    })
+    });
   }
 
   async open() {
-    if (this._closed){
-      throw new Error("Connection is closing");
-    }
-    console.log("Creating a new websocket connection to", this._server_url.split("?")[0]);
+    console.log(
+      "Creating a new websocket connection to",
+      this._server_url.split("?")[0],
+    );
     try {
       this._websocket = await this._attempt_connection(this._server_url);
-      if (!this._legacy_auth) {
-        // Send authentication info as the first message if connected without query params
-        const authInfo = JSON.stringify({
-          client_id: this._client_id,
-          workspace: this._workspace,
-          token: this._token,
-          reconnection_token: this._reconnection_token,
-        });
-        this._websocket.send(authInfo);
-        // Wait for the first message from the server
-        await waitFor(
-          this._establish_connection(),
-          this._timeout / 1000.0,
-          "Failed to receive the first message from the server",
+      if (this._legacy_auth) {
+        throw new Error(
+          "NotImplementedError: Legacy authentication is not supported",
         );
       }
-      else{
-        throw new Error("Legacy authentication is not supported");
-      }
+      // Send authentication info as the first message if connected without query params
+      const authInfo = JSON.stringify({
+        client_id: this._client_id,
+        workspace: this._workspace,
+        token: this._token,
+        reconnection_token: this._reconnection_token,
+      });
+      this._websocket.send(authInfo);
+      // Wait for the first message from the server
+      await waitFor(
+        this._establish_connection(),
+        this._timeout,
+        "Failed to receive the first message from the server",
+      );
       // Listen to messages from the server
       this._enable_reconnect = true;
       this._closed = false;
@@ -181,30 +182,58 @@ class WebsocketRPCConnection {
       }
       return this.connection_info;
     } catch (error) {
-      console.error("Failed to connect to", this._server_url.split("?")[0], error);
+      console.error(
+        "Failed to connect to",
+        this._server_url.split("?")[0],
+        error,
+      );
       throw error;
     }
   }
 
   _handle_close(event) {
-    if (!this._closed && this._websocket && this._websocket.readyState === WebSocket.CLOSED) {
+    if (
+      !this._closed &&
+      this._websocket &&
+      this._websocket.readyState === WebSocket.CLOSED
+    ) {
       if ([1000].includes(event.code)) {
-        console.info("Websocket connection closed (code: %s): %s", event.code, event.reason);
+        console.info(
+          "Websocket connection closed (code: %s): %s",
+          event.code,
+          event.reason,
+        );
         if (this._disconnect_handler) {
           this._disconnect_handler(event.reason);
         }
         this._closed = true;
       } else if (this._enable_reconnect) {
-        console.warn("Websocket connection closed unexpectedly (code: %s): %s", event.code, event.reason);
+        console.warn(
+          "Websocket connection closed unexpectedly (code: %s): %s",
+          event.code,
+          event.reason,
+        );
         let retry = 0;
         const reconnect = async () => {
           try {
-            console.info("Reconnecting to", this._server_url.split("?")[0]);
+            console.info(
+              `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
+            );
             await this.open();
           } catch (e) {
+            if (`${e}`.includes("ConnectionAbortedError")) {
+              console.warn("Failed to reconnect, connection aborted:", e);
+              return;
+            } else if (`${e}`.includes("NotImplementedError")) {
+              console.warn("Failed to reconnect, connection aborted:", e);
+              return;
+            }
             console.warn("Failed to reconnect:", e);
             await new Promise((resolve) => setTimeout(resolve, 1000));
-            if(this._websocket && this._websocket.readyState === WebSocket.CONNECTED){
+            if (
+              this._websocket &&
+              this._websocket.readyState === WebSocket.CONNECTED
+            ) {
               return;
             }
             retry += 1;
@@ -243,7 +272,6 @@ class WebsocketRPCConnection {
     this._closed = true;
     if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
       this._websocket.close(1000, reason);
-      
     }
     console.info(`WebSocket connection disconnected (${reason})`);
   }
@@ -309,21 +337,19 @@ export async function connectToServer(config) {
     config.WebSocketClass,
   );
   const connection_info = await connection.open();
-  assert(connection_info, "Failed to connect to the server, no connection info obtained. This issue is most likely due to an outdated Hypha server version. Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version.");
-  if (
-    config.workspace &&
-    connection_info.workspace !== config.workspace
-  ) {
+  assert(
+    connection_info,
+    "Failed to connect to the server, no connection info obtained. This issue is most likely due to an outdated Hypha server version. Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version.",
+  );
+  if (config.workspace && connection_info.workspace !== config.workspace) {
     throw new Error(
       `Connected to the wrong workspace: ${connection_info.workspace}, expected: ${config.workspace}`,
     );
   }
   const workspace = connection_info.workspace;
-  const manager_id = connection_info.manager_id;
   const rpc = new RPC(connection, {
     client_id: clientId,
     workspace,
-    manager_id,
     default_context: { connection_type: "websocket" },
     name: config.name,
     method_timeout: config.method_timeout,
@@ -357,9 +383,9 @@ export async function connectToServer(config) {
   wm.registerCodec = rpc.register_codec.bind(rpc);
   wm.emit = rpc.emit;
   wm.on = rpc.on;
-  if (rpc.manager_id) {
+  if (connection.manager_id) {
     rpc.on("force-exit", async (message) => {
-      if (message.from === "*/" + rpc.manager_id) {
+      if (message.from === "*/" + connection.manager_id) {
         console.log("Disconnecting from server, reason:", message.reason);
         await disconnect();
       }
