@@ -30,6 +30,7 @@ def update_package_lock_json(version):
     with open('javascript/package-lock.json', 'r+') as f:
         data = json.load(f)
         data['version'] = version
+        data['packages']['']['version'] = version
         f.seek(0)
         json.dump(data, f, indent=2)
         f.truncate()

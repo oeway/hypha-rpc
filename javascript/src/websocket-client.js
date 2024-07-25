@@ -14,6 +14,7 @@ class WebsocketRPCConnection {
     client_id,
     workspace,
     token,
+    reconnection_token = null,
     timeout = 60,
     WebSocketClass = null,
   ) {
@@ -22,7 +23,7 @@ class WebsocketRPCConnection {
     this._client_id = client_id;
     this._workspace = workspace;
     this._token = token;
-    this._reconnection_token = null;
+    this._reconnection_token = reconnection_token;
     this._websocket = null;
     this._handle_message = null;
     this._handle_connect = null; // Connection open event handler
@@ -333,6 +334,7 @@ export async function connectToServer(config) {
     clientId,
     config.workspace,
     config.token,
+    config.reconnection_token,
     config.method_timeout || 60,
     config.WebSocketClass,
   );

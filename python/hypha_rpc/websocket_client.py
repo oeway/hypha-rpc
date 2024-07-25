@@ -4,7 +4,6 @@ import inspect
 import logging
 import sys
 
-import msgpack
 import shortuuid
 import json
 
@@ -41,7 +40,7 @@ MAX_RETRY = 1000000
 class WebsocketRPCConnection:
     """Represent a websocket connection."""
 
-    def __init__(self, server_url, client_id, workspace=None, token=None, timeout=60):
+    def __init__(self, server_url, client_id, workspace=None, token=None, reconnection_token=None, timeout=60):
         """Set up instance."""
         self._websocket = None
         self._handle_message = None
@@ -53,7 +52,7 @@ class WebsocketRPCConnection:
         self._workspace = workspace
         self._token = token
         self._handle_reconnect = None
-        self._reconnection_token = None
+        self._reconnection_token = reconnection_token
         self._timeout = timeout
         self._closed = False
         self._legacy_auth = None
@@ -319,6 +318,7 @@ async def _connect_to_server(config):
         client_id,
         workspace=config.get("workspace"),
         token=config.get("token"),
+        reconnection_token=config.get("reconnection_token"),
         timeout=config.get("method_timeout", 60),
     )
     connection_info = await connection.open()
