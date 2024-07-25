@@ -202,6 +202,7 @@ export class RPC extends MessageEmitter {
         },
       });
       this.on("method", this._handle_method.bind(this));
+      this.on("error", console.error);
 
       assert(connection.emit_message && connection.on_message);
       this._emit_message = connection.emit_message.bind(connection);
@@ -344,17 +345,11 @@ export class RPC extends MessageEmitter {
   }
 
   _on_message(message) {
-    try {
-      if(!(message instanceof ArrayBuffer)){
-        const msg = JSON.parse(message);
-        if (msg.success === false) {
-          console.error("Error from server: ", msg.error);
-        }
-        else{
-          console.info("Message from server: ", msg);
-        }
-        return;
-      }
+    if(typeof message === "string"){
+      const main = JSON.parse(message);
+      this._fire(main["type"], main);
+    }
+    else if (message instanceof ArrayBuffer) {
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
@@ -366,8 +361,9 @@ export class RPC extends MessageEmitter {
         Object.assign(main, extra.value);
       }
       this._fire(main["type"], main);
-    } catch (error) {
-      console.error("Failed to process message", error);
+    }
+    else{
+      throw new Error("Invalid message format");
     }
   }
 

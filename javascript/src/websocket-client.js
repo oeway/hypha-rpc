@@ -6,7 +6,7 @@ export { RPC, API_VERSION };
 export { loadRequirements };
 export { getRTCService, registerRTCService };
 
-const MAX_RETRY = 10000;
+const MAX_RETRY = 1000000;
 
 class WebsocketRPCConnection {
   constructor(
@@ -29,9 +29,10 @@ class WebsocketRPCConnection {
     this._disconnect_handler = null; // Disconnection event handler
     this._timeout = timeout * 1000; // Convert seconds to milliseconds
     this._WebSocketClass = WebSocketClass || WebSocket; // Allow overriding the WebSocket class
-    this._closing = false;
+    this._closed = false;
     this._legacy_auth = null;
     this.connection_info = null;
+    this._enable_reconnect = false;
   }
 
   on_message(handler) {
@@ -68,6 +69,7 @@ class WebsocketRPCConnection {
           console.info(
             "Received 1003 error, attempting connection with query parameters.",
           );
+          this._legacy_auth = true;
           this._attempt_connection_with_query_params(server_url)
             .then(resolve)
             .catch(reject);
@@ -101,14 +103,49 @@ class WebsocketRPCConnection {
     // Construct the full URL by appending the query string if it exists
     const full_url = server_url + queryString;
 
-    this._legacy_auth = true; // Assuming this flag is needed for some other logic
     return await this._attempt_connection(full_url, false);
   }
 
+  _establish_connection() {
+    return new Promise((resolve, reject) => {
+      this._websocket.onmessage = (event) => {
+        const data = event.data;
+        const first_message = JSON.parse(data);
+        if (first_message.type == "connection_info") {
+          console.log(
+            "Successfully connected: " + JSON.stringify(first_message),
+          );
+          this.connection_info = first_message;
+          if (this.connection_info.reconnection_token) {
+            this._reconnection_token =
+              this.connection_info.reconnection_token;
+          }
+          resolve(this.connection_info);
+        }
+        else if (first_message.type == "error") {
+          const error = first_message.error || "Unknown error";
+          console.error("Failed to connect, " + error);
+          this.connection_info = null;
+          reject(new Error(error));
+          return;
+        } else {
+          console.error(
+            "Unexpected message received from the server:",
+            data,
+          );
+          reject(new Error("Unexpected message received from the server"));
+          return;
+        }
+        
+      };
+    })
+  }
+
   async open() {
-    if (this._closing || this._websocket) {
-      return; // Avoid opening a new connection if closing or already open
+    if (this._closed){
+      throw new Error("Connection is closing");
     }
+    console.log("Creating a new websocket connection to", this._server_url.split("?")[0]);
     try {
       this._websocket = await this._attempt_connection(this._server_url);
       if (!this._legacy_auth) {
@@ -122,48 +159,74 @@ class WebsocketRPCConnection {
         this._websocket.send(authInfo);
         // Wait for the first message from the server
         await waitFor(
-          new Promise((resolve, reject) => {
-            this._websocket.onmessage = (event) => {
-              const data = event.data;
-              const first_message = JSON.parse(data);
-              if (!first_message.success) {
-                const error = first_message.error || "Unknown error";
-                console.error("Failed to connect, " + error);
-                this.connection_info = null;
-                reject(new Error(error));
-              } else if (first_message) {
-                console.log(
-                  "Successfully connected: " + JSON.stringify(first_message),
-                );
-                this.connection_info = first_message;
-                if (this.connection_info.reconnection_token) {
-                  this._reconnection_token =
-                    this.connection_info.reconnection_token;
-                }
-              }
-              resolve();
-            };
-          }),
+          this._establish_connection(),
           this._timeout / 1000.0,
           "Failed to receive the first message from the server",
         );
       }
-
+      else{
+        throw new Error("Legacy authentication is not supported");
+      }
+      // Listen to messages from the server
+      this._enable_reconnect = true;
+      this._closed = false;
       this._websocket.onmessage = (event) => {
         this._handle_message(event.data);
       };
 
+      this._websocket.onclose = this._handle_close.bind(this);
+
       if (this._handle_connect) {
-        await this._handle_connect(this);
+        this._handle_connect(this);
       }
+      return this.connection_info;
     } catch (error) {
-      console.error("Failed to connect to", this._server_url, error);
+      console.error("Failed to connect to", this._server_url.split("?")[0], error);
+      throw error;
+    }
+  }
+
+  _handle_close(event) {
+    if (!this._closed && this._websocket && this._websocket.readyState === WebSocket.CLOSED) {
+      if ([1000].includes(event.code)) {
+        console.info("Websocket connection closed (code: %s): %s", event.code, event.reason);
+        if (this._disconnect_handler) {
+          this._disconnect_handler(event.reason);
+        }
+        this._closed = true;
+      } else if (this._enable_reconnect) {
+        console.warn("Websocket connection closed unexpectedly (code: %s): %s", event.code, event.reason);
+        let retry = 0;
+        const reconnect = async () => {
+          try {
+            console.info("Reconnecting to", this._server_url.split("?")[0]);
+            await this.open();
+          } catch (e) {
+            console.warn("Failed to reconnect:", e);
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            if(this._websocket && this._websocket.readyState === WebSocket.CONNECTED){
+              return;
+            }
+            retry += 1;
+            if (retry < MAX_RETRY) {
+              await reconnect();
+            } else {
+              console.error("Failed to reconnect after", MAX_RETRY, "attempts");
+            }
+          }
+        };
+        reconnect();
+      }
+    } else {
+      if (this._disconnect_handler) {
+        this._disconnect_handler(event.reason);
+      }
     }
   }
 
   async emit_message(data) {
-    if (this._closing) {
-      throw new Error("Connection is closing");
+    if (this._closed) {
+      throw new Error("Connection is closed");
     }
     if (!this._websocket || this._websocket.readyState !== WebSocket.OPEN) {
       await this.open();
@@ -177,11 +240,12 @@ class WebsocketRPCConnection {
   }
 
   disconnect(reason) {
-    this._closing = true;
+    this._closed = true;
     if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
       this._websocket.close(1000, reason);
-      console.info(`WebSocket connection disconnected (${reason})`);
+      
     }
+    console.info(`WebSocket connection disconnected (${reason})`);
   }
 }
 
@@ -244,18 +308,18 @@ export async function connectToServer(config) {
     config.method_timeout || 60,
     config.WebSocketClass,
   );
-  await connection.open();
-  assert(connection.connection_info, "Failed to connect to the server, no connection info obtained. This issue is most likely due to an outdated Hypha server version. Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version.");
+  const connection_info = await connection.open();
+  assert(connection_info, "Failed to connect to the server, no connection info obtained. This issue is most likely due to an outdated Hypha server version. Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version.");
   if (
     config.workspace &&
-    connection.connection_info.workspace !== config.workspace
+    connection_info.workspace !== config.workspace
   ) {
     throw new Error(
-      `Connected to the wrong workspace: ${connection.connection_info.workspace}, expected: ${config.workspace}`,
+      `Connected to the wrong workspace: ${connection_info.workspace}, expected: ${config.workspace}`,
     );
   }
-  const workspace = connection.connection_info.workspace;
-  const manager_id = connection.connection_info.manager_id;
+  const workspace = connection_info.workspace;
+  const manager_id = connection_info.manager_id;
   const rpc = new RPC(connection, {
     client_id: clientId,
     workspace,
@@ -283,8 +347,8 @@ export async function connectToServer(config) {
     await rpc.disconnect();
     await connection.disconnect();
   }
-  if (connection.connection_info) {
-    wm.config = Object.assign(wm.config, connection.connection_info);
+  if (connection_info) {
+    wm.config = Object.assign(wm.config, connection_info);
   }
   wm.export = _export;
   wm.getPlugin = getPlugin;

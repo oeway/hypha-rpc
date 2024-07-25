@@ -117,6 +117,7 @@ class PyodideWebsocketRPCConnection:
         self.workspace = workspace
         self.token = token
         self.reconnection_token = reconnection_token
+        self._disconnect_handler = None
         self.timeout = timeout
         self._websocket = None
         self._handle_message = None
@@ -136,38 +137,8 @@ class PyodideWebsocketRPCConnection:
         fut = asyncio.Future()
         websocket = WebSocket.new(server_url)
         websocket.binaryType = 'arraybuffer'
-
-        def onopen(evt):
-            # Send authentication info as the first message
-            auth_info = json.dumps({
-                'client_id': self.client_id,
-                'workspace': self.workspace,
-                'token': self.token,
-                'reconnection_token': self.reconnection_token
-            })
-            websocket.send(to_js(auth_info))
-
-        def onmessage(evt):
-            # Handle the first message as connection info
-            first_message = json.loads(evt.data)
-            if not first_message.get("success"):
-                error = first_message.get("error", "Unknown error")
-                if self._logger:
-                    self._logger.error("Failed to connect: %s", error)
-                self.connection_info = None
-                raise ConnectionAbortedError(error)
-            elif first_message:
-                if self._logger:
-                    self._logger.info("Successfully connected: %s", first_message)
-                self.connection_info = first_message
-            websocket.onmessage = lambda evt: print(evt)
-            websocket.onerror = None
-            websocket.onclose = None
-            websocket.onopen = None
-            fut.set_result(websocket)
-
-        websocket.onopen = onopen
-        websocket.onmessage = onmessage
+        websocket.onopen = lambda evt: fut.set_result(websocket)
+        websocket.onmessage = lambda evt: fut.set_result(websocket)
         websocket.onerror = lambda evt: fut.set_exception(ConnectionError('WebSocket error occurred'))
         websocket.onclose = lambda evt: fut.set_exception(ConnectionError('WebSocket closed unexpectedly'))
         return await fut
@@ -176,17 +147,56 @@ class PyodideWebsocketRPCConnection:
         """Open connection, attempting fallback on specific errors."""
         try:
             self._websocket = await self._attempt_connection(self.server_url)
+            fut = asyncio.Future()
+            # Send authentication info as the first message
+            auth_info = json.dumps({
+                'client_id': self.client_id,
+                'workspace': self.workspace,
+                'token': self.token,
+                'reconnection_token': self.reconnection_token
+            })
+            websocket.send(to_js(auth_info))
+            def onmessage(evt):
+                # Handle the first message as connection info
+                first_message = json.loads(evt.data)
+                if first_message.get("type") == "connection_info":
+                    if self._logger:
+                        self._logger.info("Successfully connected: %s", first_message)
+                    fut.set_result(first_message)
+                elif first_message.get("type") == "error":
+                    error = first_message.get("message", "Unknown error")
+                    if self._logger:
+                        self._logger.error("Failed to connect: %s", error)
+                    fut.set_exception(ConnectionAbortedError(error))
+                else:
+                    if self._logger:
+                        self._logger.error("Unexpected message received from the server: %s", first_message)
+                    fut.set_exception(ConnectionAbortedError("Unexpected message received from the server"))
+            websocket.onmessage = onmessage
+            websocket.onerror = lambda evt: fut.set_exception(ConnectionError('WebSocket error occurred'))
+            websocket.onclose = lambda evt: fut.set_exception(ConnectionError('WebSocket closed unexpectedly'))
+            self.connection_info = await fut
+            WebSocket.onerror = None
+            WebSocket.onclose = None
         except ConnectionError as e:
             if self._logger:
                 self._logger.error(f"Failed to open connection: {e}")
             server_url_with_params = self._create_url_with_params()
             self._websocket = await self._attempt_connection(server_url_with_params)
+        
         self._websocket.onmessage = lambda evt: self._handle_message(evt.data.to_py().tobytes())
         if self._logger:
             self._websocket.onerror = lambda evt: self._logger.error(f"WebSocket error: {evt}")
             self._websocket.onclose = lambda evt: self._logger.info(f"WebSocket closed: {evt}")
+        if self._disconnect_handler:
+            self._websocket.onclose = lambda evt: self._disconnect_handler(evt.reason)
         if self._handle_connect:
             await self._handle_connect(self)
+        return self.connection_info
+
+    def on_disconnected(self, handler):
+        """Register a disconnect handler."""
+        self._disconnect_handler = handler
 
     def on_connect(self, handler):
         """Register a connect handler."""

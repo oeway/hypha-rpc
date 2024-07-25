@@ -144,8 +144,8 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
         @pc.on("datachannel")
         async def on_datachannel(channel):
             ctx = None
-            if context:
-                ctx = {"user": context["user"]}
+            if context and context.get("user"):
+                ctx = {"user": context["user"], "ws": context["ws"]}
             rpc = await _setup_rpc(
                 {
                     "channel": channel,

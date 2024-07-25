@@ -55,9 +55,10 @@ class WebsocketRPCConnection:
         self._handle_reconnect = None
         self._reconnection_token = None
         self._timeout = timeout
-        self._closing = False
+        self._closed = False
         self._legacy_auth = None
         self.connection_info = None
+        self._enable_reconnect = False
 
     def on_message(self, handler):
         """Handle message."""
@@ -90,7 +91,7 @@ class WebsocketRPCConnection:
                 self._legacy_auth = True
                 return await self._attempt_connection_with_query_params(server_url)
             else:
-                raise
+                raise e
 
     async def _attempt_connection_with_query_params(self, server_url):
         """Attempt to establish a WebSocket connection including authentication details in the query string."""
@@ -118,12 +119,8 @@ class WebsocketRPCConnection:
 
     async def open(self):
         """Open the connection with fallback logic for backward compatibility."""
-        if self._closing:
-            raise Exception("Connection is closing, cannot open a new connection.")
-        logger.info("Creating a new connection to %s", self._server_url.split("?")[0])
+        logger.info("Creating a new websocket connection to %s", self._server_url.split("?")[0])
         try:
-            if self._websocket and not self._websocket.closed:
-                await self._websocket.close(code=1000)
             self._websocket = await self._attempt_connection(self._server_url)
             # Send authentication info as the first message if connected without query params
             if not self._legacy_auth:
@@ -138,45 +135,52 @@ class WebsocketRPCConnection:
                 await self._websocket.send(auth_info)
                 first_message = await self._websocket.recv()
                 first_message = json.loads(first_message)
-                if not first_message.get("success"):
-                    error = first_message.get("error", "Unknown error")
-                    logger.error("Failed to connect: %s", error)
-                    self.connection_info = None
-                    raise ConnectionAbortedError(error)
-                elif first_message:
+                if first_message.get("type") == "connection_info":
                     logger.info("Successfully connected: %s", first_message)
                     self.connection_info = first_message
                     if "reconnection_token" in self.connection_info:
                         self._reconnection_token = self.connection_info["reconnection_token"]
-
+                elif first_message.get("type") == "error":
+                    error = first_message["message"]
+                    logger.error("Failed to connect: %s", error)
+                    raise ConnectionAbortedError(error)
+                else:
+                    logger.error("Unexpected message received from the server: %s", first_message)
+                    raise ConnectionAbortedError("Unexpected message received from the server")
+            else:
+                raise NotImplementedError("Legacy authentication is not supported")
             self._listen_task = asyncio.ensure_future(self._listen())
             if self._handle_connect:
                 await self._handle_connect(self)
+            return self.connection_info
         except Exception as exp:
             logger.exception("Failed to connect to %s", self._server_url.split("?")[0])
             raise
 
     async def emit_message(self, data):
         """Emit a message."""
-        if self._closing:
-            raise Exception("Connection is closing")
+        if self._closed:
+            raise Exception("Connection is closed")
         if (
             not self._websocket
             or self._websocket.closed
         ):
-            logger.info("Reconnecting to %s", self._server_url.split("?")[0])
             await self.open()
 
         try:
             await self._websocket.send(data)
         except Exception as exp:
-            logger.exception("Failed to send message")
-            raise exp
+            # If _websocket is None, it's means it's closed from the server side
+            if self._websocket:
+                logger.error(f"Failed to send message: {exp}")
+                raise exp
 
     async def _listen(self):
         """Listen to the connection and handle disconnection."""
+        self._enable_reconnect = True
+        self._closed = False
         try:
-            while not self._closing and not self._websocket.closed:
+            while not self._closed and not self._websocket.closed:
                 data = await self._websocket.recv()
                 try:
                     if self._is_async:
@@ -184,16 +188,39 @@ class WebsocketRPCConnection:
                     else:
                         self._handle_message(data)
                 except Exception as exp:
-                    logger.exception("Failed to handle message: %s", data)
-        except Exception as e:
-            logger.warning("Connection closed or error occurred: %s", str(e))
-            if self._disconnect_handler:
-                await self._disconnect_handler(str(e))
-            self._websocket = None
+                    logger.exception("Failed to handle message: %s, error: %s", data, exp)
+        finally:
+            # Handle unexpected disconnection or disconnection caused by the server  
+            if not self._closed and self._websocket.closed:
+                # normal closure, means no need to recover
+                if self._websocket.close_code in [1000]:
+                    logger.info("Websocket connection closed (code: %s): %s", self._websocket.close_code, self._websocket.close_reason)
+                    if self._disconnect_handler:
+                        await self._disconnect_handler(str(e))
+                    # make it as closed
+                    self._closed = True
+                elif self._enable_reconnect:
+                    logger.warning("Websocket connection closed unexpectedly (code: %s): %s", self._websocket.close_code, self._websocket.close_reason)
+                    while True:
+                        try:
+                            logger.info("Reconnecting to %s", self._server_url.split("?")[0])
+                            await self.open()
+                            break
+                        except ConnectionAbortedError as e:
+                            logger.warning("Server refuse to reconnect: %s", e)
+                            break
+                        except Exception as e:
+                            logger.warning("Failed to reconnect: %s", e)
+                            await asyncio.sleep(1)
+                            if self._websocket and self._websocket.open:
+                                break
+            else:
+                if self._disconnect_handler:
+                    await self._disconnect_handler(str(e))
     
     async def disconnect(self, reason=None):
         """Disconnect."""
-        self._closing = True
+        self._closed = True
         if self._websocket and not self._websocket.closed:
             await self._websocket.close(code=1000)
         if self._listen_task:
@@ -284,17 +311,17 @@ async def _connect_to_server(config):
         token=config.get("token"),
         timeout=config.get("method_timeout", 60),
     )
-    await connection.open()
-    assert connection.connection_info, ("Failed to connect to the server, no connection info obtained."
+    connection_info = await connection.open()
+    assert connection_info, ("Failed to connect to the server, no connection info obtained."
         " This issue is most likely due to an outdated Hypha server version. "
         "Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version."
     )
-    if config.get("workspace") and connection.connection_info["workspace"] != config["workspace"]:
+    if config.get("workspace") and connection_info["workspace"] != config["workspace"]:
         raise Exception(
-            f"Connected to the wrong workspace: {connection.connection_info['workspace']}, expected: {config['workspace']}"
+            f"Connected to the wrong workspace: {connection_info['workspace']}, expected: {config['workspace']}"
         )
-    workspace = connection.connection_info["workspace"]
-    manager_id = connection.connection_info["manager_id"]
+    workspace = connection_info["workspace"]
+    manager_id = connection_info["manager_id"]
     rpc = RPC(
         connection,
         client_id=client_id,
@@ -330,8 +357,8 @@ async def _connect_to_server(config):
         await connection.disconnect()
 
     wm.config = dotdict(wm.config)
-    if connection.connection_info:
-        wm.config.update(connection.connection_info)
+    if connection_info:
+        wm.config.update(connection_info)
     wm.export = export
     wm.get_app = get_app
     wm.list_plugins = wm.list_services

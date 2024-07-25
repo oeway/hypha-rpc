@@ -16,7 +16,6 @@ import msgpack
 import shortuuid
 
 from .utils import (
-    FuturePromise,
     MessageEmitter,
     dotdict,
     format_traceback,
@@ -192,6 +191,7 @@ class RPC(MessageEmitter):
                 }
             )
             self.on("method", self._handle_method)
+            self.on("error", self._error)
 
             assert hasattr(connection, "emit_message") and hasattr(
                 connection, "on_message"
@@ -327,24 +327,23 @@ class RPC(MessageEmitter):
 
     def _on_message(self, message):
         """Handle message."""
-        if not isinstance(message, bytes):
-            msg = json.loads(message)
-            if msg.get("success") == False:
-                logger.error("Error from server: %s", msg["error"])
-            else:
-                logger.info("Message from server: %s", msg)
-            return
-        unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
-        main = unpacker.unpack()
-        # Add trusted context to the method call
-        main["ctx"] = main.copy()
-        main["ctx"].update(self.default_context)
-        try:
-            extra = unpacker.unpack()
-            main.update(extra)
-        except msgpack.exceptions.OutOfData:
-            pass
-        self._fire(main["type"], main)
+        if isinstance(message, str):
+            main = json.loads(message)
+            self._fire(main["type"], main)
+        elif isinstance(message, bytes):
+            unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
+            main = unpacker.unpack()
+            # Add trusted context to the method call
+            main["ctx"] = main.copy()
+            main["ctx"].update(self.default_context)
+            try:
+                extra = unpacker.unpack()
+                main.update(extra)
+            except msgpack.exceptions.OutOfData:
+                pass
+            self._fire(main["type"], main)
+        else:
+            raise Exception(f"Invalid message type: {type(message)}")
 
     def reset(self):
         """Reset."""
@@ -377,7 +376,6 @@ class RPC(MessageEmitter):
         service = self._services.get(service_id)
         if not service:
             raise KeyError("Service not found: %s", service_id)
-
         service["config"]["workspace"] = context["ws"]
         # allow access for the same workspace
         if service["config"].get("visibility", "protected") == "public":
@@ -753,112 +751,120 @@ class RPC(MessageEmitter):
             if kwargs:
                 arguments = arguments + [kwargs]
 
-            def pfunc(resolve, reject):
-                local_session_id = shortuuid.uuid()
-                if local_parent:
-                    # Store the children session under the parent
-                    local_session_id = local_parent + "." + local_session_id
-                store = self._get_session_store(local_session_id, create=True)
-                if store is None:
-                    reject(
-                        RuntimeError(f"Failed to get session store {local_session_id}")
-                    )
+            fut = asyncio.Future()
+            def resolve(result):
+                if fut.done():
                     return
-                store["target_id"] = target_id
-                args = self._encode(
-                    arguments,
+                fut.set_result(result)
+            def reject(error):
+                if fut.done():
+                    return
+                fut.set_exception(error)
+            local_session_id = shortuuid.uuid()
+            if local_parent:
+                # Store the children session under the parent
+                local_session_id = local_parent + "." + local_session_id
+            store = self._get_session_store(local_session_id, create=True)
+            if store is None:
+                reject(
+                    RuntimeError(f"Failed to get session store {local_session_id}")
+                )
+                return
+            store["target_id"] = target_id
+            args = self._encode(
+                arguments,
+                session_id=local_session_id,
+                local_workspace=local_workspace,
+            )
+            if self._local_workspace is None:
+                from_client = self._client_id
+            else:
+                from_client = self._local_workspace + "/" + self._client_id
+
+            main_message = {
+                "type": "method",
+                "from": from_client,
+                "to": target_id,
+                "method": method_id,
+            }
+            extra_data = {}
+            if args:
+                extra_data["args"] = args
+            if kwargs:
+                extra_data["with_kwargs"] = bool(kwargs)
+
+            logger.info(
+                "Calling remote method %s:%s, session: %s",
+                target_id,
+                method_id,
+                local_session_id,
+            )
+            if remote_parent:
+                # Set the parent session
+                # Note: It's a session id for the remote, not the current client
+                main_message["parent"] = remote_parent
+
+            timer = None
+            if with_promise:
+                # Only pass the current session id to the remote
+                # if we want to received the result
+                # I.e. the session id won't be passed for promises themselves
+                main_message["session"] = local_session_id
+                method_name = f"{target_id}:{method_id}"
+                timer = Timer(
+                    self._method_timeout,
+                    reject,
+                    f"Method call time out: {method_name}",
+                    label=method_name,
+                )
+                # By default, hypha will clear the session after the method is called
+                # However, if the args contains _rintf === true, we will not clear the session
+                clear_after_called = True
+                for arg in args:
+                    if (isinstance(arg, dict) and arg.get("_rintf")) or (
+                        hasattr(arg, "_rintf") and arg._rintf == True
+                    ):
+                        clear_after_called = False
+                        break
+                
+                extra_data["promise"] = self._encode_promise(
+                    resolve=resolve,
+                    reject=reject,
                     session_id=local_session_id,
+                    clear_after_called=clear_after_called,
+                    timer=timer,
                     local_workspace=local_workspace,
                 )
-                if self._local_workspace is None:
-                    from_client = self._client_id
-                else:
-                    from_client = self._local_workspace + "/" + self._client_id
-
-                main_message = {
-                    "type": "method",
-                    "from": from_client,
-                    "to": target_id,
-                    "method": method_id,
-                }
-                extra_data = {}
-                if args:
-                    extra_data["args"] = args
-                if kwargs:
-                    extra_data["with_kwargs"] = bool(kwargs)
-
-                logger.info(
-                    "Calling remote method %s:%s, session: %s",
-                    target_id,
-                    method_id,
-                    local_session_id,
+            # The message consists of two segments, the main message and extra data
+            message_package = msgpack.packb(main_message)
+            if extra_data:
+                message_package = message_package + msgpack.packb(extra_data)
+            total_size = len(message_package)
+            if total_size <= CHUNK_SIZE + 1024:
+                emit_task = asyncio.ensure_future(
+                    self._emit_message(message_package)
                 )
-                if remote_parent:
-                    # Set the parent session
-                    # Note: It's a session id for the remote, not the current client
-                    main_message["parent"] = remote_parent
+            else:
+                # send chunk by chunk
+                emit_task = asyncio.ensure_future(
+                    self._send_chunks(message_package, target_id, remote_parent)
+                )
 
-                timer = None
-                if with_promise:
-                    # Only pass the current session id to the remote
-                    # if we want to received the result
-                    # I.e. the session id won't be passed for promises themselves
-                    main_message["session"] = local_session_id
-                    method_name = f"{target_id}:{method_id}"
-                    timer = Timer(
-                        self._method_timeout,
-                        reject,
-                        f"Method call time out: {method_name}",
-                        label=method_name,
-                    )
-                    # By default, hypha will clear the session after the method is called
-                    # However, if the args contains _rintf === true, we will not clear the session
-                    clear_after_called = True
-                    for arg in args:
-                        if (isinstance(arg, dict) and arg.get("_rintf")) or (
-                            hasattr(arg, "_rintf") and arg._rintf == True
-                        ):
-                            clear_after_called = False
-                            break
-                    extra_data["promise"] = self._encode_promise(
-                        resolve=resolve,
-                        reject=reject,
-                        session_id=local_session_id,
-                        clear_after_called=clear_after_called,
-                        timer=timer,
-                        local_workspace=local_workspace,
-                    )
-                # The message consists of two segments, the main message and extra data
-                message_package = msgpack.packb(main_message)
-                if extra_data:
-                    message_package = message_package + msgpack.packb(extra_data)
-                total_size = len(message_package)
-                if total_size <= CHUNK_SIZE + 1024:
-                    emit_task = asyncio.ensure_future(
-                        self._emit_message(message_package)
-                    )
-                else:
-                    # send chunk by chunk
-                    emit_task = asyncio.ensure_future(
-                        self._send_chunks(message_package, target_id, remote_parent)
-                    )
-
-                def handle_result(fut):
-                    if fut.exception():
-                        reject(
-                            Exception(
-                                "Failed to send the request when calling method "
-                                f"({target_id}:{method_id}), error: {fut.exception()}"
-                            )
+            def handle_result(fut):
+                if fut.exception():
+                    reject(
+                        Exception(
+                            "Failed to send the request when calling method "
+                            f"({target_id}:{method_id}), error: {fut.exception()}"
                         )
-                    elif timer:
-                        logger.info("Start watchdog timer.")
-                        # Only start the timer after we send the message successfully
-                        timer.start()
+                    )
+                elif timer:
+                    logger.info("Start watchdog timer.")
+                    # Only start the timer after we send the message successfully
+                    timer.start()
 
-                emit_task.add_done_callback(handle_result)
-
-            return FuturePromise(pfunc, self._remote_logger)
+            emit_task.add_done_callback(handle_result)
+            return fut
 
         # Generate debugging information for the method
         remote_method.__rpc_object__ = (

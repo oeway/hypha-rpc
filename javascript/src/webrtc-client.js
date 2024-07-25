@@ -94,7 +94,7 @@ async function _createOffer(params, server, config, onInit, context) {
     pc.addEventListener("datachannel", async (event) => {
       const channel = event.channel;
       let ctx = null;
-      if (context && context.user) ctx = { user: context.user };
+      if (context && context.user) ctx = { user: context.user, ws: context.ws};
       const rpc = await _setupRPC({
         channel: channel,
         client_id: channel.label,
