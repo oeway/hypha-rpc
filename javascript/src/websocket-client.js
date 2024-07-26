@@ -217,10 +217,11 @@ class WebsocketRPCConnection {
         let retry = 0;
         const reconnect = async () => {
           try {
-            console.info(
+            console.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
             await this.open();
+            console.warn(`Successfully reconnected to server ${this._server_url}`); 
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError")) {
               console.warn("Failed to reconnect, connection aborted:", e);
@@ -229,7 +230,6 @@ class WebsocketRPCConnection {
               console.warn("Failed to reconnect, connection aborted:", e);
               return;
             }
-            console.warn("Failed to reconnect:", e);
             await new Promise((resolve) => setTimeout(resolve, 1000));
             if (
               this._websocket &&
@@ -294,6 +294,7 @@ export async function login(config) {
   const service_id = config.login_service_id || "public/*:hypha-login";
   const timeout = config.login_timeout || 60;
   const callback = config.login_callback;
+  const profile = config.profile;
 
   const server = await connectToServer({
     name: "initial login client",
@@ -307,7 +308,7 @@ export async function login(config) {
     } else {
       console.log(`Please open your browser and login at ${context.login_url}`);
     }
-    return await svc.check(context.key, timeout);
+    return await svc.check(context.key, timeout, profile);
   } catch (error) {
     throw error;
   } finally {

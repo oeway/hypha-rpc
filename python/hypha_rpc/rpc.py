@@ -717,7 +717,9 @@ class RPC(MessageEmitter):
 
     def emit(self, main_message, extra_data=None):
         """Emit a message."""
-        assert isinstance(main_message, dict) and "type" in main_message
+        assert isinstance(main_message, dict) and "type" in main_message and "to" in main_message, (
+            "Invalid message, must be an object with at least `type` and `to` fields"
+        )
         message_package = msgpack.packb(main_message)
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)

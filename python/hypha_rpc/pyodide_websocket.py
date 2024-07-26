@@ -260,8 +260,9 @@ class PyodideWebsocketRPCConnection:
                 async def reconnect():
                     nonlocal retry
                     try:
-                        logger.info(f"Reconnecting to {self._server_url.split('?')[0]} (attempt #{retry})")
+                        logger.warning(f"Reconnecting to {self._server_url.split('?')[0]} (attempt #{retry})")
                         await self.open()
+                        logger.warning(f"Successfully reconnected to the server {self._server_url.split('?')[0]}")
                     except ConnectionAbortedError as e:
                         logger.warning("Failed to reconnect, connection aborted: %s", e)
                         return

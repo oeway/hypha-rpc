@@ -207,9 +207,9 @@ class WebsocketRPCConnection:
                     retry = 0
                     while retry < MAX_RETRY:
                         try:
-                            logger.info("Reconnecting to %s (attempt #%s)", self._server_url.split("?")[0], retry)
+                            logger.warn("Reconnecting to %s (attempt #%s)", self._server_url.split("?")[0], retry)
                             await self.open()
-                            logger.info("Successfully reconnected to %s", self._server_url.split("?")[0])
+                            logger.warn("Successfully reconnected to %s", self._server_url.split("?")[0])
                             break
                         except NotImplementedError:
                             logger.error("Legacy authentication is not supported")
@@ -218,7 +218,6 @@ class WebsocketRPCConnection:
                             logger.warning("Server refuse to reconnect: %s", e)
                             break
                         except Exception as e:
-                            logger.warning("Failed to reconnect: %s", e)
                             await asyncio.sleep(1)
                             if self._websocket and self._websocket.open:
                                 break
@@ -255,6 +254,7 @@ async def login(config):
     service_id = config.get("login_service_id", "public/*:hypha-login")
     timeout = config.get("login_timeout", 60)
     callback = config.get("login_callback")
+    profile = config.get("profile", False)
 
     server = await connect_to_server(
         {
@@ -271,7 +271,7 @@ async def login(config):
         else:
             print(f"Please open your browser and login at {context['login_url']}")
 
-        return await svc.check(context["key"], timeout)
+        return await svc.check(context["key"], timeout, profile=profile)
     except Exception as error:
         raise error
     finally:

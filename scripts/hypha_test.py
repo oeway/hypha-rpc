@@ -1,8 +1,10 @@
 import asyncio
-from hypha_rpc import connect_to_server
+from hypha_rpc import login, connect_to_server
 
 async def start_server(server_url):
-    server = await connect_to_server({"server_url": server_url})
+    user_info = await login({"server_url" : server_url, "profile": True})
+    print(f"Logged in as: {user_info}")
+    server = await connect_to_server({"server_url": server_url, "token": user_info.token})
 
     def hello(name):
         print("Hello " + name)
