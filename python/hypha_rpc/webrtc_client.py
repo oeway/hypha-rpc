@@ -50,9 +50,9 @@ class WebRTCConnection:
         self._data_channel = data_channel
         self._handle_message = None
         self._logger = logger
-        self._disconnect_handler = None
-        self._handle_connect = lambda x: None
-        self._data_channel.on("open", self._handle_connect)
+        self._handle_disconnected = None
+        self._handle_connected = lambda x: None
+        self._data_channel.on("open", self._handle_connected)
         self._data_channel.on("message", self.handle_message)
         self._data_channel.on("close", self.closed)
         self.manager_id = None
@@ -64,19 +64,19 @@ class WebRTCConnection:
 
     def closed(self):
         """Handle closed event."""
-        if self._disconnect_handler:
-            self._disconnect_handler("closed")
+        if self._handle_disconnected:
+            self._handle_disconnected("closed")
         if self._logger:
             self._logger.info("websocket closed")
         self._data_channel = None
     
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
-        self._disconnect_handler = handler
+        self._handle_disconnected = handler
 
-    def on_connect(self, handler):
+    def on_connected(self, handler):
         """Register a connection open event handler."""
-        self._handle_connect = handler
+        self._handle_connected = handler
         assert inspect.iscoroutinefunction(
             handler
         ), "Connect handler must be a coroutine"

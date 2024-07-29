@@ -26,8 +26,8 @@ class WebsocketRPCConnection {
     this._reconnection_token = reconnection_token;
     this._websocket = null;
     this._handle_message = null;
-    this._handle_connect = null; // Connection open event handler
-    this._disconnect_handler = null; // Disconnection event handler
+    this._handle_connected = null; // Connection open event handler
+    this._handle_disconnected = null; // Disconnection event handler
     this._timeout = timeout;
     this._WebSocketClass = WebSocketClass || WebSocket; // Allow overriding the WebSocket class
     this._closed = false;
@@ -42,12 +42,12 @@ class WebsocketRPCConnection {
     this._handle_message = handler;
   }
 
-  on_connect(handler) {
-    this._handle_connect = handler;
+  on_connected(handler) {
+    this._handle_connected = handler;
   }
 
   on_disconnected(handler) {
-    this._disconnect_handler = handler;
+    this._handle_disconnected = handler;
   }
 
   async _attempt_connection(server_url, attempt_fallback = true) {
@@ -75,8 +75,8 @@ class WebsocketRPCConnection {
           this._attempt_connection_with_query_params(server_url)
             .then(resolve)
             .catch(reject);
-        } else if (this._disconnect_handler) {
-          this._disconnect_handler(event.reason);
+        } else if (this._handle_disconnected) {
+          this._handle_disconnected(event.reason);
         }
       };
     });
@@ -128,6 +128,9 @@ class WebsocketRPCConnection {
           console.log(
             `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
           );
+          if(this.connection_info.announcement){
+            console.log(`${this.connection_info.announcement}`);
+          }
           resolve(this.connection_info);
         } else if (first_message.type == "error") {
           const error = first_message.error || "Unknown error";
@@ -178,8 +181,8 @@ class WebsocketRPCConnection {
 
       this._websocket.onclose = this._handle_close.bind(this);
 
-      if (this._handle_connect) {
-        this._handle_connect(this);
+      if (this._handle_connected) {
+        this._handle_connected(this.connection_info);
       }
       return this.connection_info;
     } catch (error) {
@@ -204,8 +207,8 @@ class WebsocketRPCConnection {
           event.code,
           event.reason,
         );
-        if (this._disconnect_handler) {
-          this._disconnect_handler(event.reason);
+        if (this._handle_disconnected) {
+          this._handle_disconnected(event.reason);
         }
         this._closed = true;
       } else if (this._enable_reconnect) {
@@ -248,8 +251,8 @@ class WebsocketRPCConnection {
         reconnect();
       }
     } else {
-      if (this._disconnect_handler) {
-        this._disconnect_handler(event.reason);
+      if (this._handle_disconnected) {
+        this._handle_disconnected(event.reason);
       }
     }
   }

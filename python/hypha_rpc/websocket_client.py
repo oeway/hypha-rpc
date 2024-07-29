@@ -44,14 +44,13 @@ class WebsocketRPCConnection:
         """Set up instance."""
         self._websocket = None
         self._handle_message = None
-        self._disconnect_handler = None  # Disconnection handler
-        self._handle_connect = None  # Connection open handler
+        self._handle_disconnected = None  # Disconnection handler
+        self._handle_connected = None  # Connection open handler
         assert server_url and client_id
         self._server_url = server_url
         self._client_id = client_id
         self._workspace = workspace
         self._token = token
-        self._handle_reconnect = None
         self._reconnection_token = reconnection_token
         self._timeout = timeout
         self._closed = False
@@ -67,11 +66,11 @@ class WebsocketRPCConnection:
 
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
-        self._disconnect_handler = handler
+        self._handle_disconnected = handler
 
-    def on_connect(self, handler):
+    def on_connected(self, handler):
         """Register a connection open event handler."""
-        self._handle_connect = handler
+        self._handle_connected = handler
         assert inspect.iscoroutinefunction(handler), "reconnect handler must be a coroutine"
 
     async def _attempt_connection(self, server_url, attempt_fallback=True):
@@ -144,6 +143,8 @@ class WebsocketRPCConnection:
                     self._reconnection_token = self.connection_info["reconnection_token"]
                 self.manager_id = self.connection_info.get("manager_id", None)
                 logger.info(f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}")
+                if "announcement" in self.connection_info:
+                    print(self.connection_info["announcement"])
             elif first_message.get("type") == "error":
                 error = first_message["message"]
                 logger.error("Failed to connect: %s", error)
@@ -153,8 +154,8 @@ class WebsocketRPCConnection:
                 raise ConnectionAbortedError("Unexpected message received from the server")
 
             self._listen_task = asyncio.ensure_future(self._listen())
-            if self._handle_connect:
-                await self._handle_connect(self)
+            if self._handle_connected:
+                await self._handle_connected(self.connection_info)
             return self.connection_info
         except Exception as exp:
             logger.error("Failed to connect to %s", self._server_url.split("?")[0])
@@ -198,8 +199,8 @@ class WebsocketRPCConnection:
                 # normal closure, means no need to recover
                 if self._websocket.close_code in [1000]:
                     logger.info("Websocket connection closed (code: %s): %s", self._websocket.close_code, self._websocket.close_reason)
-                    if self._disconnect_handler:
-                        self._disconnect_handler(str(e))
+                    if self._handle_disconnected:
+                        self._handle_disconnected(str(e))
                     # make it as closed
                     self._closed = True
                 elif self._enable_reconnect:
@@ -207,9 +208,9 @@ class WebsocketRPCConnection:
                     retry = 0
                     while retry < MAX_RETRY:
                         try:
-                            logger.warn("Reconnecting to %s (attempt #%s)", self._server_url.split("?")[0], retry)
+                            logger.warning("Reconnecting to %s (attempt #%s)", self._server_url.split("?")[0], retry)
                             await self.open()
-                            logger.warn("Successfully reconnected to %s", self._server_url.split("?")[0])
+                            logger.warning("Successfully reconnected to %s", self._server_url.split("?")[0])
                             break
                         except NotImplementedError:
                             logger.error("Legacy authentication is not supported")
@@ -223,8 +224,8 @@ class WebsocketRPCConnection:
                                 break
                         retry += 1
             else:
-                if self._disconnect_handler:
-                    self._disconnect_handler(str(e))
+                if self._handle_disconnected:
+                    self._handle_disconnected(str(e))
     
     async def disconnect(self, reason=None):
         """Disconnect."""

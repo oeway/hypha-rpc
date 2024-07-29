@@ -210,7 +210,7 @@ export class RPC extends MessageEmitter {
       this._emit_message = connection.emit_message.bind(connection);
       connection.on_message(this._on_message.bind(this));
       this._connection = connection;
-      const updateServices = async () => {
+      const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
           console.log("Connection established, reporting services...");
           for (let service of Object.values(this._services)) {
@@ -223,12 +223,13 @@ export class RPC extends MessageEmitter {
           }
         } else {
           console.log(
-            "Connection established, no manager id to report services",
+            "Connection established", connectionInfo
           );
         }
+        this._fire("connected", connectionInfo);
       };
-      connection.on_connect(updateServices);
-      updateServices();
+      connection.on_connected(onConnected);
+      onConnected();
     } else {
       this._emit_message = function () {
         console.log("No connection to emit message");
@@ -366,7 +367,11 @@ export class RPC extends MessageEmitter {
         Object.assign(main, extra.value);
       }
       this._fire(main["type"], main);
-    } else {
+    }
+    else if (typeof message === "object") {
+      this._fire(message["type"], message);
+    }
+    else {
       throw new Error("Invalid message format");
     }
   }
@@ -377,7 +382,7 @@ export class RPC extends MessageEmitter {
   }
 
   async disconnect() {
-    this._fire("disconnect");
+    this._fire("disconnected");
     await this._connection.disconnect();
   }
 
@@ -768,9 +773,13 @@ export class RPC extends MessageEmitter {
 
   emit(main_message, extra_data) {
     assert(
-      typeof main_message === "object" && main_message.type && main_message.to,
-      "Invalid message, must be an object with at least `type` and `to` fields.",
+      typeof main_message === "object" && main_message.type,
+      "Invalid message, must be an object with a `type` fields.",
     );
+    if(!main_message.to) {
+      this._fire(main_message.type, main_message);
+      return
+    }
     let message_package = msgpack_packb(main_message);
     if (extra_data) {
       const extra = msgpack_packb(extra_data);

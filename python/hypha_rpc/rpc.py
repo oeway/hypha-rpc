@@ -199,7 +199,7 @@ class RPC(MessageEmitter):
             connection.on_message(self._on_message)
             self._connection = connection
 
-            async def update_services(_):
+            async def on_connected(connection_info):
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     for service in self._services.values():
@@ -212,10 +212,11 @@ class RPC(MessageEmitter):
                             }
                         )
                 else:
-                    logger.info("Connection established, no manager id to report services")
+                    logger.info("Connection established: %s", connection_info)
+                self._fire("connected", connection_info)
 
-            connection.on_connect(update_services)
-            self.loop.create_task(update_services(None))
+            connection.on_connected(on_connected)
+            self.loop.create_task(on_connected(None))
         else:
 
             async def _emit_message(_):
@@ -343,6 +344,8 @@ class RPC(MessageEmitter):
             except msgpack.exceptions.OutOfData:
                 pass
             self._fire(main["type"], main)
+        elif isinstance(message, dict):
+            self._fire(message["type"], message)
         else:
             raise Exception(f"Invalid message type: {type(message)}")
 
@@ -353,7 +356,7 @@ class RPC(MessageEmitter):
 
     async def disconnect(self):
         """Disconnect."""
-        self._fire("disconnect")
+        self._fire("disconnected")
         await self._connection.disconnect()
 
     async def get_manager_service(self, timeout=None):
@@ -717,9 +720,12 @@ class RPC(MessageEmitter):
 
     def emit(self, main_message, extra_data=None):
         """Emit a message."""
-        assert isinstance(main_message, dict) and "type" in main_message and "to" in main_message, (
-            "Invalid message, must be an object with at least `type` and `to` fields"
+        assert isinstance(main_message, dict) and "type" in main_message, (
+            "Invalid message, must be an object with a `type` fields"
         )
+        if "to" not in main_message:
+            self._fire(main_message["type"], main_message)
+            return
         message_package = msgpack.packb(main_message)
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)

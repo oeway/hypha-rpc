@@ -6,11 +6,11 @@ class WebRTCConnection {
     this._data_channel = channel;
     this._handle_message = null;
     this._reconnection_token = null;
-    this._disconnect_handler = null;
-    this._handle_connect = () => {};
+    this._handle_disconnected = null;
+    this._handle_connected = () => {};
     this.manager_id = null;
     this._data_channel.onopen = async () => {
-      this._handle_connect && this._handle_connect();
+      this._handle_connected && this._handle_connected({channel: this._data_channel});
     };
     this._data_channel.onmessage = async (event) => {
       let data = event.data;
@@ -21,18 +21,18 @@ class WebRTCConnection {
     };
     const self = this;
     this._data_channel.onclose = function () {
-      if (this._disconnect_handler) this._disconnect_handler("closed");
+      if (this._handle_disconnected) this._handle_disconnected("closed");
       console.log("websocket closed");
       self._data_channel = null;
     };
   }
 
   on_disconnected(handler) {
-    this._disconnect_handler = handler;
+    this._handle_disconnected = handler;
   }
 
-  on_connect(handler) {
-    this._handle_connect = handler;
+  on_connected(handler) {
+    this._handle_connected = handler;
   }
 
   on_message(handler) {

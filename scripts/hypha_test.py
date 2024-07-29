@@ -5,7 +5,7 @@ async def start_server(server_url):
     user_info = await login({"server_url" : server_url, "profile": True})
     print(f"Logged in as: {user_info}")
     server = await connect_to_server({"server_url": server_url, "token": user_info.token})
-
+    server.on("connected", lambda info: print("Connected to server: ", info))
     def hello(name):
         print("Hello " + name)
         return "Hello " + name
