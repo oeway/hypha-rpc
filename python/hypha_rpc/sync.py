@@ -155,6 +155,7 @@ def login(config):
     )
     try:
         svc = server.get_service(service_id)
+        assert svc, f"Service {service_id} not found on the server."
         context = svc.start()
         if callback:
             callback(context)
