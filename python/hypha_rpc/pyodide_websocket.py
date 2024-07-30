@@ -192,7 +192,7 @@ class PyodideWebsocketRPCConnection:
                         print(self.connection_info["announcement"])
                     fut.set_result(self.connection_info)
                 elif first_message.get("type") == "error":
-                    error = first_message.get("message", "Unknown error")
+                    error = first_message["message"]
                     logger.error("Failed to connect: %s", error)
                     fut.set_exception(ConnectionAbortedError(error))
                 else:
@@ -251,7 +251,7 @@ class PyodideWebsocketRPCConnection:
     def _handle_close(self, evt):
         """Handle the close event."""
         if not self._closed and self._websocket and self._websocket.readyState == WebSocket.CLOSED:
-            if evt.code in [1000]:
+            if evt.code in [1000, 1001]:
                 logger.info(f"Websocket connection closed (code: {evt.code}): {evt.reason}")
                 if self._handle_disconnected:
                     self._handle_disconnected(evt.reason)

@@ -133,13 +133,13 @@ class WebsocketRPCConnection {
           }
           resolve(this.connection_info);
         } else if (first_message.type == "error") {
-          const error = first_message.error || "Unknown error";
+          const error = "ConnectionAbortedError: " + first_message.message;
           console.error("Failed to connect, " + error);
           reject(new Error(error));
           return;
         } else {
-          console.error("Unexpected message received from the server:", data);
-          reject(new Error("Unexpected message received from the server"));
+          console.error("ConnectionAbortedError: Unexpected message received from the server:", data);
+          reject(new Error("ConnectionAbortedError: Unexpected message received from the server"));
           return;
         }
       };
@@ -201,11 +201,9 @@ class WebsocketRPCConnection {
       this._websocket &&
       this._websocket.readyState === WebSocket.CLOSED
     ) {
-      if ([1000].includes(event.code)) {
+      if ([1000, 1001].includes(event.code)) {
         console.info(
-          "Websocket connection closed (code: %s): %s",
-          event.code,
-          event.reason,
+          `Websocket connection closed (code: ${event.code}): ${event.reason}`  
         );
         if (this._handle_disconnected) {
           this._handle_disconnected(event.reason);
@@ -305,6 +303,7 @@ export async function login(config) {
   });
   try {
     const svc = await server.get_service(service_id);
+    assert(svc, `Failed to get the login service: ${service_id}`);
     const context = await svc.start();
     if (callback) {
       await callback(context);
@@ -375,17 +374,13 @@ export async function connectToServer(config) {
     return await wm.get_service(query + ":default");
   }
 
-  async function disconnect() {
-    await rpc.disconnect();
-    await connection.disconnect();
-  }
   if (connection_info) {
     wm.config = Object.assign(wm.config, connection_info);
   }
   wm.export = _export;
   wm.getPlugin = getPlugin;
   wm.listPlugins = wm.listServices;
-  wm.disconnect = disconnect;
+  wm.disconnect = rpc.disconnect.bind(rpc);
   wm.registerCodec = rpc.register_codec.bind(rpc);
   wm.emit = rpc.emit;
   wm.on = rpc.on;
@@ -393,7 +388,7 @@ export async function connectToServer(config) {
     rpc.on("force-exit", async (message) => {
       if (message.from === "*/" + connection.manager_id) {
         console.log("Disconnecting from server, reason:", message.reason);
-        await disconnect();
+        await rpc.disconnect();
       }
     });
   }

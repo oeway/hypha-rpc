@@ -150,7 +150,7 @@ class WebsocketRPCConnection:
                 logger.error("Failed to connect: %s", error)
                 raise ConnectionAbortedError(error)
             else:
-                logger.error("Unexpected message received from the server: %s", first_message)
+                logger.error("ConnectionAbortedError: Unexpected message received from the server: %s", first_message)
                 raise ConnectionAbortedError("Unexpected message received from the server")
 
             self._listen_task = asyncio.ensure_future(self._listen())
@@ -197,7 +197,7 @@ class WebsocketRPCConnection:
             # Handle unexpected disconnection or disconnection caused by the server  
             if not self._closed and self._websocket.closed:
                 # normal closure, means no need to recover
-                if self._websocket.close_code in [1000]:
+                if self._websocket.close_code in [1000, 1001]:
                     logger.info("Websocket connection closed (code: %s): %s", self._websocket.close_code, self._websocket.close_reason)
                     if self._handle_disconnected:
                         self._handle_disconnected(str(e))
@@ -266,6 +266,7 @@ async def login(config):
     )
     try:
         svc = await server.get_service(service_id)
+        assert svc, f"Failed to get the login service: {service_id}"
         context = await svc.start()
         if callback:
             await callback(context)
@@ -360,18 +361,13 @@ async def _connect_to_server(config):
         assert client_id.count("/") <= 1, "client_id should not contain more than one '/'"
         return await wm.get_service(client_id + ":default")
 
-    async def disconnect():
-        """Disconnect the rpc and server connection."""
-        await rpc.disconnect()
-        await connection.disconnect()
-
     wm.config = dotdict(wm.config)
     if connection_info:
         wm.config.update(connection_info)
     wm.export = export
     wm.get_app = get_app
     wm.list_plugins = wm.list_services
-    wm.disconnect = disconnect
+    wm.disconnect = rpc.disconnect
     wm.register_codec = rpc.register_codec
     wm.emit = rpc.emit
     wm.on = rpc.on
@@ -379,7 +375,7 @@ async def _connect_to_server(config):
         async def handle_disconnect(message):
             if message["from"] == "*/" + connection.manager_id:
                 logger.info("Disconnecting from server, reason: %s", message.get("reason"))
-                await disconnect()
+                await rpc.disconnect()
         rpc.on("force-exit", handle_disconnect)
 
     if config.get("webrtc", False):
