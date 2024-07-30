@@ -462,7 +462,7 @@ export class RPC extends MessageEmitter {
       svc.id = `${provider}:${service_id}`;
       return svc;
     } catch (e) {
-      console.error("Failed to get remote service: " + service_uri, e);
+      console.warn("Failed to get remote service: " + service_uri, e);
       throw e;
     }
   }

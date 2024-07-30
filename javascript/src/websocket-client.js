@@ -407,7 +407,9 @@ export async function connectToServer(config) {
         [undefined, true, false, "auto"].includes(webrtc),
         "webrtc must be true, false or 'auto'",
       );
-      const svc = await _get_service(query);
+      // pass other arguments to get_service
+      const otherArgs = Array.prototype.slice.call(arguments, 3);
+      const svc = await _get_service(query, ...otherArgs);
       if (webrtc === true || webrtc === "auto") {
         if (svc.id.includes(":") && svc.id.includes("/")) {
           const client = svc.id.split(":")[0];

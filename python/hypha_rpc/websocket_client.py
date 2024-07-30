@@ -320,7 +320,7 @@ async def _connect_to_server(config):
         workspace=config.get("workspace"),
         token=config.get("token"),
         reconnection_token=config.get("reconnection_token"),
-        timeout=config.get("method_timeout", 60),
+        timeout=config.get("method_timeout", 30),
     )
     connection_info = await connection.open()
     assert connection_info, ("Failed to connect to the server, no connection info obtained."
@@ -392,14 +392,15 @@ async def _connect_to_server(config):
     if "get_service" in wm or "getService" in wm:
         _get_service = wm.get_service or wm.getService
 
-        async def get_service(query, webrtc=None, webrtc_config=None):
+        async def get_service(query, webrtc=None, webrtc_config=None, **kwargs):
             assert webrtc in [
                 None,
                 True,
                 False,
                 "auto",
             ], "webrtc must be true, false or 'auto'"
-            svc = await _get_service(query)
+            # pass other kwargs to the original get_service function
+            svc = await _get_service(query, **kwargs)
             if webrtc in [True, "auto"]:
                 from .webrtc_client import AIORTC_AVAILABLE, get_rtc_service
 

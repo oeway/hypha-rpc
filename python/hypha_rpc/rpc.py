@@ -422,8 +422,8 @@ class RPC(MessageEmitter):
             svc["id"] = service_uri
             return svc
         except Exception as exp:
-            logger.exception("Failed to get remote service: %s: %s", service_id, exp)
-            raise
+            logger.warning("Failed to get remote service: %s: %s", service_id, exp)
+            raise exp
 
     def _annotate_service_methods(
         self,
