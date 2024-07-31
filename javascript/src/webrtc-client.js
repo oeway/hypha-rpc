@@ -10,7 +10,8 @@ class WebRTCConnection {
     this._handle_connected = () => {};
     this.manager_id = null;
     this._data_channel.onopen = async () => {
-      this._handle_connected && this._handle_connected({channel: this._data_channel});
+      this._handle_connected &&
+        this._handle_connected({ channel: this._data_channel });
     };
     this._data_channel.onmessage = async (event) => {
       let data = event.data;

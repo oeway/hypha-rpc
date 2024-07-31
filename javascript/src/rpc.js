@@ -222,9 +222,7 @@ export class RPC extends MessageEmitter {
             });
           }
         } else {
-          console.log(
-            "Connection established", connectionInfo
-          );
+          console.log("Connection established", connectionInfo);
         }
         this._fire("connected", connectionInfo);
       };
@@ -367,11 +365,9 @@ export class RPC extends MessageEmitter {
         Object.assign(main, extra.value);
       }
       this._fire(main["type"], main);
-    }
-    else if (typeof message === "object") {
+    } else if (typeof message === "object") {
       this._fire(message["type"], message);
-    }
-    else {
+    } else {
       throw new Error("Invalid message format");
     }
   }
@@ -776,9 +772,9 @@ export class RPC extends MessageEmitter {
       typeof main_message === "object" && main_message.type,
       "Invalid message, must be an object with a `type` fields.",
     );
-    if(!main_message.to) {
+    if (!main_message.to) {
       this._fire(main_message.type, main_message);
-      return
+      return;
     }
     let message_package = msgpack_packb(main_message);
     if (extra_data) {
@@ -1097,7 +1093,18 @@ export class RPC extends MessageEmitter {
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
       ) {
+        // if args.length + 1 is less than the required number of arguments we will pad with undefined
+        // so we make sure the last argument is the context
+        if (args.length + 1 < method.length) {
+          for (let i = args.length; i < method.length - 1; i++) {
+            args.push(undefined);
+          }
+        }
         args.push(data.ctx);
+        assert(
+          args.length === method.length,
+          `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
+        );
       }
       // console.log("Executing method: " + method_name);
       if (data.promise) {

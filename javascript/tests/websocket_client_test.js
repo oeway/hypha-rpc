@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import { login, connectToServer } from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
+import { assert } from "../src/utils.js";
 
 const SERVER_URL = "http://127.0.0.1:9394";
 
@@ -88,6 +89,32 @@ describe("RPC", async () => {
     await api.export(new ImJoyPlugin());
     const dsvc = await api.rpc.get_remote_service("default");
     expect(await dsvc.add2(3)).to.equal(5);
+    await api.disconnect();
+  }).timeout(20000);
+
+  it("should pass context to service function", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-plugin-3",
+    });
+    function multiply_context(a, b, context) {
+      assert(context.user, "context should not be null");
+      /* multiply two numbers */
+      if (b === undefined) {
+        b = a;
+      }
+      return a * b;
+    }
+    await api.register_service({
+      name: "my service",
+      id: "test-service",
+      description: "test service",
+      config: { visibility: "public", require_context: true },
+      multiply_context,
+    });
+    const svc = await api.rpc.get_remote_service("test-service");
+    expect(await svc.multiply_context(2, 3)).to.equal(6);
+    expect(await svc.multiply_context(2)).to.equal(4);
     await api.disconnect();
   }).timeout(20000);
 

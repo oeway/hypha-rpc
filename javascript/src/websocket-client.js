@@ -128,7 +128,7 @@ class WebsocketRPCConnection {
           console.log(
             `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
           );
-          if(this.connection_info.announcement){
+          if (this.connection_info.announcement) {
             console.log(`${this.connection_info.announcement}`);
           }
           resolve(this.connection_info);
@@ -138,8 +138,15 @@ class WebsocketRPCConnection {
           reject(new Error(error));
           return;
         } else {
-          console.error("ConnectionAbortedError: Unexpected message received from the server:", data);
-          reject(new Error("ConnectionAbortedError: Unexpected message received from the server"));
+          console.error(
+            "ConnectionAbortedError: Unexpected message received from the server:",
+            data,
+          );
+          reject(
+            new Error(
+              "ConnectionAbortedError: Unexpected message received from the server",
+            ),
+          );
           return;
         }
       };
@@ -203,7 +210,7 @@ class WebsocketRPCConnection {
     ) {
       if ([1000, 1001].includes(event.code)) {
         console.info(
-          `Websocket connection closed (code: ${event.code}): ${event.reason}`  
+          `Websocket connection closed (code: ${event.code}): ${event.reason}`,
         );
         if (this._handle_disconnected) {
           this._handle_disconnected(event.reason);
@@ -222,7 +229,9 @@ class WebsocketRPCConnection {
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
             await this.open();
-            console.warn(`Successfully reconnected to server ${this._server_url}`); 
+            console.warn(
+              `Successfully reconnected to server ${this._server_url}`,
+            );
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError")) {
               console.warn("Failed to reconnect, connection aborted:", e);
