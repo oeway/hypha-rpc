@@ -1,4 +1,5 @@
 """Test the Hypha RPC module."""
+
 WS_PORT = 3828
 WS_SERVER_URL = f"http://127.0.0.1:{WS_PORT}"
 

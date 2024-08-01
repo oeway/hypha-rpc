@@ -1,4 +1,5 @@
 """Provide utility functions for RPC."""
+
 import ast
 import asyncio
 import contextlib
@@ -100,6 +101,7 @@ class MessageEmitter:
 
     def once(self, event, handler):
         """Register an event handler that should only run once."""
+
         # wrap the handler function,
         # this is needed because setting property
         # won't work for member function of a class instance

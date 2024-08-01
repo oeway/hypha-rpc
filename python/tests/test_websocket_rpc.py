@@ -1,4 +1,5 @@
 """Test the hypha server."""
+
 import asyncio
 from inspect import signature
 
@@ -147,7 +148,9 @@ async def test_connect_to_server(websocket_server):
     """Test connecting to the server."""
     # test workspace is an exception, so it can pass directly
     ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
-    with pytest.raises(Exception, match=r".*User can only connect to a pre-existing workspace.*"):
+    with pytest.raises(
+        Exception, match=r".*User can only connect to a pre-existing workspace.*"
+    ):
         ws = await connect_to_server(
             {"name": "my plugin", "workspace": "test", "server_url": WS_SERVER_URL}
         )

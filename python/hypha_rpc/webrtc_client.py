@@ -1,4 +1,5 @@
 """Provide a webrtc client."""
+
 import asyncio
 import sys
 import inspect
@@ -69,7 +70,7 @@ class WebRTCConnection:
         if self._logger:
             self._logger.info("websocket closed")
         self._data_channel = None
-    
+
     def on_disconnected(self, handler):
         """Register a disconnection event handler."""
         self._handle_disconnected = handler
@@ -211,7 +212,9 @@ async def get_rtc_service(server, service_id, config=None):
             pc.rpc = rpc
 
             async def get_service(name):
-                return await rpc.get_remote_service(config["workspace"] + "/" + config["peer_id"] + ":" + name)
+                return await rpc.get_remote_service(
+                    config["workspace"] + "/" + config["peer_id"] + ":" + name
+                )
 
             async def disconnect():
                 await rpc.disconnect()

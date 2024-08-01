@@ -1,4 +1,5 @@
 """Provide common pytest fixtures."""
+
 import os
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from . import WS_PORT
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
 test_env = os.environ.copy()
+
 
 @pytest.fixture(name="websocket_server", scope="session")
 def websocket_server_fixture():

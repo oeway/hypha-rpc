@@ -233,11 +233,13 @@ class WebsocketRPCConnection {
               `Successfully reconnected to server ${this._server_url}`,
             );
           } catch (e) {
-            if (`${e}`.includes("ConnectionAbortedError")) {
+            if (`${e}`.includes("ConnectionAbortedError:")) {
               console.warn("Failed to reconnect, connection aborted:", e);
               return;
-            } else if (`${e}`.includes("NotImplementedError")) {
-              console.warn("Failed to reconnect, connection aborted:", e);
+            } else if (`${e}`.includes("NotImplementedError:")) {
+              console.error(
+                "It appears that you are trying to connect to a hypha server that is older than 0.20.0, please upgrade the hypha server or use `from imjoy_rpc.hypha import connect_to_sever` instead",
+              );
               return;
             }
             await new Promise((resolve) => setTimeout(resolve, 1000));

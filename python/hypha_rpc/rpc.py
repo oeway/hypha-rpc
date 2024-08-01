@@ -333,7 +333,9 @@ class RPC(MessageEmitter):
             main = json.loads(message)
             self._fire(main["type"], main)
         elif isinstance(message, bytes):
-            unpacker = msgpack.Unpacker(io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2)
+            unpacker = msgpack.Unpacker(
+                io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2
+            )
             main = unpacker.unpack()
             # Add trusted context to the method call
             main["ctx"] = main.copy()
@@ -720,9 +722,9 @@ class RPC(MessageEmitter):
 
     def emit(self, main_message, extra_data=None):
         """Emit a message."""
-        assert isinstance(main_message, dict) and "type" in main_message, (
-            "Invalid message, must be an object with a `type` fields"
-        )
+        assert (
+            isinstance(main_message, dict) and "type" in main_message
+        ), "Invalid message, must be an object with a `type` fields"
         if "to" not in main_message:
             self._fire(main_message["type"], main_message)
             return
@@ -761,23 +763,24 @@ class RPC(MessageEmitter):
                 arguments = arguments + [kwargs]
 
             fut = asyncio.Future()
+
             def resolve(result):
                 if fut.done():
                     return
                 fut.set_result(result)
+
             def reject(error):
                 if fut.done():
                     return
                 fut.set_exception(error)
+
             local_session_id = shortuuid.uuid()
             if local_parent:
                 # Store the children session under the parent
                 local_session_id = local_parent + "." + local_session_id
             store = self._get_session_store(local_session_id, create=True)
             if store is None:
-                reject(
-                    RuntimeError(f"Failed to get session store {local_session_id}")
-                )
+                reject(RuntimeError(f"Failed to get session store {local_session_id}"))
                 return
             store["target_id"] = target_id
             args = self._encode(
@@ -835,7 +838,7 @@ class RPC(MessageEmitter):
                     ):
                         clear_after_called = False
                         break
-                
+
                 extra_data["promise"] = self._encode_promise(
                     resolve=resolve,
                     reject=reject,
@@ -850,9 +853,7 @@ class RPC(MessageEmitter):
                 message_package = message_package + msgpack.packb(extra_data)
             total_size = len(message_package)
             if total_size <= CHUNK_SIZE + 1024:
-                emit_task = asyncio.ensure_future(
-                    self._emit_message(message_package)
-                )
+                emit_task = asyncio.ensure_future(self._emit_message(message_package))
             else:
                 # send chunk by chunk
                 emit_task = asyncio.ensure_future(
@@ -1039,7 +1040,8 @@ class RPC(MessageEmitter):
                     == "protected"
                 ):
                     if local_workspace != remote_workspace and (
-                        remote_workspace != "*" or remote_client_id != self._connection.manager_id
+                        remote_workspace != "*"
+                        or remote_client_id != self._connection.manager_id
                     ):
                         raise PermissionError(
                             f"Permission denied for invoking protected method {method_name}, "

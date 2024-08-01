@@ -1,4 +1,5 @@
 """Provide a pyodide websocket."""
+
 import asyncio
 import inspect
 import sys
@@ -13,6 +14,7 @@ except ImportError:
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("websocket-client")
 logger.setLevel(logging.WARNING)
+
 
 class PyodideSSERPCConnection:
     """Represent a pyodide websocket RPC connection."""

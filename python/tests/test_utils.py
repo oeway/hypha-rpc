@@ -1,4 +1,5 @@
 """Tests for the utils module."""
+
 from functools import partial
 from hypha_rpc.utils import callable_sig, callable_doc, make_signature
 
@@ -87,6 +88,7 @@ def test_make_signature():
 
 def test_callable_sig():
     """Test callable_sig."""
+
     # Function
     def func(a, b, context=None):
         return a + b
@@ -97,6 +99,7 @@ def test_callable_sig():
     # Lambda function
     def lambda_func(a, b, context=None):
         return a + b
+
     assert callable_sig(lambda_func) == "lambda_func(a, b, context=None)"
     assert callable_sig(lambda_func, skip_context=True) == "lambda_func(a, b)"
 
@@ -114,8 +117,14 @@ def test_callable_sig():
     assert callable_sig(callable_instance, skip_context=True) == "CallableClass(a, b)"
 
     # Built-in function
-    assert callable_sig(print) in ["print(*args, **kwargs)", "print(*args, sep=' ', end='\\n', file=None, flush=False)"]
-    assert callable_sig(print, skip_context=True) in ["print(*args, **kwargs)", "print(*args, sep=' ', end='\\n', file=None, flush=False)"]
+    assert callable_sig(print) in [
+        "print(*args, **kwargs)",
+        "print(*args, sep=' ', end='\\n', file=None, flush=False)",
+    ]
+    assert callable_sig(print, skip_context=True) in [
+        "print(*args, **kwargs)",
+        "print(*args, sep=' ', end='\\n', file=None, flush=False)",
+    ]
 
     # Partial function
     partial_func = partial(func, b=3)
@@ -125,6 +134,7 @@ def test_callable_sig():
 
 def test_callable_doc():
     """Test callable_doc."""
+
     # Function with docstring
     def func_with_doc(a, b):
         """This is a function with a docstring."""
