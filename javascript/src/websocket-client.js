@@ -238,7 +238,7 @@ class WebsocketRPCConnection {
               return;
             } else if (`${e}`.includes("NotImplementedError:")) {
               console.error(
-                "It appears that you are trying to connect to a hypha server that is older than 0.20.0, please upgrade the hypha server or use `from imjoy_rpc.hypha import connect_to_sever` instead",
+                `${e}\nIt appears that you are trying to connect to a hypha server that is older than 0.20.0, please upgrade the hypha server or use the websocket client in imjoy-rpc(https://www.npmjs.com/package/imjoy-rpc) instead`,
               );
               return;
             }
