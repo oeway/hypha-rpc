@@ -38,6 +38,8 @@ def update_package_lock_json(version):
         f.seek(0)
         json.dump(data, f, indent=2)
         f.truncate()
+        # add an extra newline at the end
+        f.write("\n")
 
 
 def bump_version(version):
