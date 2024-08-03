@@ -19,10 +19,9 @@ from .utils import (
     MessageEmitter,
     dotdict,
     format_traceback,
-    make_signature,
     callable_doc,
-    callable_sig,
 )
+from .utils.schema import parse_schema_function
 
 CHUNK_SIZE = 1024 * 500
 API_VERSION = "0.3.0"
@@ -76,6 +75,27 @@ def index_object(obj, ids):
         else:
             _obj = getattr(obj, ids[0])
         return index_object(_obj, ids[1:])
+
+
+def _get_schema(obj, prefix=""):
+    """Get schema."""
+    if isinstance(obj, dict):
+        schema = {}
+        for k, v in obj.items():
+            schema[k] = _get_schema(v, prefix + "." + k if prefix else k)
+        return schema
+    elif isinstance(obj, (list, tuple)):
+        return [
+            _get_schema(v, prefix + "." + str(i) if prefix else str(i))
+            for i, v in enumerate(obj)
+        ]
+    elif callable(obj):
+        if hasattr(obj, "__schema__"):
+            return {"type": "function", "function": obj.__schema__}
+        else:
+            return {"type": "function"}
+    else:
+        return obj
 
 
 class RemoteException(Exception):
@@ -179,7 +199,6 @@ class RPC(MessageEmitter):
                     "config": {"require_context": True, "visibility": "public"},
                     "ping": self._ping,
                     "get_service": self.get_local_service,
-                    "register_service": self.register_service,
                     "message_cache": {
                         "create": self._create_message,
                         "append": self._append_message,
@@ -239,12 +258,12 @@ class RPC(MessageEmitter):
 
         self._codecs[config["name"]] = dotdict(config)
 
-    async def _ping(self, msg, context=None):
+    async def _ping(self, msg: str, context=None):
         """Handle ping."""
         assert msg == "ping"
         return "pong"
 
-    async def ping(self, client_id, timeout=1):
+    async def ping(self, client_id: str, timeout=1):
         """Send a ping."""
         method = self._generate_remote_method(
             {
@@ -252,7 +271,6 @@ class RPC(MessageEmitter):
                 "_rmethod": "services.built-in.ping",
                 "_rpromise": True,
                 "_rdoc": "Ping the remote client",
-                "_rsig": "ping(msg)",
             }
         )
         assert (await asyncio.wait_for(method("ping"), timeout)) == "pong"
@@ -373,7 +391,7 @@ class RPC(MessageEmitter):
         """Get all the local services."""
         return self._services
 
-    def get_local_service(self, service_id, context=None):
+    def get_local_service(self, service_id: str, context=None):
         """Get a local service."""
         assert service_id is not None and context is not None
         ws, client_id = context["to"].split("/")
@@ -417,7 +435,6 @@ class RPC(MessageEmitter):
                     "_rmethod": "services.built-in.get_service",
                     "_rpromise": True,
                     "_rdoc": "Get a remote service",
-                    "_rsig": "get_service(service_id)",
                 }
             )
             svc = await asyncio.wait_for(method(service_id), timeout=timeout)
@@ -525,6 +542,15 @@ class RPC(MessageEmitter):
         if bool(api["config"].get("run_in_executor")):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
+        schema_type = api["config"].get("schema_type", "pydantic")
+        if schema_type:
+            schema_mode = api["config"].get("schema_mode", "auto")
+            api = parse_schema_function(
+                api,
+                schema_type=schema_type,
+                schema_mode=schema_mode,
+                skip_context=require_context,
+            )
         assert visibility in ["protected", "public"]
         self._annotate_service_methods(
             api,
@@ -542,24 +568,14 @@ class RPC(MessageEmitter):
         return api
 
     def _extract_service_info(self, service):
-        return {
-            "id": f'{self._client_id}:{service["id"]}',
-            "type": service["type"],
-            "name": service["name"],
-            "description": service.get("description", ""),
-            "config": service["config"],
-            "app_id": self._app_id,
-        }
+        service_info = _get_schema(service)
+        service_info["id"] = f'{self._client_id}:{service["id"]}'
+        service_info["description"] = service.get("description", "")
+        service_info["app_id"] = self._app_id
+        return dotdict(service_info)
 
-    async def register_service(self, api, overwrite=False, notify=True, context=None):
+    async def register_service(self, api, overwrite=False, notify=True):
         """Register a service."""
-        if context is not None:
-            # If this function is called from remote, we need to make sure
-            workspace, client_id = context["to"].split("/")
-            assert client_id == self._client_id
-            assert (
-                workspace == context["ws"]
-            ), "Services can only be registered from the same workspace"
         service = self.add_service(api, overwrite=overwrite)
         service_info = self._extract_service_info(service)
         if notify:
@@ -880,17 +896,11 @@ class RPC(MessageEmitter):
         remote_method.__rpc_object__ = (
             encoded_method.copy()
         )  # pylint: disable=protected-access
-        try:
-            make_signature(
-                remote_method,
-                name=method_id.split(".")[-1],
-                doc=encoded_method.get("_rdoc"),
-                sig=encoded_method.get("_rsig"),
-            )
-        except Exception as exp:
-            logger.warning(
-                "Failed to generate signature for method: %s, error: %s", method_id, exp
-            )
+        remote_method.__name__ = method_id.split(".")[-1]
+        remote_method.__doc__ = encoded_method.get(
+            "_rdoc", f"Remote method: {method_id}"
+        )
+        remote_method.__schema__ = encoded_method.get("_rschema")
         return remote_method
 
     def _log(self, info):
@@ -1195,10 +1205,6 @@ class RPC(MessageEmitter):
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
                 }
-                if annotation.get("require_context"):
-                    b_object["_rsig"] = callable_sig(a_object, skip_context=True)
-                else:
-                    b_object["_rsig"] = callable_sig(a_object)
             else:
                 assert isinstance(session_id, str)
                 if hasattr(a_object, "__name__"):
@@ -1220,9 +1226,10 @@ class RPC(MessageEmitter):
                     store is not None
                 ), f"Failed to create session store {session_id} due to invalid parent"
                 store[object_id] = a_object
-                b_object["_rsig"] = callable_sig(a_object)
 
             b_object["_rdoc"] = callable_doc(a_object)
+            if hasattr(a_object, "__schema__"):
+                b_object["_rschema"] = a_object.__schema__
             return b_object
 
         isarray = isinstance(a_object, list)

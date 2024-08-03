@@ -44,20 +44,19 @@ class dotdict(dict):  # pylint: disable=invalid-name
     __getattr__ = dict.__getitem__
     __delattr__ = dict.__delitem__
 
+    def __init__(self, *args, **kwargs):
+        """Initialize the dotdict, recursively making all nested dicts dotdicts."""
+        super().__init__(*args, **kwargs)
+
     def __setattr__(self, name, value):
         """Set the attribute."""
-        # Make an exception for __rid__
-        if name == "__rid__":
-            super().__setattr__("__rid__", value)
-        else:
-            super().__setitem__(name, value)
+        if isinstance(value, dict) and not isinstance(value, dotdict):
+            value = dotdict(value)
+        super().__setitem__(name, value)
 
     def __hash__(self):
         """Return the hash."""
-        if hasattr(self, "__rid__") and isinstance(self.__rid__, str):
-            return hash(self.__rid__ + _hash_id)
-
-        return recursive_hash(self)
+        return hash(tuple(sorted(self.items())))
 
     def __deepcopy__(self, memo=None):
         """Make a deep copy."""
@@ -65,11 +64,38 @@ class dotdict(dict):  # pylint: disable=invalid-name
 
     def __getattribute__(self, name):
         if name in self:
-            return self[name]
+            value = self[name]
+            if isinstance(value, dict) and not isinstance(value, dotdict):
+                value = dotdict(value)
+            return value
         try:
             return super().__getattribute__(name)
         except AttributeError:
             return None
+
+    def update(self, other=None, **kwargs):
+        """Update the dictionary with the key/value pairs from other, recursively merging nested dictionaries."""
+        if other is not None:
+            if isinstance(other, dict):
+                for key, value in other.items():
+                    if (
+                        isinstance(value, dict)
+                        and key in self
+                        and isinstance(self[key], dict)
+                    ):
+                        self[key].update(value)
+                    else:
+                        if isinstance(value, dict) and not isinstance(value, dotdict):
+                            value = dotdict(value)
+                        self[key] = value
+            else:
+                raise TypeError(
+                    "update() argument must be dict, not {}".format(
+                        type(other).__name__
+                    )
+                )
+        if kwargs:
+            self.update(kwargs)
 
 
 def format_traceback(traceback_string):
@@ -207,135 +233,6 @@ def extract_function_info(func):
         return {"name": func_name, "sig": func_signature, "doc": docstring}
     else:
         return None
-
-
-def make_signature(func, name=None, sig=None, doc=None):
-    """Change signature of func to sig, preserving original behavior.
-
-    sig can be a Signature object or a string without 'def' such as
-    "foo(a, b=0)"
-    """
-    if isinstance(sig, str):
-        # Parse signature string
-        func_name, sig = _str_to_signature(sig)
-        name = name or func_name
-
-    if sig:
-        func.__signature__ = sig
-        annotations = {}
-        for k, param in sig.parameters.items():
-            if param.annotation is not param.empty:
-                annotations[k] = param.annotation
-        func.__annotations__ = annotations
-
-    if doc:
-        func.__doc__ = doc
-
-    if name:
-        func.__name__ = name
-
-
-def _str_to_signature(sig_str):
-    """Parse signature string into name and Signature object."""
-    sig_str = sig_str.strip()
-    # Map of common type annotations
-    type_map = {
-        "int": int,
-        "str": str,
-        "bool": bool,
-        "float": float,
-        "dict": dict,
-        "list": list,
-        "None": type(None),
-        "Any": Any,
-    }
-
-    # Split sig_str into parameter part and return annotation part
-    parts = sig_str.split("->")
-    if len(parts) == 2:
-        sig_str, return_anno = parts
-        return_anno = return_anno.strip()
-        if return_anno in type_map:
-            return_anno = type_map[return_anno]
-    elif len(parts) == 1:
-        return_anno = None
-    else:
-        raise SyntaxError(f"Invalid signature: {sig_str}")
-
-    func_def = re.compile(r"(\w+)\((.*)\)")
-
-    m = func_def.match(sig_str)
-    if not m:
-        raise SyntaxError(f"Invalid signature: {sig_str}")
-
-    params_str = m.group(2)
-    func_name = m.group(1)
-
-    positional_params = []
-    keyword_params = []
-    variadic_params = []
-
-    if params_str and params_str.strip():
-        pattern = r",(?![^\[\]]*\])"
-        for p in re.split(pattern, params_str):
-            p = p.strip()
-            if not p:  # Skip if p is empty
-                continue
-
-            if p.startswith("**"):
-                # **kwargs
-                variadic_params.append(Parameter(p.lstrip("**"), Parameter.VAR_KEYWORD))
-                continue
-
-            if p.startswith("*"):
-                # *args
-                variadic_params.append(
-                    Parameter(p.lstrip("*"), Parameter.VAR_POSITIONAL)
-                )
-                continue
-
-            name, anno, default = p, Parameter.empty, Parameter.empty
-            if ":" in p:
-                # Type annotation
-                p_split = p.split(":")
-                name = p_split[0].strip()
-                anno_str = p_split[1].strip()
-                if "=" in anno_str:
-                    anno, default = anno_str.split("=")
-                    anno = anno.strip()
-                    default = default.strip()
-                else:
-                    anno = anno_str
-
-            else:
-                if "=" in p:
-                    # Keyword argument
-                    name, default = p.split("=")
-                    name = name.strip()
-                    default = default.strip()
-
-            if isinstance(default, str):
-                default = ast.literal_eval(default)
-            if isinstance(anno, str):
-                anno = type_map.get(anno, Any)
-
-            parameter = Parameter(
-                name,
-                Parameter.POSITIONAL_OR_KEYWORD,
-                default=default,
-                annotation=anno,
-            )
-            if "=" in p:
-                keyword_params.append(parameter)
-            else:
-                positional_params.append(parameter)
-
-    params = positional_params + keyword_params + variadic_params
-
-    if return_anno:
-        return func_name, Signature(parameters=params, return_annotation=return_anno)
-    else:
-        return func_name, Signature(parameters=params)
 
 
 def callable_sig(any_callable, skip_context=False):

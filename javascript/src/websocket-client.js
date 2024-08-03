@@ -395,6 +395,10 @@ export async function connectToServer(config) {
   wm.registerCodec = rpc.register_codec.bind(rpc);
   wm.emit = rpc.emit;
   wm.on = rpc.on;
+  wm.registerService = rpc.register_service.bind(rpc);
+  wm.register_service = wm.registerService;
+  wm.unregisterService = rpc.unregister_service.bind(rpc);
+  wm.unregister_service = wm.unregisterService;
   if (connection.manager_id) {
     rpc.on("force-exit", async (message) => {
       if (message.from === "*/" + connection.manager_id) {

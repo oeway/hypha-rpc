@@ -8,6 +8,7 @@ from .sync import register_rtc_service as register_rtc_service_sync
 from .webrtc_client import get_rtc_service, register_rtc_service
 from .websocket_client import connect_to_server, login, setup_local_client
 
+
 __all__ = [
     "RPC",
     "login",

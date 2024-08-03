@@ -416,6 +416,7 @@ async def _connect_to_server(config):
     wm.config = dotdict(wm.config)
     if connection_info:
         wm.config.update(connection_info)
+
     wm.export = export
     wm.get_app = get_app
     wm.list_plugins = wm.list_services
@@ -423,6 +424,10 @@ async def _connect_to_server(config):
     wm.register_codec = rpc.register_codec
     wm.emit = rpc.emit
     wm.on = rpc.on
+    wm.register_service = rpc.register_service
+    wm.registerService = wm.register_service
+    wm.unregister_service = rpc.unregister_service
+    wm.unregisterService = wm.unregister_service
     if connection.manager_id:
 
         async def handle_disconnect(message):

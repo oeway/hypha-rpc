@@ -18,6 +18,7 @@ describe("RPC", async () => {
       server_url: SERVER_URL,
       client_id: "test-plugin-1",
     });
+    expect(api.config.hypha_version).to.be.a("string");
     expect(typeof api.log).to.equal("function");
     await api.disconnect();
   }).timeout(20000);
@@ -138,7 +139,7 @@ describe("RPC", async () => {
       server_url: SERVER_URL,
       client_id: "test-plugin-1",
     });
-    await server.register_service(plugin_interface);
+    await server.registerService(plugin_interface);
     const api = await server.rpc.get_remote_service("default");
 
     const msg = "this is an messge.";

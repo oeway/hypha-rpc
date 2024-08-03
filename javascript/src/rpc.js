@@ -33,6 +33,28 @@ function indexObject(obj, is) {
   else if (is.length === 0) return obj;
   else return indexObject(obj[is[0]], is.slice(1));
 }
+
+function _get_schema(obj, prefix = "") {
+  if (obj instanceof Object) {
+    let schema = {};
+    for (let k in obj) {
+      schema[k] = _get_schema(obj[k], prefix + "." + k);
+    }
+    return schema;
+  }
+  if (obj instanceof Array) {
+    return obj.map((v, i) => _get_schema(v, prefix + "." + i));
+  }
+  if (typeof obj === "function") {
+    if (obj.__schema__) {
+      return { type: "function", function: obj.__schema__ };
+    } else {
+      return { type: "function" };
+    }
+  }
+  return obj;
+}
+
 function getFunctionInfo(func) {
   const funcString = func.toString();
 
@@ -191,7 +213,6 @@ export class RPC extends MessageEmitter {
         config: { require_context: true, visibility: "public" },
         ping: this._ping.bind(this),
         get_service: this.get_local_service.bind(this),
-        register_service: this.register_service.bind(this),
         message_cache: {
           create: this._create_message.bind(this),
           append: this._append_message.bind(this),
@@ -264,7 +285,6 @@ export class RPC extends MessageEmitter {
       _rmethod: "services.built-in.ping",
       _rpromise: true,
       _rdoc: "Ping a remote client",
-      _rsig: "ping(msg)",
     });
     assert((await method("ping", timeout)) == "pong");
   }
@@ -448,7 +468,6 @@ export class RPC extends MessageEmitter {
         _rmethod: "services.built-in.get_service",
         _rpromise: true,
         _rdoc: "Get a remote service",
-        _rsig: "get_service(service_id)",
       });
       const svc = await waitFor(
         method(service_id),
@@ -576,27 +595,15 @@ export class RPC extends MessageEmitter {
   }
 
   _extract_service_info(service) {
-    return {
-      id: `${this._client_id}:${service["id"]}`,
-      type: service["type"],
-      name: service["name"],
-      description: service["description"] || "",
-      config: service["config"],
-      app_id: this._app_id,
-    };
+    const serviceInfo = _get_schema(service);
+    (serviceInfo.id = `${this._client_id}:${service["id"]}`),
+      (serviceInfo.description = service["description"] || ""),
+      (serviceInfo.app_id = this._app_id);
+    return serviceInfo;
   }
 
-  async register_service(api, overwrite, notify, context) {
+  async register_service(api, overwrite, notify) {
     if (notify === undefined) notify = true;
-    if (context) {
-      // If this function is called from remote, we need to make sure
-      const [workspace, client_id] = context["to"].split("/");
-      assert(client_id === this._client_id);
-      assert(
-        workspace === context["ws"],
-        "Services can only be registered from the same workspace",
-      );
-    }
     const service = this.add_service(api, overwrite);
     const serviceInfo = this._extract_service_info(service);
     if (notify) {
@@ -938,8 +945,9 @@ export class RPC extends MessageEmitter {
     remote_method.__rpc_object__ = encoded_method;
     const parts = method_id.split(".");
     remote_method.__name__ = parts[parts.length - 1];
-    remote_method.__doc__ = encoded_method._rdoc;
-    remote_method.__sig__ = encoded_method._rsig;
+    remote_method.__doc__ =
+      encoded_method._rdoc || `Remote method: ${method_id}`;
+    remote_method.__schema__ = encoded_method._rschema;
     return remote_method;
   }
 
@@ -1245,21 +1253,17 @@ export class RPC extends MessageEmitter {
         store[object_id] = aObject;
       }
       bObject._rdoc = aObject.__doc__;
-      bObject._rsig = aObject.__sig__;
-      if (!bObject._rdoc || !bObject._rsig) {
+      if (!bObject._rdoc) {
         try {
           const funcInfo = getFunctionInfo(aObject);
           if (funcInfo && !bObject._rdoc) {
             bObject._rdoc = `${funcInfo.doc}`;
           }
-          if (funcInfo && !bObject._rsig) {
-            bObject._rsig = `${funcInfo.name}(${funcInfo.sig})`;
-          }
         } catch (e) {
           console.error("Failed to extract function docstring:", aObject);
         }
       }
-
+      bObject._rschema = aObject.__schema__;
       return bObject;
     }
     const isarray = Array.isArray(aObject);

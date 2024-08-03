@@ -1,4 +1,7 @@
 *.pyc
+*/__pycache__
+*/.pytest_cache
+*/.tox
 *.egg-info
 */dist
 .ipynb_checkpoints

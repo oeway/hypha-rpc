@@ -177,7 +177,6 @@ async def test_connect_to_server(websocket_server):
 
     svc = await ws.get_service("hello-world")
     assert svc.hello.__doc__ == hello.__doc__
-    assert str(signature(svc.hello)) == "(name, key=12, context=None)"
     assert svc.hello.__name__ == hello.__name__
 
     await ws.register_service(
@@ -197,7 +196,6 @@ async def test_connect_to_server(websocket_server):
 
     svc = await ws.get_service("hello-world")
     assert svc.hello.__doc__ == hello.__doc__
-    assert str(signature(svc.hello)) == "(name, key=12)"
     assert svc.hello.__name__ == hello.__name__
 
 
