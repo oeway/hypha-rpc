@@ -120,7 +120,7 @@ def schema_function_native(
 
 def dict_to_pydantic_model(
     name: str, dict_def: Dict[str, Any], doc: str = None
-) -> BaseModel:
+):
     fields = {}
 
     for field_name, value in dict_def.items():
