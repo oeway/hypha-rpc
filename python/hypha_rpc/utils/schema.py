@@ -388,16 +388,21 @@ def parse_schema_function(
         else:
             schema_type = "native"
     if callable(obj):
-        if schema_type == "pydantic":
-            return schema_function_pydantic(
-                obj, name=name, schema_mode=schema_mode, skip_context=skip_context
-            )
-        elif schema_type == "native":
-            return schema_function_native(
-                obj, name=name, schema_mode=schema_mode, skip_context=skip_context
-            )
-        else:
-            raise ValueError(f"Invalid schema type: {schema_type}")
+        try:
+            if schema_type == "pydantic":
+                return schema_function_pydantic(
+                    obj, name=name, schema_mode=schema_mode, skip_context=skip_context
+                )
+            elif schema_type == "native":
+                return schema_function_native(
+                    obj, name=name, schema_mode=schema_mode, skip_context=skip_context
+                )
+            else:
+                raise Exception(f"Invalid schema type: {schema_type}")
+        except ValueError as e:
+            print(f"Error parsing schema for {name}: {e}")
+            return obj
+        
     elif isinstance(obj, dict):
         return {
             k: parse_schema_function(

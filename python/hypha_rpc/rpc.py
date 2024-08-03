@@ -542,7 +542,7 @@ class RPC(MessageEmitter):
         if bool(api["config"].get("run_in_executor")):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
-        schema_type = api["config"].get("schema_type", "pydantic")
+        schema_type = api["config"].get("schema_type", "auto")
         if schema_type:
             schema_mode = api["config"].get("schema_mode", "auto")
             api = parse_schema_function(
