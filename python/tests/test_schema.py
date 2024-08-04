@@ -6,9 +6,60 @@ from hypha_rpc import (
     connect_to_server,
 )
 from pydantic import BaseModel, Field
-from python.hypha_rpc.utils.schema import schema_function
+from hypha_rpc.utils.schema import schema_function, Field as NativeField
 
 from . import WS_SERVER_URL
+
+
+@schema_function(schema_type="native:strict")
+def say_hello_native(
+    info: dict = NativeField(
+        ..., description="Information of the person to say hello to"
+    ),
+    say_age: bool = Field(False, description="whether the age should be exposed"),
+) -> str:
+    """Say hello to a person."""
+    assert isinstance(info, dict)
+    assert isinstance(say_age, bool)
+    if info["age"] and say_age:
+        return f"hello {info['name']}, you are {info['age']} years old"
+    else:
+        return f"hello {info['name']}"
+
+
+@pytest.mark.asyncio
+async def test_schema_function_native():
+    # If we pass a dictionary, it should do model_validate with the pydantic type
+    assert say_hello_native({"name": "Alice", "age": 30}) == "hello Alice"
+    assert say_hello_native(dict(name="Alice", age=30)) == "hello Alice"
+    assert (
+        say_hello_native(dict(name="Alice", age=30), say_age=True)
+        == "hello Alice, you are 30 years old"
+    )
+
+
+class ContactManagerNative:
+    @schema_function(skip_self=True, schema_type="native:auto")
+    def exchange_contact(
+        self,
+        name: str,
+        with_age: bool = Field(False, description="whether the age should be exposed"),
+    ) -> dict:
+        """Exchange contact information."""
+        assert isinstance(with_age, bool)
+        return dict(name=name, age=30 if with_age else -1)
+
+
+@pytest.mark.asyncio
+async def test_schema_function_on_class_method_native():
+    """Test using @schema_function on a class method."""
+    manager = ContactManagerNative()
+
+    exchange_contact_with_schema = manager.exchange_contact
+
+    # If we don't pass any parameter
+    # Instead of the Field which was set to the default value, it should use the default value of the Field
+    assert exchange_contact_with_schema("Alice") == dict(name="Alice", age=-1)
 
 
 class UserInfo(BaseModel):
@@ -18,12 +69,59 @@ class UserInfo(BaseModel):
     age: int = Field(..., description="age of the user")
 
 
-@schema_function
+@schema_function(schema_type="pydantic:strict")
 def say_hello(
-    info: UserInfo = Field(..., description="Information of the person to say hello to")
+    info: UserInfo = Field(
+        ..., description="Information of the person to say hello to"
+    ),
+    say_age: bool = Field(False, description="whether the age should be exposed"),
 ) -> str:
     """Say hello to a person."""
-    return f"hello {info.name}, you are {info.age} years old"
+    assert isinstance(info, UserInfo)
+    assert isinstance(say_age, bool)
+    if info.age and say_age:
+        return f"hello {info.name}, you are {info.age} years old"
+    else:
+        return f"hello {info.name}"
+
+
+@pytest.mark.asyncio
+async def test_schema_function():
+    # If we pass a dictionary, it should do model_validate with the pydantic type
+    assert say_hello({"name": "Alice", "age": 30}) == "hello Alice"
+    assert say_hello(UserInfo(name="Alice", age=30)) == "hello Alice"
+    assert (
+        say_hello(UserInfo(name="Alice", age=30), say_age=True)
+        == "hello Alice, you are 30 years old"
+    )
+
+
+class ContactManager:
+
+    @schema_function(skip_self=True, schema_type="pydantic:auto")
+    def exchange_contact(
+        self,
+        name: str,
+        with_age: bool = Field(False, description="whether the age should be exposed"),
+    ) -> dict:
+        """Exchange contact information."""
+        assert isinstance(with_age, bool)
+        return UserInfo(name=name, age=30 if with_age else -1).model_dump()
+
+
+@pytest.mark.asyncio
+async def test_schema_function_on_class_method():
+    """Test using @schema_function on a class method."""
+    manager = ContactManager()
+
+    exchange_contact_with_schema = manager.exchange_contact
+
+    # If we don't pass any parameter
+    # Instead of the Field which was set to the default value, it should use the default value of the Field
+    assert (
+        exchange_contact_with_schema("Alice")
+        == UserInfo(name="Alice", age=-1).model_dump()
+    )
 
 
 def exchange_contact(
@@ -41,7 +139,7 @@ async def test_schema_function(websocket_server):
     """Test extract schema from functions."""
     exchange_contact_with_schema = schema_function(exchange_contact)
 
-    expected = "hello John, you are 20 years old"
+    expected = "hello John"
     assert say_hello({"name": "John", "age": 20}) == expected
     assert say_hello(UserInfo(name="John", age=20)) == expected
 
@@ -88,10 +186,8 @@ async def test_schema_function(websocket_server):
                 }
             },
             "properties": {
-                "info": {
-                    "allOf": [{"$ref": "#/$defs/UserInfo"}],
-                    "description": "Information of the person to say hello to",
-                }
+                "info": {"$ref": "#/$defs/UserInfo"},
+                "say_age": {"default": False, "type": "boolean"},
             },
             "required": ["info"],
             "type": "object",
@@ -144,29 +240,16 @@ async def test_schema_service(websocket_server):
                 "UserInfo": {
                     "description": "User information.",
                     "properties": {
-                        "name": {
-                            "description": "name of the user",
-                            "type": "string",
-                        },
-                        "age": {
-                            "description": "age of the user",
-                            "type": "integer",
-                        },
+                        "name": {"description": "name of the user", "type": "string"},
+                        "age": {"description": "age of the user", "type": "integer"},
                     },
                     "required": ["name", "age"],
                     "type": "object",
                 }
             },
             "properties": {
-                "info": {
-                    "allOf": [{"$ref": "#/$defs/UserInfo"}],
-                    "description": "Information of the person to say hello to",
-                },
-                "with_age": {
-                    "default": True,
-                    "description": "whether the age should be exposed",
-                    "type": "boolean",
-                },
+                "info": {"$ref": "#/$defs/UserInfo"},
+                "with_age": {"default": True, "type": "boolean"},
             },
             "required": ["info"],
             "type": "object",

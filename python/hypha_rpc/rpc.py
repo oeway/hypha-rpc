@@ -275,7 +275,9 @@ class RPC(MessageEmitter):
         )
         assert (await asyncio.wait_for(method("ping"), timeout)) == "pong"
 
-    def _create_message(self, key, heartbeat=False, overwrite=False, context=None):
+    def _create_message(
+        self, key: str, heartbeat: bool = False, overwrite: bool = False, context=None
+    ):
         """Create a message."""
         if heartbeat:
             if key not in self._object_store:
@@ -293,7 +295,9 @@ class RPC(MessageEmitter):
 
         self._object_store["message_cache"][key] = b""
 
-    def _append_message(self, key, data, heartbeat=False, context=None):
+    def _append_message(
+        self, key: str, data: bytes, heartbeat: bool = False, context=None
+    ):
         """Append a message."""
         if heartbeat:
             if key not in self._object_store:
@@ -305,14 +309,14 @@ class RPC(MessageEmitter):
         assert isinstance(data, bytes)
         cache[key] += data
 
-    def _remove_message(self, key, context=None):
+    def _remove_message(self, key: str, context=None):
         """Remove a message."""
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         del cache[key]
 
-    def _process_message(self, key, heartbeat=False, context=None):
+    def _process_message(self, key: str, heartbeat: bool = False, context=None):
         """Process a message."""
         if heartbeat:
             if key not in self._object_store:
@@ -544,11 +548,9 @@ class RPC(MessageEmitter):
         visibility = api["config"].get("visibility", "protected")
         schema_type = api["config"].get("schema_type", "auto")
         if schema_type:
-            schema_mode = api["config"].get("schema_mode", "auto")
             api = parse_schema_function(
                 api,
                 schema_type=schema_type,
-                schema_mode=schema_mode,
                 skip_context=require_context,
             )
         assert visibility in ["protected", "public"]

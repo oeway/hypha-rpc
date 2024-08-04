@@ -1,11 +1,12 @@
 import inspect
-from typing import get_origin, get_args, Union
 from functools import wraps, partial
 from inspect import Signature, Parameter, signature
 from typing import Any, Dict
 
+
 try:
-    from pydantic import create_model, Field, BaseModel
+    from pydantic import create_model, BaseModel
+    from pydantic import Field as PydanticField
     from pydantic.fields import FieldInfo
     from pydantic_core import PydanticUndefined
 
@@ -55,8 +56,22 @@ def extract_parameter_schema(param):
     return param_schema
 
 
+def fill_missing_args_and_kwargs(original_func_sig, args, kwargs):
+    bound_args = original_func_sig.bind_partial(*args, **kwargs)
+    for name, param in original_func_sig.parameters.items():
+        if name not in kwargs and name not in bound_args.arguments:
+            if isinstance(param.default, Field) or (
+                PYDANTIC_AVAILABLE and isinstance(param.default, FieldInfo)
+            ):
+                bound_args.arguments[name] = param.default.default
+            else:
+                bound_args.arguments[name] = param.default
+    bound_args.apply_defaults()
+    return bound_args.args, bound_args.kwargs
+
+
 def schema_function_native(
-    original_func, name=None, schema_mode="strict", skip_context=False
+    original_func, name=None, mode="strict", skip_context=False, skip_self=False
 ):
     """Decorator to add input/output schema to a function."""
     assert callable(original_func)
@@ -74,7 +89,7 @@ def schema_function_native(
         original_func_sig = signature(original_func)
         skip_args = set()
 
-    if schema_mode == "strict":
+    if mode == "strict":
         assert (
             func_name != "<lambda>"
         ), f"Lambda functions are not supported (name: {name})"
@@ -87,6 +102,8 @@ def schema_function_native(
 
     if skip_context and parameters:
         parameters = parameters[:-1]  # Skip the last parameter if skip_context is True
+    if skip_self and parameters:
+        parameters = parameters[1:]
 
     func_schema = {
         "type": "object",
@@ -102,13 +119,19 @@ def schema_function_native(
 
         @wraps(original_func)
         async def wrapper(*args, **kwargs):
-            return await original_func(*args, **kwargs)
+            new_args, new_kwargs = fill_missing_args_and_kwargs(
+                original_func_sig, args, kwargs
+            )
+            return await original_func(*new_args, **new_kwargs)
 
     else:
 
         @wraps(original_func)
         def wrapper(*args, **kwargs):
-            return original_func(*args, **kwargs)
+            new_args, new_kwargs = fill_missing_args_and_kwargs(
+                original_func_sig, args, kwargs
+            )
+            return original_func(*new_args, **new_kwargs)
 
     wrapper.__schema__ = {
         "name": func_name,
@@ -118,15 +141,12 @@ def schema_function_native(
     return wrapper
 
 
-def dict_to_pydantic_model(
-    name: str, dict_def: Dict[str, Any], doc: str = None
-):
+def dict_to_pydantic_model(name: str, dict_def: Dict[str, Any], doc: str = None):
     fields = {}
 
     for field_name, value in dict_def.items():
         if isinstance(value, tuple):
-            if len(value) == 2 and isinstance(value[1], Field):
-                # Handle the case where value is a tuple (type, Field(...))
+            if len(value) == 2 and isinstance(value[1], FieldInfo):
                 field_type, field_info = value
                 fields[field_name] = (
                     field_type,
@@ -148,7 +168,12 @@ def dict_to_pydantic_model(
 
 
 def extract_tool_schemas(
-    func, func_name=None, schema_mode="strict", skip_context=False, skip_args=set()
+    func,
+    func_name=None,
+    mode="strict",
+    skip_context=False,
+    skip_self=False,
+    skip_args=set(),
 ):
     assert PYDANTIC_AVAILABLE, "Pydantic is not available"
     assert callable(func), "Tool function must be callable functions"
@@ -159,10 +184,12 @@ def extract_tool_schemas(
 
     if skip_context and names:
         names = names[:-1]
+    if skip_self and names:
+        names = names[1:]
 
     for name in names:
         assert (
-            sig.parameters[name].annotation != inspect._empty or schema_mode == "auto"
+            sig.parameters[name].annotation != inspect._empty or mode == "auto"
         ), f"Argument `{name}` for `{func_name}` must have type annotation"
 
     types = [
@@ -177,9 +204,9 @@ def extract_tool_schemas(
 
     for name in names:
         if sig.parameters[name].default == inspect._empty:
-            defaults.append(Field(..., description=name))
+            defaults.append(PydanticField(..., description=name))
         else:
-            if schema_mode == "strict":
+            if mode == "strict":
                 assert isinstance(
                     sig.parameters[name].default, FieldInfo
                 ), "Argument default must be a FieldInfo object with description"
@@ -189,7 +216,7 @@ def extract_tool_schemas(
             default_value = (
                 sig.parameters[name].default
                 if isinstance(sig.parameters[name].default, FieldInfo)
-                else Field(default=sig.parameters[name].default)
+                else PydanticField(default=sig.parameters[name].default)
             )
             # check if the actual value is json serializable
             if default_value.default != PydanticUndefined and not isinstance(
@@ -212,7 +239,12 @@ def extract_tool_schemas(
 
 
 def schema_function_pydantic(
-    original_func, input_model=None, name=None, schema_mode="strict", skip_context=False
+    original_func,
+    input_model=None,
+    name=None,
+    mode="strict",
+    skip_context=False,
+    skip_self=False,
 ):
     """Decorator to add input/output schema to a function."""
     assert PYDANTIC_AVAILABLE, "Pydantic is not available"
@@ -229,7 +261,7 @@ def schema_function_pydantic(
         original_func_sig = signature(original_func)
         skip_args = set()
 
-    if schema_mode == "strict":
+    if mode == "strict":
         assert func_name != "<lambda>", "Lambda functions are not supported"
         assert (
             original_func.__doc__ is not None
@@ -244,55 +276,34 @@ def schema_function_pydantic(
                         name,
                         kind=Parameter.POSITIONAL_OR_KEYWORD,
                         annotation=field.annotation,
-                        default=field,
+                        default=(
+                            field.default
+                            if field.default is not PydanticUndefined
+                            else ...
+                        ),
                     )
                 )
         func_sig = Signature(parameters)
     else:
         input_model, _ = extract_tool_schemas(
             original_func.func if isinstance(original_func, partial) else original_func,
-            schema_mode=schema_mode,
+            mode=mode,
             skip_context=skip_context,
+            skip_self=skip_self,
             skip_args=skip_args,
         )
         func_sig = original_func_sig
 
     assert input_model is not None
 
-    defaults = {}
-    default_factories = {}
-    required = []
-    for name, field in input_model.model_fields.items():
-        if field.default != PydanticUndefined or field.default_factory is not None:
-            if field.default_factory is not None:
-                default_factories[name] = field.default_factory
-            else:
-                defaults[name] = field.default
-        else:
-            if get_origin(field.annotation) is Union and type(None) in get_args(
-                field.annotation
-            ):
-                defaults[name] = None
-            else:
-                required.append(name)
-
     def process_arguments(args, kwargs):
-        # Create a map of parameter names to values from args
-        arg_map = {name: value for name, value in zip(func_sig.parameters.keys(), args)}
-        for req in required:
-            assert (
-                req in kwargs or req in arg_map
-            ), f"Function call `{func_name}` missing required argument `{req}`"
-        for k in default_factories:
-            if k not in kwargs:
-                kwargs[k] = default_factories[k]()
-        for k in defaults:
-            if k in kwargs and isinstance(kwargs[k], FieldInfo):
-                kwargs[k] = defaults[k]
+        new_args, new_kwargs = fill_missing_args_and_kwargs(
+            original_func_sig, args, kwargs
+        )
 
         # Convert dictionary inputs to Pydantic model if needed
-        new_args = []
-        for arg, param in zip(args, func_sig.parameters.values()):
+        final_args = []
+        for arg, param in zip(new_args, func_sig.parameters.values()):
             if (
                 isinstance(param.default, FieldInfo)
                 and isinstance(param.annotation, type)
@@ -300,10 +311,10 @@ def schema_function_pydantic(
             ):
                 if isinstance(arg, dict):
                     arg = param.annotation(**arg)
-            new_args.append(arg)
+            final_args.append(arg)
 
-        new_kwargs = {}
-        for k, v in kwargs.items():
+        final_kwargs = {}
+        for k, v in new_kwargs.items():
             param = func_sig.parameters[k]
             if (
                 isinstance(param.default, FieldInfo)
@@ -312,10 +323,9 @@ def schema_function_pydantic(
             ):
                 if isinstance(v, dict):
                     v = param.annotation(**v)
-            new_kwargs[k] = v
-        return new_args, new_kwargs
+            final_kwargs[k] = v
+        return final_args, final_kwargs
 
-    # check if original_func is a coroutine
     if inspect.iscoroutinefunction(original_func):
 
         @wraps(original_func)
@@ -346,35 +356,55 @@ def schema_function_pydantic(
     return wrapper
 
 
-def schema_function(func, name=None, schema_type="auto", skip_context=False):
+def schema_function(
+    func=None, name=None, schema_type="auto", skip_context=False, skip_self=False
+):
     """Decorator to add input/output schema to a function."""
+    if ":" in schema_type:
+        schema_type, mode = schema_type.split(":")
+    else:
+        mode = "strict"
+
     assert schema_type in [
         "pydantic",
         "native",
         "auto",
     ], "Schema type must be 'pydantic' or 'native'"
+
     if schema_type == "auto":
         if PYDANTIC_AVAILABLE:
             schema_type = "pydantic"
-            schema_mode = "auto"
+            mode = mode or "auto"
         else:
             schema_type = "native"
+    if func is None:
+        return partial(
+            schema_function,
+            name=name,
+            schema_type=schema_type + ":" + mode,
+            skip_context=skip_context,
+            skip_self=skip_self,
+        )
+
     if schema_type == "pydantic":
         return schema_function_pydantic(
-            func, name=name, schema_mode=schema_mode, skip_context=skip_context
+            func, name=name, mode=mode, skip_context=skip_context, skip_self=skip_self
         )
     elif schema_type == "native":
         return schema_function_native(
-            func, name=name, schema_mode=schema_mode, skip_context=skip_context
+            func, name=name, mode=mode, skip_context=skip_context, skip_self=skip_self
         )
     else:
         raise ValueError(f"Invalid schema type: {schema_type}")
 
 
-def parse_schema_function(
-    obj, name=None, schema_type="native", schema_mode="strict", skip_context=False
-):
+def parse_schema_function(obj, name=None, schema_type="native", skip_context=False):
     """Recursively convert callable with schema_function based on schema type."""
+    if ":" in schema_type:
+        schema_type, mode = schema_type.split(":")
+    else:
+        mode = "strict"
+
     assert schema_type in [
         "pydantic",
         "native",
@@ -384,32 +414,31 @@ def parse_schema_function(
     if schema_type == "auto":
         if PYDANTIC_AVAILABLE:
             schema_type = "pydantic"
-            schema_mode = "auto"
+            mode = "auto"
         else:
             schema_type = "native"
     if callable(obj):
         try:
             if schema_type == "pydantic":
                 return schema_function_pydantic(
-                    obj, name=name, schema_mode=schema_mode, skip_context=skip_context
+                    obj, name=name, mode=mode, skip_context=skip_context
                 )
             elif schema_type == "native":
                 return schema_function_native(
-                    obj, name=name, schema_mode=schema_mode, skip_context=skip_context
+                    obj, name=name, mode=mode, skip_context=skip_context
                 )
             else:
                 raise Exception(f"Invalid schema type: {schema_type}")
         except ValueError as e:
             print(f"Error parsing schema for {name}: {e}")
             return obj
-        
+
     elif isinstance(obj, dict):
         return {
             k: parse_schema_function(
                 v,
                 name=k,
-                schema_mode=schema_mode,
-                schema_type=schema_type,
+                schema_type=schema_type + ":" + mode,
                 skip_context=skip_context,
             )
             for k, v in obj.items()
@@ -418,8 +447,7 @@ def parse_schema_function(
         return [
             parse_schema_function(
                 x,
-                schema_mode=schema_mode,
-                schema_type=schema_type,
+                schema_type=schema_type + ":" + mode,
                 skip_context=skip_context,
             )
             for x in obj
