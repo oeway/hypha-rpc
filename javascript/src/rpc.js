@@ -34,20 +34,26 @@ function indexObject(obj, is) {
   else return indexObject(obj[is[0]], is.slice(1));
 }
 
-function _get_schema(obj, prefix = "") {
+function _get_schema(obj, prefix = "", skipContext = false) {
   if (obj instanceof Object) {
     let schema = {};
     for (let k in obj) {
-      schema[k] = _get_schema(obj[k], prefix + "." + k);
+      schema[k] = _get_schema(obj[k], prefix + "." + k, skipContext);
     }
     return schema;
   }
   if (obj instanceof Array) {
-    return obj.map((v, i) => _get_schema(v, prefix + "." + i));
+    return obj.map((v, i) => _get_schema(v, prefix + "." + i, skipContext));
   }
   if (typeof obj === "function") {
     if (obj.__schema__) {
-      return { type: "function", function: obj.__schema__ };
+      const schema = JSON.parse(JSON.stringify(obj.__schema__));
+      if (skipContext) {
+        if (schema.parameters && schema.parameters.properties) {
+          delete schema.parameters.properties["context"];
+        }
+      }
+      return { type: "function", function: schema };
     } else {
       return { type: "function" };
     }
@@ -595,7 +601,8 @@ export class RPC extends MessageEmitter {
   }
 
   _extract_service_info(service) {
-    const serviceInfo = _get_schema(service);
+    const skipContext = service.config.require_context;
+    const serviceInfo = _get_schema(service, "", skipContext);
     (serviceInfo.id = `${this._client_id}:${service["id"]}`),
       (serviceInfo.description = service["description"] || ""),
       (serviceInfo.app_id = this._app_id);

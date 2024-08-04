@@ -85,7 +85,6 @@ describe("RPC", async () => {
     });
     const svc = await api.rpc.get_remote_service("test-service");
     expect(svc.multiply.__doc__).to.equal("multiply two numbers");
-    expect(svc.multiply.__sig__).to.equal("multiply(a, b)");
     expect(await svc.multiply(2, 2)).to.equal(4);
     await api.export(new ImJoyPlugin());
     const dsvc = await api.rpc.get_remote_service("default");

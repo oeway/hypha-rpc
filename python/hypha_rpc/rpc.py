@@ -77,21 +77,32 @@ def index_object(obj, ids):
         return index_object(_obj, ids[1:])
 
 
-def _get_schema(obj, prefix=""):
+def _get_schema(obj, prefix="", skip_context=False):
     """Get schema."""
     if isinstance(obj, dict):
         schema = {}
         for k, v in obj.items():
-            schema[k] = _get_schema(v, prefix + "." + k if prefix else k)
+            schema[k] = _get_schema(
+                v, prefix + "." + k if prefix else k, skip_context=skip_context
+            )
         return schema
     elif isinstance(obj, (list, tuple)):
         return [
-            _get_schema(v, prefix + "." + str(i) if prefix else str(i))
+            _get_schema(
+                v,
+                prefix + "." + str(i) if prefix else str(i),
+                skip_context=skip_context,
+            )
             for i, v in enumerate(obj)
         ]
     elif callable(obj):
         if hasattr(obj, "__schema__"):
-            return {"type": "function", "function": obj.__schema__}
+            schema = obj.__schema__.copy()
+            if skip_context:
+                if "parameters" in schema:
+                    if "properties" in schema["parameters"]:
+                        schema["parameters"]["properties"].pop("context", None)
+            return {"type": "function", "function": schema}
         else:
             return {"type": "function"}
     else:
@@ -546,13 +557,6 @@ class RPC(MessageEmitter):
         if bool(api["config"].get("run_in_executor")):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
-        schema_type = api["config"].get("schema_type", "auto")
-        if schema_type:
-            api = parse_schema_function(
-                api,
-                schema_type=schema_type,
-                skip_context=require_context,
-            )
         assert visibility in ["protected", "public"]
         self._annotate_service_methods(
             api,
@@ -570,7 +574,8 @@ class RPC(MessageEmitter):
         return api
 
     def _extract_service_info(self, service):
-        service_info = _get_schema(service)
+        skip_context = service.get("config", {}).get("require_context", False)
+        service_info = _get_schema(service, skip_context=skip_context)
         service_info["id"] = f'{self._client_id}:{service["id"]}'
         service_info["description"] = service.get("description", "")
         service_info["app_id"] = self._app_id

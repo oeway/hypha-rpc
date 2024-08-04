@@ -1,151 +1,174 @@
 """Test the schema generation."""
 
 import pytest
-import json
 from hypha_rpc import (
     connect_to_server,
 )
 from pydantic import BaseModel, Field
-from hypha_rpc.utils.schema import schema_function, Field as NativeField
+from hypha_rpc.utils.schema import (
+    schema_service,
+    schema_function,
+    schema_method,
+    Field as NativeField,
+)
 
 from . import WS_SERVER_URL
 
 
 @schema_function(schema_type="native:strict")
-def say_hello_native(
-    info: dict = NativeField(
-        ..., description="Information of the person to say hello to"
+def register_user_native(
+    user_info: dict = NativeField(
+        ..., description="Information of the user to register"
     ),
-    say_age: bool = Field(False, description="whether the age should be exposed"),
+    receive_newsletter: bool = Field(
+        False, description="Whether the user wants to receive newsletters"
+    ),
 ) -> str:
-    """Say hello to a person."""
-    assert isinstance(info, dict)
-    assert isinstance(say_age, bool)
-    if info["age"] and say_age:
-        return f"hello {info['name']}, you are {info['age']} years old"
-    else:
-        return f"hello {info['name']}"
+    """Register a new user."""
+    assert isinstance(user_info, dict)
+    assert isinstance(receive_newsletter, bool)
+    return f"User {user_info['name']} registered{' with newsletter subscription' if receive_newsletter else ''}"
 
 
 @pytest.mark.asyncio
 async def test_schema_function_native():
     # If we pass a dictionary, it should do model_validate with the pydantic type
-    assert say_hello_native({"name": "Alice", "age": 30}) == "hello Alice"
-    assert say_hello_native(dict(name="Alice", age=30)) == "hello Alice"
     assert (
-        say_hello_native(dict(name="Alice", age=30), say_age=True)
-        == "hello Alice, you are 30 years old"
+        register_user_native({"name": "Alice", "email": "alice@example.com"})
+        == "User Alice registered"
+    )
+    assert (
+        register_user_native(dict(name="Alice", email="alice@example.com"))
+        == "User Alice registered"
+    )
+    assert (
+        register_user_native(
+            dict(name="Alice", email="alice@example.com"), receive_newsletter=True
+        )
+        == "User Alice registered with newsletter subscription"
     )
 
 
-class ContactManagerNative:
-    @schema_function(skip_self=True, schema_type="native:auto")
-    def exchange_contact(
+class OrderManagerNative:
+
+    @schema_method(schema_type="native:auto")
+    def place_order(
         self,
-        name: str,
-        with_age: bool = Field(False, description="whether the age should be exposed"),
+        product_id: str,
+        quantity: int = Field(1, description="Quantity of the product to order"),
     ) -> dict:
-        """Exchange contact information."""
-        assert isinstance(with_age, bool)
-        return dict(name=name, age=30 if with_age else -1)
+        """Place an order for a product."""
+        assert isinstance(quantity, int)
+        return dict(product_id=product_id, quantity=quantity)
 
 
 @pytest.mark.asyncio
 async def test_schema_function_on_class_method_native():
     """Test using @schema_function on a class method."""
-    manager = ContactManagerNative()
+    manager = OrderManagerNative()
 
-    exchange_contact_with_schema = manager.exchange_contact
+    place_order_with_schema = manager.place_order
 
     # If we don't pass any parameter
     # Instead of the Field which was set to the default value, it should use the default value of the Field
-    assert exchange_contact_with_schema("Alice") == dict(name="Alice", age=-1)
+    assert place_order_with_schema("12345") == dict(product_id="12345", quantity=1)
 
 
 class UserInfo(BaseModel):
     """User information."""
 
-    name: str = Field(..., description="name of the user")
-    age: int = Field(..., description="age of the user")
+    name: str = Field(..., description="Name of the user")
+    email: str = Field(..., description="Email of the user")
 
 
 @schema_function(schema_type="pydantic:strict")
-def say_hello(
-    info: UserInfo = Field(
-        ..., description="Information of the person to say hello to"
+def register_user(
+    user_info: UserInfo = Field(..., description="Information of the user to register"),
+    receive_newsletter: bool = Field(
+        False, description="Whether the user wants to receive newsletters"
     ),
-    say_age: bool = Field(False, description="whether the age should be exposed"),
 ) -> str:
-    """Say hello to a person."""
-    assert isinstance(info, UserInfo)
-    assert isinstance(say_age, bool)
-    if info.age and say_age:
-        return f"hello {info.name}, you are {info.age} years old"
-    else:
-        return f"hello {info.name}"
+    """Register a new user."""
+    assert isinstance(user_info, UserInfo)
+    assert isinstance(receive_newsletter, bool)
+    return f"User {user_info.name} registered{' with newsletter subscription' if receive_newsletter else ''}"
 
 
 @pytest.mark.asyncio
 async def test_schema_function():
     # If we pass a dictionary, it should do model_validate with the pydantic type
-    assert say_hello({"name": "Alice", "age": 30}) == "hello Alice"
-    assert say_hello(UserInfo(name="Alice", age=30)) == "hello Alice"
     assert (
-        say_hello(UserInfo(name="Alice", age=30), say_age=True)
-        == "hello Alice, you are 30 years old"
+        register_user({"name": "Alice", "email": "alice@example.com"})
+        == "User Alice registered"
+    )
+    assert (
+        register_user(UserInfo(name="Alice", email="alice@example.com"))
+        == "User Alice registered"
+    )
+    assert (
+        register_user(
+            UserInfo(name="Alice", email="alice@example.com"), receive_newsletter=True
+        )
+        == "User Alice registered with newsletter subscription"
     )
 
 
-class ContactManager:
+class OrderManager:
 
     @schema_function(skip_self=True, schema_type="pydantic:auto")
-    def exchange_contact(
+    def place_order(
         self,
-        name: str,
-        with_age: bool = Field(False, description="whether the age should be exposed"),
+        product_id: str,
+        quantity: int = Field(1, description="Quantity of the product to order"),
     ) -> dict:
-        """Exchange contact information."""
-        assert isinstance(with_age, bool)
-        return UserInfo(name=name, age=30 if with_age else -1).model_dump()
+        """Place an order for a product."""
+        assert isinstance(quantity, int)
+        return dict(product_id=product_id, quantity=quantity)
 
 
 @pytest.mark.asyncio
 async def test_schema_function_on_class_method():
     """Test using @schema_function on a class method."""
-    manager = ContactManager()
+    manager = OrderManager()
 
-    exchange_contact_with_schema = manager.exchange_contact
+    place_order_with_schema = manager.place_order
 
     # If we don't pass any parameter
     # Instead of the Field which was set to the default value, it should use the default value of the Field
-    assert (
-        exchange_contact_with_schema("Alice")
-        == UserInfo(name="Alice", age=-1).model_dump()
-    )
+    assert place_order_with_schema("12345") == dict(product_id="12345", quantity=1)
 
 
-def exchange_contact(
-    info: UserInfo = Field(
-        ..., description="Information of the person to say hello to"
-    ),
-    with_age: bool = Field(True, description="whether the age should be exposed"),
+def place_order(
+    product_id: str = Field(..., description="ID of the product to order"),
+    quantity: int = Field(1, description="Quantity of the product to order"),
 ) -> dict:
-    """Exchange contact information."""
-    return UserInfo(name="Alice", age=30 if with_age else -1).model_dump()
+    """Place an order for a product."""
+    assert isinstance(quantity, int)
+    assert isinstance(product_id, str)
+    return dict(product_id=product_id, quantity=quantity)
+
+
+def place_order_native(
+    product_id: str = NativeField(..., description="ID of the product to order"),
+    quantity: int = NativeField(1, description="Quantity of the product to order"),
+) -> dict:
+    """Place an order for a product."""
+    assert isinstance(quantity, int)
+    assert isinstance(product_id, str)
+    return dict(product_id=product_id, quantity=quantity)
 
 
 @pytest.mark.asyncio
 async def test_schema_function(websocket_server):
     """Test extract schema from functions."""
-    exchange_contact_with_schema = schema_function(exchange_contact)
+    place_order_with_schema = schema_function(place_order)
 
-    expected = "hello John"
-    assert say_hello({"name": "John", "age": 20}) == expected
-    assert say_hello(UserInfo(name="John", age=20)) == expected
+    expected = "User John registered"
+    assert register_user({"name": "John", "email": "john@example.com"}) == expected
+    assert register_user(UserInfo(name="John", email="john@example.com")) == expected
 
-    assert (
-        exchange_contact_with_schema({"name": "John", "age": 20})
-        == UserInfo(name="Alice", age=30).model_dump()
+    assert place_order_with_schema(product_id="12345", quantity=2) == dict(
+        product_id="12345", quantity=2
     )
 
     # test workspace is an exception, so it can pass directly
@@ -153,50 +176,59 @@ async def test_schema_function(websocket_server):
 
     await ws.register_service(
         {
-            "name": "Hello World",
-            "id": "hello-world",
-            "description": "hello world service",
+            "name": "Order Service",
+            "id": "order-service",
+            "description": "Service for placing orders",
             "config": {
                 "visibility": "protected",
                 "run_in_executor": True,
             },
-            "say_hello": say_hello,
-            "exchange_contact": exchange_contact_with_schema,
+            "register_user": register_user,
+            "place_order": place_order_with_schema,
         }
     )
-    svc = await ws.get_service("hello-world")
+    svc = await ws.get_service("order-service")
 
-    assert svc.say_hello.__schema__
-    assert svc.exchange_contact.__schema__
+    assert svc.register_user.__schema__
+    assert svc.place_order.__schema__
     # check some fields for the json schema
-    assert svc.say_hello.__schema__["name"] == "say_hello"
-    assert svc.say_hello.__schema__ == {
-        "name": "say_hello",
-        "description": "Say hello to a person.",
+    assert svc.register_user.__schema__["name"] == "register_user"
+    assert svc.register_user.__schema__ == {
+        "name": "register_user",
+        "description": "Register a new user.",
         "parameters": {
             "$defs": {
                 "UserInfo": {
                     "description": "User information.",
                     "properties": {
-                        "name": {"description": "name of the user", "type": "string"},
-                        "age": {"description": "age of the user", "type": "integer"},
+                        "name": {"description": "Name of the user", "type": "string"},
+                        "email": {"description": "Email of the user", "type": "string"},
                     },
-                    "required": ["name", "age"],
+                    "required": ["name", "email"],
                     "type": "object",
                 }
             },
             "properties": {
-                "info": {"$ref": "#/$defs/UserInfo"},
-                "say_age": {"default": False, "type": "boolean"},
+                "user_info": {
+                    "allOf": [{"$ref": "#/$defs/UserInfo"}],
+                    "description": "Information of the user to register",
+                },
+                "receive_newsletter": {
+                    "default": False,
+                    "description": "Whether the user wants to receive newsletters",
+                    "type": "boolean",
+                },
             },
-            "required": ["info"],
+            "required": ["user_info"],
             "type": "object",
         },
     }
-    assert await svc.say_hello({"name": "John", "age": 20}) == expected
     assert (
-        await svc.exchange_contact({"name": "John", "age": 20})
-        == UserInfo(name="Alice", age=30).model_dump()
+        await svc.register_user({"name": "John", "email": "john@example.com"})
+        == expected
+    )
+    assert await svc.place_order(product_id="12345", quantity=2) == dict(
+        product_id="12345", quantity=2
     )
 
 
@@ -205,59 +237,54 @@ async def test_schema_service(websocket_server):
     """Test creating schema service."""
     ws = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
 
-    def exchange_contact_with_context(
-        info: UserInfo = Field(
-            ..., description="Information of the person to say hello to"
-        ),
-        with_age: bool = Field(True, description="whether the age should be exposed"),
+    def place_order_with_context(
+        product_id: str = Field(..., description="ID of the product to order"),
+        quantity: int = Field(1, description="Quantity of the product to order"),
         context=None,
     ) -> dict:
-        """Exchange contact information."""
-        return UserInfo(name="Alice", age=30 if with_age else -1).model_dump()
+        """Place an order for a product."""
+        return dict(product_id=product_id, quantity=quantity)
 
     svc = await ws.register_service(
-        dict(
+        schema_service(
+            schema_type="pydantic",
             id="test",
             name="Test Service",
             description="Services for testing.",
             config={
                 "require_context": True,
                 "visibility": "public",
-                "schema_type": "pydantic",
             },
-            exchange_contact=exchange_contact_with_context,
+            place_order=place_order_with_context,
             inner_service={
-                "exchange_contact": exchange_contact_with_context,
+                "place_order": place_order_with_context,
             },
         )
     )
-    assert svc.exchange_contact["type"] == "function"
-    assert svc.exchange_contact["function"] == {
-        "name": "exchange_contact",
-        "description": "Exchange contact information.",
+    assert svc.place_order["type"] == "function"
+    assert svc.place_order["function"] == {
+        "name": "place_order",
+        "description": "Place an order for a product.",
         "parameters": {
-            "$defs": {
-                "UserInfo": {
-                    "description": "User information.",
-                    "properties": {
-                        "name": {"description": "name of the user", "type": "string"},
-                        "age": {"description": "age of the user", "type": "integer"},
-                    },
-                    "required": ["name", "age"],
-                    "type": "object",
-                }
-            },
             "properties": {
-                "info": {"$ref": "#/$defs/UserInfo"},
-                "with_age": {"default": True, "type": "boolean"},
+                "product_id": {
+                    "description": "ID of the product to order",
+                    "type": "string",
+                },
+                "quantity": {
+                    "default": 1,
+                    "description": "Quantity of the product to order",
+                    "type": "integer",
+                },
             },
-            "required": ["info"],
+            "required": ["product_id"],
             "type": "object",
         },
     }
+
     test_service = await ws.get_service(svc.id)
 
-    assert test_service.exchange_contact.__schema__
+    assert test_service.place_order.__schema__
 
 
 @pytest.mark.asyncio
@@ -267,55 +294,68 @@ async def test_schema_service_modes(websocket_server):
 
     # Pydantic mode
     svc_pydantic = await ws.register_service(
-        dict(
+        schema_service(
+            schema_type="pydantic",
             id="test_pydantic",
             name="Test Service Pydantic",
             description="Services for testing pydantic mode.",
             config={
                 "require_context": True,
                 "visibility": "public",
-                "schema_type": "pydantic",
             },
-            exchange_contact=exchange_contact,
+            place_order=place_order,
             inner_service={
-                "exchange_contact": exchange_contact,
+                "place_order": place_order,
             },
         )
     )
-    assert svc_pydantic.exchange_contact["type"] == "function"
-    assert svc_pydantic.exchange_contact["function"]["name"] == "exchange_contact"
-    assert "parameters" in svc_pydantic.exchange_contact["function"]
+    assert svc_pydantic.place_order["type"] == "function"
+    assert svc_pydantic.place_order["function"]["name"] == "place_order"
+    assert "parameters" in svc_pydantic.place_order["function"]
 
     # native mode
     svc_native = await ws.register_service(
-        dict(
+        schema_service(
+            schema_type="native",
             id="test_native",
             name="Test Service native",
             description="Services for testing native mode.",
             config={
                 "require_context": True,
                 "visibility": "public",
-                "schema_type": "native",
             },
-            exchange_contact=exchange_contact,
+            place_order=place_order_native,
             inner_service={
-                "exchange_contact": exchange_contact,
+                "place_order": place_order_native,
             },
         )
     )
-    assert svc_native.exchange_contact["type"] == "function"
-    assert svc_native.exchange_contact["function"]["name"] == "exchange_contact"
-    assert "parameters" in svc_native.exchange_contact["function"]
+    assert svc_native.place_order["type"] == "function"
+    assert svc_native.place_order["function"]["name"] == "place_order"
+    assert "parameters" in svc_native.place_order["function"]
 
     test_service_pydantic = await ws.get_service(svc_pydantic.id)
-    assert test_service_pydantic.exchange_contact.__schema__
+    assert test_service_pydantic.place_order.__schema__
 
     test_service_native = await ws.get_service(svc_native.id)
-    assert test_service_native.exchange_contact.__schema__ == {
-        "name": "exchange_contact",
-        "description": "Exchange contact information.",
-        "parameters": {"type": "object", "properties": {"info": {}}, "required": []},
+    assert test_service_native.place_order.__schema__ == {
+        "name": "place_order",
+        "description": "Place an order for a product.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {
+                    "type": "str",
+                    "description": "ID of the product to order",
+                },
+                "quantity": {
+                    "type": "int",
+                    "description": "Quantity of the product to order",
+                },
+            },
+            "required": [],
+        },
     }
-    assert "name" in test_service_native.exchange_contact.__schema__
-    assert "description" in test_service_native.exchange_contact.__schema__
-    assert "parameters" in test_service_native.exchange_contact.__schema__
+    assert "name" in test_service_native.place_order.__schema__
+    assert "description" in test_service_native.place_order.__schema__
+    assert "parameters" in test_service_native.place_order.__schema__
