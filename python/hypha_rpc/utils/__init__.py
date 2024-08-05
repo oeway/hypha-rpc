@@ -64,7 +64,7 @@ def convert_case(obj, case_type):
             new_obj[snake_key] = convert_case(value, case_type)
             if callable(value):
                 new_obj[snake_key].__name__ = snake_key
-                if hasattr(value, "__schema__"):
+                if hasattr(value, "__schema__") and isinstance(value.__schema__, dict):
                     new_obj[snake_key].__schema__ = value.__schema__.copy()
                     new_obj[snake_key].__schema__["name"] = snake_key
         else:

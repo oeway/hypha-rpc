@@ -452,8 +452,9 @@ async def _connect_to_server(config):
         query = {"client_id": client_id, "service_id": "default"}
         return await wm.get_service(query)
 
-    async def list_apps(workspace: str):
+    async def list_apps(workspace: str = None):
         """List the apps."""
+        workspace = workspace or connection_info["workspace"]
         assert ":" not in workspace, "workspace should not contain ':'"
         assert "/" not in workspace, "workspace should not contain '/'"
         query = {"workspace": workspace, "service_id": "default"}
