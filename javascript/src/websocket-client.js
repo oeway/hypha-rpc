@@ -330,7 +330,13 @@ export async function login(config) {
   }
 }
 
-async function webrtcGetService(wm, rtc_service_id, query, webrtc, webrtc_config) {
+async function webrtcGetService(
+  wm,
+  rtc_service_id,
+  query,
+  webrtc,
+  webrtc_config,
+) {
   assert(
     [undefined, true, false, "auto"].includes(webrtc),
     "webrtc must be true, false or 'auto'",
@@ -342,11 +348,7 @@ async function webrtcGetService(wm, rtc_service_id, query, webrtc, webrtc_config
     if (svc.id.includes(":") && svc.id.includes("/")) {
       try {
         // Assuming that the client registered a webrtc service with the client_id + "-rtc"
-        const peer = await getRTCService(
-          wm,
-          rtc_service_id,
-          webrtc_config,
-        );
+        const peer = await getRTCService(wm, rtc_service_id, webrtc_config);
         const rtcSvc = await peer.get_service(svc.id.split(":")[1]);
         rtcSvc._webrtc = true;
         rtcSvc._peer = peer;
@@ -570,29 +572,32 @@ export async function connectToServer(config) {
     await registerRTCService(wm, clientId + "-rtc", config.webrtc_config);
     // make a copy of wm
     const _wm = Object.assign({}, wm);
-    wm.getService = schemaFunction(webrtcGetService.bind(null, _wm, clientId + "-rtc"), {
-      name: "getService",
-      description: "Get a service via webrtc.",
-      parameters: {
-        properties: {
-          query: {
-            description: "The query to get the service",
-            type: "object",
+    wm.getService = schemaFunction(
+      webrtcGetService.bind(null, _wm, clientId + "-rtc"),
+      {
+        name: "getService",
+        description: "Get a service via webrtc.",
+        parameters: {
+          properties: {
+            query: {
+              description: "The query to get the service",
+              type: "object",
+            },
+            webrtc: {
+              default: "auto",
+              description: "Use webrtc to get the service",
+              type: ["boolean", "string"],
+            },
+            webrtc_config: {
+              description: "The webrtc configuration",
+              type: "object",
+            },
           },
-          webrtc: {
-            default: "auto",
-            description: "Use webrtc to get the service",
-            type: ["boolean", "string"],
-          },
-          webrtc_config: {
-            description: "The webrtc configuration",
-            type: "object",
-          },
+          required: ["query"],
+          type: "object",
         },
-        required: ["query"],
-        type: "object",
       },
-    });
+    );
   }
 
   return wm;

@@ -334,7 +334,7 @@ def test_rtc_service_auto(websocket_server):
             "echo": lambda x: x,
         }
     )
-    
+
     svc = server.get_service("echo-service")
     assert svc.echo("hello") == "hello", "echo service failed"
 

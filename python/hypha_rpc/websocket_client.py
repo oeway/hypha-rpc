@@ -354,7 +354,9 @@ def connect_to_server(config):
     return ServerContextManager(config)
 
 
-async def webrtc_get_service(wm, rtc_service_id, query, webrtc=None, webrtc_config=None, **kwargs):
+async def webrtc_get_service(
+    wm, rtc_service_id, query, webrtc=None, webrtc_config=None, **kwargs
+):
     assert webrtc in [
         None,
         True,
@@ -381,9 +383,7 @@ async def webrtc_get_service(wm, rtc_service_id, query, webrtc=None, webrtc_conf
             rtc_svc._service = svc
             return rtc_svc
         except Exception:
-            logger.warning(
-                "Failed to get webrtc service, using websocket connection"
-            )
+            logger.warning("Failed to get webrtc service, using websocket connection")
     if webrtc is True:
         if not AIORTC_AVAILABLE:
             raise Exception("aiortc is not available, please install it first.")
@@ -605,7 +605,11 @@ async def _connect_to_server(config):
         rpc.on("force-exit", handle_disconnect)
 
     if config.get("webrtc", False):
-        from .webrtc_client import AIORTC_AVAILABLE, register_rtc_service, get_rtc_service
+        from .webrtc_client import (
+            AIORTC_AVAILABLE,
+            register_rtc_service,
+            get_rtc_service,
+        )
 
         if not AIORTC_AVAILABLE:
             raise Exception("aiortc is not available, please install it first.")
@@ -633,7 +637,7 @@ async def _connect_to_server(config):
                 "type": "object",
             },
         )
-        
+
         wm.get_rtc_service = schema_function(
             partial(get_rtc_service, wm, client_id + "-rtc"),
             name="get_rtc_service",

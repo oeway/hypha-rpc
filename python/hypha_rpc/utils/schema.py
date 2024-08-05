@@ -104,17 +104,19 @@ def fill_missing_args_and_kwargs(original_func_sig, args, kwargs):
     bound_args.apply_defaults()
     return bound_args.args, bound_args.kwargs
 
+
 def extract_annotations(annotation: Any) -> List[Any]:
     """Get nested annotations from a given annotation for Union and Optional types."""
     origin = get_origin(annotation)
     args = get_args(annotation)
-    
+
     if origin is Union:
         # If it's Optional (Union[T, NoneType]), remove NoneType
         return [arg for arg in args if arg is not type(None)]
-    
+
     # Return a list containing the annotation itself
     return [annotation]
+
 
 def schema_function_native(original_func, name=None, mode="strict", skip_self=False):
     """Decorator to add input/output schema to a function."""
@@ -357,10 +359,7 @@ def schema_function_pydantic(
         for arg, param in zip(new_args, func_sig.parameters.values()):
             annotations = extract_annotations(param.annotation)
             for annotation in annotations:
-                if (
-                    isinstance(annotation, type)
-                    and issubclass(annotation, BaseModel)
-                ):
+                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
                     if isinstance(arg, dict):
                         arg = annotation(**arg)
             final_args.append(arg)
@@ -370,10 +369,7 @@ def schema_function_pydantic(
             param = func_sig.parameters[k]
             annotations = extract_annotations(param.annotation)
             for annotation in annotations:
-                if (
-                    isinstance(annotation, type)
-                    and issubclass(annotation, BaseModel)
-                ):
+                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
                     if isinstance(v, dict):
                         v = annotation(**v)
                 final_kwargs[k] = v
