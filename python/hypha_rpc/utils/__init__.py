@@ -1,6 +1,5 @@
 """Provide utility functions for RPC."""
 
-import ast
 import asyncio
 import contextlib
 import copy
@@ -10,12 +9,39 @@ import re
 import secrets
 import string
 import traceback
-import collections.abc
 from functools import partial
 from inspect import Parameter, Signature
 from types import BuiltinFunctionType, FunctionType
-from typing import Any
-from munch import DefaultMunch, Munch
+from munch import Munch
+
+
+class ObjectProxy(Munch):
+    """Object proxy with dot attribute access."""
+
+    def __getattribute__(self, k):
+        # Check if the attribute is in the dictionary
+        if k in self:
+            return self[k]
+        # If not, proceed with the usual attribute access
+        return super().__getattribute__(k)
+
+
+class DefaultObjectProxy(ObjectProxy):
+    """Object proxy with default None value."""
+
+    def __getattr__(self, k):
+        """Gets key if it exists, otherwise returns the default value."""
+        try:
+            return super().__getattr__(k)
+        except AttributeError:
+            return None
+
+    def __getitem__(self, k):
+        """Gets key if it exists, otherwise returns the default value."""
+        try:
+            return super().__getitem__(k)
+        except KeyError:
+            return None
 
 
 def generate_password(length=50):
@@ -74,8 +100,8 @@ def convert_case(obj, case_type):
             if "snake" in case_type:
                 new_obj[snake_key] = convert_case(value, "snake")
 
-    if isinstance(obj, Munch):
-        return DefaultMunch.fromDict(new_obj)
+    if isinstance(obj, ObjectProxy):
+        return ObjectProxy.fromDict(new_obj)
     return new_obj
 
 

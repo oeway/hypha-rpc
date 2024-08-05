@@ -11,7 +11,7 @@ import traceback
 import weakref
 from collections import OrderedDict
 from functools import partial, reduce
-from munch import DefaultMunch
+from .utils import ObjectProxy, DefaultObjectProxy
 
 import msgpack
 import shortuuid
@@ -139,11 +139,17 @@ def _annotate_service(service, service_type_info):
                     annotate_recursive(v, schema_info[k], new_path)
                 elif callable(v):
                     if k in schema_info:
+                        assert schema_info[k]["type"] == "function"
+                        if schema_info[k].get("function"):
+                            annotation = schema_info[k]["function"]
+                        else:
+                            annotation = {"name": k, "parameters": {}}
+
                         new_service[k] = schema_function(
                             v,
-                            name=schema_info[k]["name"],
-                            description=schema_info[k].get("description", ""),
-                            parameters=schema_info[k]["parameters"],
+                            name=annotation["name"],
+                            description=annotation.get("description", ""),
+                            parameters=annotation["parameters"],
                         )
                     else:
                         raise KeyError(
@@ -152,21 +158,27 @@ def _annotate_service(service, service_type_info):
         elif isinstance(new_service, (list, tuple)):
             if len(new_service) != len(schema_info):
                 raise ValueError(f"Length mismatch at path '{path}'")
-            for i, v in enumerate(new_service):
-                new_path = f"{path}[{i}]"
+            for k, v in enumerate(new_service):
+                new_path = f"{path}[{k}]"
                 if isinstance(v, (dict, list, tuple)):
-                    annotate_recursive(v, schema_info[i], new_path)
+                    annotate_recursive(v, schema_info[k], new_path)
                 elif callable(v):
-                    if i in schema_info:
-                        new_service[i] = schema_function(
+                    if k in schema_info:
+                        assert schema_info[k]["type"] == "function"
+                        if schema_info[k].get("function"):
+                            annotation = schema_info[k]["function"]
+                        else:
+                            annotation = {"name": k, "parameters": {}}
+
+                        new_service[k] = schema_function(
                             v,
-                            name=schema_info[k]["name"],
-                            description=schema_info[k].get("description", ""),
-                            parameters=schema_info[k]["parameters"],
+                            name=annotation["name"],
+                            description=annotation.get("description", ""),
+                            parameters=annotation["parameters"],
                         )
                     else:
                         raise KeyError(
-                            f"Missing schema for function at index {i} in path '{new_path}'"
+                            f"Missing schema for function at index {k} in path '{new_path}'"
                         )
 
     validate_keys(service, service_type_info["definition"])
@@ -332,7 +344,7 @@ class RPC(MessageEmitter):
                     logger.info("Removing duplicated codec: " + tp)
                     del self._codecs[tp]
 
-        self._codecs[config["name"]] = DefaultMunch.fromDict(config)
+        self._codecs[config["name"]] = DefaultObjectProxy.fromDict(config)
 
     async def _ping(self, msg: str, context=None):
         """Handle ping."""
@@ -524,9 +536,9 @@ class RPC(MessageEmitter):
             svc = await asyncio.wait_for(method(service_id), timeout=timeout)
             svc["id"] = service_uri
             if case_conversion:
-                return DefaultMunch.fromDict(convert_case(svc, case_conversion))
+                return ObjectProxy.fromDict(convert_case(svc, case_conversion))
             else:
-                return DefaultMunch.fromDict(svc)
+                return ObjectProxy.fromDict(svc)
         except Exception as exp:
             logger.warning("Failed to get remote service: %s: %s", service_id, exp)
             raise exp
@@ -589,7 +601,7 @@ class RPC(MessageEmitter):
         # convert and store it in a docdict
         # such that the methods are hashable
         if isinstance(api, dict):
-            api = DefaultMunch.fromDict(
+            api = ObjectProxy.fromDict(
                 {
                     a: api[a]
                     for a in api.keys()
@@ -597,7 +609,7 @@ class RPC(MessageEmitter):
                 }
             )
         elif inspect.isclass(type(api)):
-            api = DefaultMunch.fromDict(
+            api = ObjectProxy.fromDict(
                 {
                     a: getattr(api, a)
                     for a in dir(api)
@@ -658,7 +670,7 @@ class RPC(MessageEmitter):
             "app_id": self._app_id,
             "service_schema": service_schema,
         }
-        return DefaultMunch.fromDict(service_info)
+        return ObjectProxy.fromDict(service_info)
 
     async def get_service_schema(self, service):
         """Get service schema."""
@@ -1517,7 +1529,7 @@ class RPC(MessageEmitter):
             elif a_object["_rtype"] == "memoryview":
                 b_object = memoryview(a_object["_rvalue"])
             elif a_object["_rtype"] == "iostream":
-                b_object = DefaultMunch.fromDict(
+                b_object = ObjectProxy.fromDict(
                     {
                         k: self._decode(
                             a_object[k],
@@ -1582,7 +1594,7 @@ class RPC(MessageEmitter):
             if isinstance(a_object, tuple):
                 a_object = list(a_object)
             isarray = isinstance(a_object, list)
-            b_object = [] if isarray else DefaultMunch(None)
+            b_object = [] if isarray else ObjectProxy()
             keys = range(len(a_object)) if isarray else a_object.keys()
             for key in keys:
                 val = a_object[key]
