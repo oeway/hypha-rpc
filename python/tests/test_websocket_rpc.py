@@ -54,6 +54,38 @@ async def test_schema(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_service_with_builtin_key(websocket_server):
+    """Test schema."""
+    async with connect_to_server(
+        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+    ) as api:
+        data = {}
+        await api.register_service(
+            {
+                "name": "Dictionary Service",
+                "id": "dict-service",
+                "description": "A service to store key-value pairs",
+                "config": {
+                    "visibility": "protected",
+                    "run_in_executor": True,
+                },
+                "put": lambda k, v: data.update({k: v}),
+                "get": lambda k: data.get(k),
+                "pop": lambda k: data.pop(k),
+                "keys": lambda: list(data.keys()),
+                "values": lambda: list(data.values()),
+            }
+        )
+        svc = await api.get_service("dict-service")
+        await svc.put("key", "value")
+        assert await svc.get("key") == "value"
+        assert await svc.keys() == ["key"]
+        assert await svc.values() == ["value"]
+        assert await svc.pop("key") == "value"
+        assert await svc.get("key") == None
+
+
+@pytest.mark.asyncio
 async def test_login(websocket_server):
     """Test login to the server."""
     TOKEN = "sf31df234"

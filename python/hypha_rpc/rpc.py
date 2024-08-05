@@ -119,6 +119,8 @@ def _get_schema(obj, name=None, skip_context=False):
 
 
 def _annotate_service(service, service_type_info):
+    service_type_info = ObjectProxy.toDict(service_type_info)
+
     def validate_keys(service_dict, schema_dict, path="root"):
         # Validate that all keys in schema_dict exist in service_dict
         for key in schema_dict:
@@ -658,10 +660,14 @@ class RPC(MessageEmitter):
         return api
 
     def _extract_service_info(self, service):
-        skip_context = service.get("config", {}).get("require_context", False)
+        service = ObjectProxy.toDict(service)
+        config = service.get("config", {})
+        if not config.get("workspace"):
+            config["workspace"] = self._local_workspace
+        skip_context = config.get("require_context", False)
         service_schema = _get_schema(service, skip_context=skip_context)
         service_info = {
-            "config": service.get("config", {}),
+            "config": ObjectProxy.fromDict(config),
             "id": f'{self._client_id}:{service["id"]}',
             "name": service.get("name", service["id"]),
             "description": service.get("description", None),
@@ -686,6 +692,8 @@ class RPC(MessageEmitter):
         check_type: bool = False,
     ):
         """Register a service."""
+        if isinstance(api, ObjectProxy):
+            api = ObjectProxy.toDict(api)
         if check_type and api.get("type"):
             try:
                 manager_svc = await self.get_manager_service()

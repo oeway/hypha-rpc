@@ -585,7 +585,7 @@ export async function connectToServer(config) {
   }
   if (config.webrtc) {
     await registerRTCService(wm, clientId + "-rtc", config.webrtc_config);
-    // make a copy of wm
+    // make a copy of wm, so webrtc can use the original wm.getService
     const _wm = Object.assign({}, wm);
     wm.getService = schemaFunction(
       webrtcGetService.bind(null, _wm, clientId + "-rtc"),

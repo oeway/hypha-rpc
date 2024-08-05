@@ -631,8 +631,8 @@ async def _connect_to_server(config):
         if not AIORTC_AVAILABLE:
             raise Exception("aiortc is not available, please install it first.")
         await register_rtc_service(wm, client_id + "-rtc", config.get("webrtc_config"))
-        # back up wm so, webrtc can use the original wm
-        _wm = ObjectProxy.fromDict(wm)
+        # Make a copy of wm so, webrtc can use the original wm.get_service
+        _wm = ObjectProxy.fromDict(dict(wm))
         wm.get_service = schema_function(
             partial(webrtc_get_service, _wm, client_id + "-rtc"),
             name="get_service",

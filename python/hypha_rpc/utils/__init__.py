@@ -11,8 +11,60 @@ import string
 import traceback
 from functools import partial
 from inspect import Parameter, Signature
+from collections.abc import Mapping
 from types import BuiltinFunctionType, FunctionType
-from munch import Munch
+from munch import Munch, munchify
+
+
+# The following code adopted from the munch library,
+# By Copyright (c) 2010 David Schoonover
+# We changed the way the keys being generated to cope with
+# keys such as `pop`, `get`, `update`, etc.
+def unmunchify(x):
+    """Recursively converts a Munch into a dictionary."""
+    # Munchify x, using `seen` to track object cycles
+    seen = dict()
+
+    def unmunchify_cycles(obj):
+        # If we've already begun unmunchifying obj, just return the already-created unmunchified obj
+        try:
+            return seen[id(obj)]
+        except KeyError:
+            pass
+
+        # Otherwise, first partly unmunchify obj (but without descending into any lists or dicts) and save that
+        seen[id(obj)] = partial = pre_unmunchify(obj)
+        # Then finish unmunchifying lists and dicts inside obj (reusing unmunchified obj if cycles are encountered)
+        return post_unmunchify(partial, obj)
+
+    def pre_unmunchify(obj):
+        # Here we return a skeleton of unmunchified obj, which is enough to save for later (in case
+        # we need to break cycles) but it needs to filled out in post_unmunchify
+        if isinstance(obj, Mapping):
+            return dict()
+        elif isinstance(obj, list):
+            return type(obj)()
+        elif isinstance(obj, tuple):
+            type_factory = getattr(obj, "_make", type(obj))
+            return type_factory(unmunchify_cycles(item) for item in obj)
+        else:
+            return obj
+
+    def post_unmunchify(partial, obj):
+        # Here we finish unmunchifying the parts of obj that were deferred by pre_unmunchify because they
+        # might be involved in a cycle
+        if isinstance(obj, Mapping):
+            # We need to use dict.keys(obj) instead of obj.keys()
+            partial.update((k, unmunchify_cycles(obj[k])) for k in dict.keys(obj))
+        elif isinstance(obj, list):
+            partial.extend(unmunchify_cycles(v) for v in obj)
+        elif isinstance(obj, tuple):
+            for value_partial, value in zip(partial, obj):
+                post_unmunchify(value_partial, value)
+
+        return partial
+
+    return unmunchify_cycles(x)
 
 
 class ObjectProxy(Munch):
@@ -20,10 +72,19 @@ class ObjectProxy(Munch):
 
     def __getattribute__(self, k):
         # Check if the attribute is in the dictionary
-        if k in self:
+        if not k.startswith("_") and k in self:
             return self[k]
         # If not, proceed with the usual attribute access
         return super().__getattribute__(k)
+
+    @classmethod
+    def fromDict(cls, d):
+        if isinstance(d, cls):
+            return munchify(unmunchify(d), cls)
+        return munchify(d, cls)
+
+    def toDict(self):
+        return unmunchify(self)
 
 
 class DefaultObjectProxy(ObjectProxy):
