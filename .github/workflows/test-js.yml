@@ -14,14 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [15.5.0]
+        node-version: [20.9.0]
     defaults:
       run:
         working-directory: javascript
     steps:
       - uses: actions/checkout@v3.3.0
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3.6.0
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
       - name: Cache dependencies
