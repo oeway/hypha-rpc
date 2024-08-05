@@ -22,6 +22,7 @@ from .utils import (
     callable_doc,
     convert_case,
 )
+from .utils.schema import schema_function
 
 CHUNK_SIZE = 1024 * 500
 API_VERSION = "0.3.0"
@@ -105,8 +106,72 @@ def _get_schema(obj, name=None, skip_context=False):
             return {"type": "function", "function": schema}
         else:
             return {"type": "function"}
+    elif isinstance(obj, (int, float)):
+        return {"type": "number"}
+    elif isinstance(obj, str):
+        return {"type": "string"}
+    elif isinstance(obj, bool):
+        return {"type": "boolean"}
+    elif obj is None:
+        return {"type": "null"}
     else:
-        return obj
+        return {}
+
+
+def _annotate_service(service, service_type_info):
+    def validate_keys(service_dict, schema_dict, path="root"):
+        # Validate that all keys in schema_dict exist in service_dict
+        for key in schema_dict:
+            if key not in service_dict:
+                raise KeyError(f"Missing key '{key}' in service at path '{path}'")
+
+        # Check for any unexpected keys in service_dict
+        for key in service_dict:
+            if key != "type" and key not in schema_dict:
+                raise KeyError(f"Unexpected key '{key}' in service at path '{path}'")
+
+    def annotate_recursive(new_service, schema_info, path="root"):
+        if isinstance(new_service, dict):
+            validate_keys(new_service, schema_info, path)
+            for k, v in new_service.items():
+                new_path = f"{path}.{k}"
+                if isinstance(v, dict):
+                    annotate_recursive(v, schema_info[k], new_path)
+                elif callable(v):
+                    if k in schema_info:
+                        new_service[k] = schema_function(
+                            v,
+                            name=schema_info[k]["name"],
+                            description=schema_info[k].get("description", ""),
+                            parameters=schema_info[k]["parameters"],
+                        )
+                    else:
+                        raise KeyError(
+                            f"Missing schema for function '{k}' at path '{new_path}'"
+                        )
+        elif isinstance(new_service, (list, tuple)):
+            if len(new_service) != len(schema_info):
+                raise ValueError(f"Length mismatch at path '{path}'")
+            for i, v in enumerate(new_service):
+                new_path = f"{path}[{i}]"
+                if isinstance(v, (dict, list, tuple)):
+                    annotate_recursive(v, schema_info[i], new_path)
+                elif callable(v):
+                    if i in schema_info:
+                        new_service[i] = schema_function(
+                            v,
+                            name=schema_info[k]["name"],
+                            description=schema_info[k].get("description", ""),
+                            parameters=schema_info[k]["parameters"],
+                        )
+                    else:
+                        raise KeyError(
+                            f"Missing schema for function at index {i} in path '{new_path}'"
+                        )
+
+    validate_keys(service, service_type_info["definition"])
+    annotate_recursive(service, service_type_info["definition"])
+    return service
 
 
 class RemoteException(Exception):
@@ -582,16 +647,43 @@ class RPC(MessageEmitter):
 
     def _extract_service_info(self, service):
         skip_context = service.get("config", {}).get("require_context", False)
-        service_info = _get_schema(service, skip_context=skip_context)
-        service_info["id"] = f'{self._client_id}:{service["id"]}'
-        service_info["description"] = service.get("description", "")
-        service_info["app_id"] = self._app_id
+        service_schema = _get_schema(service, skip_context=skip_context)
+        service_info = {
+            "config": service.get("config", {}),
+            "id": f'{self._client_id}:{service["id"]}',
+            "name": service.get("name", service["id"]),
+            "description": service.get("description", None),
+            "type": service.get("type", "generic"),
+            "docs": service.get("docs", None),
+            "app_id": self._app_id,
+            "service_schema": service_schema,
+        }
         return DefaultMunch.fromDict(service_info)
 
+    async def get_service_schema(self, service):
+        """Get service schema."""
+        skip_context = service.get("config", {}).get("require_context", False)
+        service_schema = _get_schema(service, skip_context=skip_context)
+        return service_schema
+
     async def register_service(
-        self, api: dict, overwrite: bool = False, notify: bool = True
+        self,
+        api: dict,
+        overwrite: bool = False,
+        notify: bool = True,
+        check_type: bool = False,
     ):
         """Register a service."""
+        if check_type and api.get("type"):
+            try:
+                manager_svc = await self.get_manager_service()
+                type_info = await manager_svc.get_service_type(api["type"])
+                api = _annotate_service(api, type_info)
+            except Exception as exp:
+                raise Exception(
+                    f"Failed to get service type {api['type']}, error: {exp}"
+                )
+
         service = self.add_service(api, overwrite=overwrite)
         service_info = self._extract_service_info(service)
         if notify:

@@ -556,6 +556,23 @@ async def _connect_to_server(config):
             "type": "object",
         },
     )
+
+    wm.get_service_schema = schema_function(
+        rpc.get_service_schema,
+        name="get_service_schema",
+        description="Get the service schema.",
+        parameters={
+            "properties": {
+                "service": {
+                    "description": "The service to extract schema",
+                    "type": "object",
+                },
+            },
+            "required": ["service"],
+            "type": "object",
+        },
+    )
+
     wm.register_service = schema_function(
         rpc.register_service,
         name="register_service",

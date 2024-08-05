@@ -525,6 +525,21 @@ export async function connectToServer(config) {
       type: "object",
     },
   });
+  wm.getServiceSchema = schemaFunction(rpc.get_service_schema, {
+    name: "getServiceSchema",
+    description: "Get the service schema.",
+    parameters: {
+      properties: {
+        service: {
+          description: "The service to extract schema",
+          type: "object",
+        },
+      },
+      required: ["service"],
+      type: "object",
+    },
+  });
+
   wm.registerService = schemaFunction(rpc.register_service.bind(rpc), {
     name: "registerService",
     description: "Register a service.",

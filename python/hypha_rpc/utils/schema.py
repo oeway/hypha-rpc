@@ -2,6 +2,7 @@ import inspect
 from functools import wraps, partial
 from inspect import Signature, Parameter, signature
 from typing import get_origin, get_args, Union, Dict, Any, List
+from munch import Munch
 
 try:
     from pydantic import create_model, BaseModel
@@ -365,7 +366,10 @@ def schema_function_pydantic(
                     and issubclass(annotation, BaseModel)
                 ):
                     try:
-                        arg = annotation.model_validate(arg)
+                        if isinstance(arg, Munch):
+                            arg = annotation.model_validate(Munch.toDict(arg))
+                        else:
+                            arg = annotation.model_validate(arg)
                     except ValidationError:
                         pass
             final_args.append(arg)
@@ -377,6 +381,13 @@ def schema_function_pydantic(
             for annotation in annotations:
                 if isinstance(annotation, type) and issubclass(annotation, BaseModel):
                     v = annotation.model_validate(v)
+                    try:
+                        if isinstance(v, Munch):
+                            v = annotation.model_validate(Munch.toDict(v))
+                        else:
+                            v = annotation.model_validate(v)
+                    except ValidationError:
+                        pass
                 final_kwargs[k] = v
         return final_args, final_kwargs
 

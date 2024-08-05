@@ -328,8 +328,8 @@ async def test_schema_service(websocket_server):
             },
         )
     )
-    assert svc.place_order["type"] == "function"
-    assert svc.place_order["function"] == {
+    assert svc.service_schema.place_order["type"] == "function"
+    assert svc.service_schema.place_order["function"] == {
         "name": "place_order",
         "description": "Place an order for a product.",
         "parameters": {
@@ -376,9 +376,9 @@ async def test_schema_service_modes(websocket_server):
             },
         )
     )
-    assert svc_pydantic.place_order["type"] == "function"
-    assert svc_pydantic.place_order["function"]["name"] == "place_order"
-    assert "parameters" in svc_pydantic.place_order["function"]
+    assert svc_pydantic.service_schema.place_order["type"] == "function"
+    assert svc_pydantic.service_schema.place_order["function"]["name"] == "place_order"
+    assert "parameters" in svc_pydantic.service_schema.place_order["function"]
 
     # native mode
     svc_native = await ws.register_service(
@@ -397,9 +397,9 @@ async def test_schema_service_modes(websocket_server):
             },
         )
     )
-    assert svc_native.place_order["type"] == "function"
-    assert svc_native.place_order["function"]["name"] == "place_order"
-    assert "parameters" in svc_native.place_order["function"]
+    assert svc_native.service_schema.place_order["type"] == "function"
+    assert svc_native.service_schema.place_order["function"]["name"] == "place_order"
+    assert "parameters" in svc_native.service_schema.place_order["function"]
 
     test_service_pydantic = await ws.get_service(svc_pydantic.id)
     assert test_service_pydantic.place_order.__schema__

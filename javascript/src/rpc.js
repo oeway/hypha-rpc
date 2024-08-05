@@ -11,6 +11,7 @@ import {
   waitFor,
   convertCase,
 } from "./utils";
+import { schemaFunction } from "./utils/schema";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
@@ -62,8 +63,86 @@ function _get_schema(obj, name = null, skipContext = false) {
     } else {
       return { type: "function" };
     }
+  } else if (typeof obj === "number") {
+    return { type: "number" };
+  } else if (typeof obj === "string") {
+    return { type: "string" };
+  } else if (typeof obj === "boolean") {
+    return { type: "boolean" };
+  } else if (obj === null) {
+    return { type: "null" };
+  } else {
+    return {};
   }
-  return obj;
+}
+
+function _annotate_service(service, serviceTypeInfo) {
+  function validateKeys(serviceDict, schemaDict, path = "root") {
+    // Validate that all keys in schemaDict exist in serviceDict
+    for (let key in schemaDict) {
+      if (!serviceDict.hasOwnProperty(key)) {
+        throw new Error(`Missing key '${key}' in service at path '${path}'`);
+      }
+    }
+
+    // Check for any unexpected keys in serviceDict
+    for (let key in serviceDict) {
+      if (key !== "type" && !schemaDict.hasOwnProperty(key)) {
+        throw new Error(`Unexpected key '${key}' in service at path '${path}'`);
+      }
+    }
+  }
+
+  function annotateRecursive(newService, schemaInfo, path = "root") {
+    if (typeof newService === "object" && !Array.isArray(newService)) {
+      validateKeys(newService, schemaInfo, path);
+      for (let k in newService) {
+        let v = newService[k];
+        let newPath = `${path}.${k}`;
+        if (typeof v === "object" && !Array.isArray(v)) {
+          annotateRecursive(v, schemaInfo[k], newPath);
+        } else if (typeof v === "function") {
+          if (schemaInfo.hasOwnProperty(k)) {
+            newService[k] = schemaFunction(v, {
+              name: schemaInfo[k]["name"],
+              description: schemaInfo[k].description || "",
+              parameters: schemaInfo[k]["parameters"],
+            });
+          } else {
+            throw new Error(
+              `Missing schema for function '${k}' at path '${newPath}'`,
+            );
+          }
+        }
+      }
+    } else if (Array.isArray(newService)) {
+      if (newService.length !== schemaInfo.length) {
+        throw new Error(`Length mismatch at path '${path}'`);
+      }
+      newService.forEach((v, i) => {
+        let newPath = `${path}[${i}]`;
+        if (typeof v === "object" && !Array.isArray(v)) {
+          annotateRecursive(v, schemaInfo[i], newPath);
+        } else if (typeof v === "function") {
+          if (schemaInfo.hasOwnProperty(i)) {
+            newService[i] = schemaFunction(v, {
+              name: schemaInfo[i]["name"],
+              description: schemaInfo[i].description || "",
+              parameters: schemaInfo[i]["parameters"],
+            });
+          } else {
+            throw new Error(
+              `Missing schema for function at index ${i} in path '${newPath}'`,
+            );
+          }
+        }
+      });
+    }
+  }
+
+  validateKeys(service, serviceTypeInfo["definition"]);
+  annotateRecursive(service, serviceTypeInfo["definition"]);
+  return service;
 }
 
 function getFunctionInfo(func) {
@@ -609,15 +688,36 @@ export class RPC extends MessageEmitter {
 
   _extract_service_info(service) {
     const skipContext = service.config.require_context;
-    const serviceInfo = _get_schema(service, null, skipContext);
-    (serviceInfo.id = `${this._client_id}:${service["id"]}`),
-      (serviceInfo.description = service["description"] || ""),
-      (serviceInfo.app_id = this._app_id);
+    const serviceSchema = _get_schema(service, null, skipContext);
+    const serviceInfo = {
+      config: service.config,
+      id: `${this._client_id}:${service["id"]}`,
+      name: service.name || service["id"],
+      description: service.description || "",
+      type: service.type || "generic",
+      docs: service.docs || null,
+      app_id: this._app_id,
+      service_schema: serviceSchema,
+    };
     return serviceInfo;
   }
 
-  async register_service(api, overwrite, notify) {
-    if (notify === undefined) notify = true;
+  async get_service_schema(service) {
+    const skipContext = service.config.require_context;
+    return _get_schema(service, null, skipContext);
+  }
+
+  async register_service(api, overwrite, notify = true, check_type = false) {
+    if (check_type && api.type) {
+      try {
+        const manager_svc = await this.get_manager_service();
+        const type_info = await manager_svc.get_service_type(api.type);
+        api = _annotate_service(api, type_info);
+      } catch (e) {
+        throw new Error(`Failed to get service type ${api.type}, error: ${e}`);
+      }
+    }
+
     const service = this.add_service(api, overwrite);
     const serviceInfo = this._extract_service_info(service);
     if (notify) {
