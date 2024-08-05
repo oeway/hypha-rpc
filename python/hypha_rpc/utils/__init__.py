@@ -23,7 +23,59 @@ def generate_password(length=50):
     return "".join(secrets.choice(alphabet) for i in range(length))
 
 
-_hash_id = generate_password()
+def to_camel_case(snake_str):
+    # Check if the string is already in camelCase
+    if "_" not in snake_str:
+        return snake_str
+    # Convert from snake_case to camelCase
+    components = snake_str.split("_")
+    return components[0] + "".join(x.title() for x in components[1:])
+
+
+def to_snake_case(camel_str):
+    # Convert from camelCase to snake_case
+    snake_str = "".join(
+        ["_" + i.lower() if i.isupper() else i for i in camel_str]
+    ).lstrip("_")
+    return snake_str
+
+
+def convert_case(obj, case_type):
+    """Convert the keys of a dictionary to camelCase or snake_case.
+    case type can be 'camel', 'snake', 'camel+snake', 'snake+camel' or None.
+    """
+    if not isinstance(obj, dict) or case_type is None:
+        return obj  # Return the value if obj is not a dictionary
+
+    new_obj = {}
+
+    for key, value in obj.items():
+        camel_key = to_camel_case(key)
+        snake_key = to_snake_case(key)
+
+        if case_type == "camel":
+            new_obj[camel_key] = convert_case(value, case_type)
+            if callable(value):
+                new_obj[camel_key].__name__ = camel_key
+                if hasattr(value, "__schema__"):
+                    new_obj[camel_key].__schema__["name"] = camel_key
+        elif case_type == "snake":
+            new_obj[snake_key] = convert_case(value, case_type)
+            if callable(value):
+                new_obj[snake_key].__name__ = snake_key
+                if hasattr(value, "__schema__"):
+                    new_obj[snake_key].__schema__ = value.__schema__.copy()
+                    new_obj[snake_key].__schema__["name"] = snake_key
+        else:
+            # TODO: handle __schema__ for camel+snake
+            if "camel" in case_type:
+                new_obj[camel_key] = convert_case(value, "camel")
+            if "snake" in case_type:
+                new_obj[snake_key] = convert_case(value, "snake")
+
+    if isinstance(obj, dotdict):
+        return dotdict.from_dict(new_obj)
+    return new_obj
 
 
 def recursive_hash(obj):
@@ -43,6 +95,18 @@ class dotdict(dict):  # pylint: disable=invalid-name
 
     __getattr__ = dict.__getitem__
     __delattr__ = dict.__delitem__
+
+    @classmethod
+    def from_dict(cls, obj):
+        """Convert a dictionary to a dotdict recursively."""
+        assert isinstance(obj, dict), "Input must be a dictionary"
+        new_obj = cls()
+        for key, value in obj.items():
+            if isinstance(value, dict):
+                new_obj[key] = cls.from_dict(value)
+            else:
+                new_obj[key] = value
+        return new_obj
 
     def __init__(self, *args, **kwargs):
         """Initialize the dotdict, recursively making all nested dicts dotdicts."""

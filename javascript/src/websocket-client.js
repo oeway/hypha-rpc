@@ -1,5 +1,6 @@
 import { RPC, API_VERSION } from "./rpc.js";
-import { assert, loadRequirements, randId, waitFor } from "./utils.js";
+import { assert, loadRequirements, randId, waitFor } from "./utils";
+import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
 export { RPC, API_VERSION };
@@ -313,7 +314,7 @@ export async function login(config) {
     server_url: config.server_url,
   });
   try {
-    const svc = await server.get_service(service_id);
+    const svc = await server.getService(service_id);
     assert(svc, `Failed to get the login service: ${service_id}`);
     const context = await svc.start();
     if (callback) {
@@ -327,6 +328,42 @@ export async function login(config) {
   } finally {
     await server.disconnect();
   }
+}
+
+async function webrtcGetService(wm, rtc_service_id, query, webrtc, webrtc_config) {
+  assert(
+    [undefined, true, false, "auto"].includes(webrtc),
+    "webrtc must be true, false or 'auto'",
+  );
+  // pass other arguments to get_service
+  const otherArgs = Array.prototype.slice.call(arguments, 3);
+  const svc = await wm.getService(query, ...otherArgs);
+  if (webrtc === true || webrtc === "auto") {
+    if (svc.id.includes(":") && svc.id.includes("/")) {
+      try {
+        // Assuming that the client registered a webrtc service with the client_id + "-rtc"
+        const peer = await getRTCService(
+          wm,
+          rtc_service_id,
+          webrtc_config,
+        );
+        const rtcSvc = await peer.get_service(svc.id.split(":")[1]);
+        rtcSvc._webrtc = true;
+        rtcSvc._peer = peer;
+        rtcSvc._service = svc;
+        return rtcSvc;
+      } catch (e) {
+        console.warn(
+          "Failed to get webrtc service, using websocket connection",
+          e,
+        );
+      }
+    }
+    if (webrtc === true) {
+      throw new Error("Failed to get the service via webrtc");
+    }
+  }
+  return svc;
 }
 
 export async function connectToServer(config) {
@@ -371,7 +408,7 @@ export async function connectToServer(config) {
     method_timeout: config.method_timeout,
     app_id: config.app_id,
   });
-  const wm = await rpc.get_manager_service();
+  const wm = await rpc.get_manager_service(config.method_timeout, "camel");
   wm.rpc = rpc;
 
   async function _export(api) {
@@ -380,25 +417,147 @@ export async function connectToServer(config) {
     api.description = api.description || config.description;
     await rpc.register_service(api, true);
   }
+  _export.__schema__ = {
+    name: "export",
+    description: "Export the api.",
+    parameters: {
+      properties: { api: { description: "The api to export", type: "object" } },
+      required: ["api"],
+      type: "object",
+    },
+  };
 
-  async function getPlugin(query) {
-    return await wm.get_service(query + ":default");
+  async function getApp(clientId) {
+    clientId = clientId || "*";
+    assert(!clientId.includes(":"), "clientId should not contain ':'");
+    const query = { client_id: clientId, service_id: "default" };
+    return await wm.getService(query);
+  }
+
+  async function listApps(ws) {
+    ws = ws || workspace;
+    assert(!ws.includes(":"), "workspace should not contain ':'");
+    assert(!ws.includes("/"), "workspace should not contain '/'");
+    const query = { workspace: ws, service_id: "default" };
+    return await wm.listServices(query);
   }
 
   if (connection_info) {
     wm.config = Object.assign(wm.config, connection_info);
   }
-  wm.export = _export;
-  wm.getPlugin = getPlugin;
-  wm.listPlugins = wm.listServices;
-  wm.disconnect = rpc.disconnect.bind(rpc);
-  wm.registerCodec = rpc.register_codec.bind(rpc);
-  wm.emit = rpc.emit;
-  wm.on = rpc.on;
-  wm.registerService = rpc.register_service.bind(rpc);
-  wm.register_service = wm.registerService;
-  wm.unregisterService = rpc.unregister_service.bind(rpc);
-  wm.unregister_service = wm.unregisterService;
+  wm.export = schemaFunction(_export, {
+    name: "export",
+    description: "Export the api.",
+    parameters: {
+      properties: { api: { description: "The api to export", type: "object" } },
+      required: ["api"],
+      type: "object",
+    },
+  });
+  wm.getApp = schemaFunction(getApp, {
+    name: "getApp",
+    description: "Get the app.",
+    parameters: {
+      properties: {
+        clientId: { default: "*", description: "The clientId", type: "string" },
+      },
+      type: "object",
+    },
+  });
+  wm.listApps = schemaFunction(listApps, {
+    name: "listApps",
+    description: "List the apps.",
+    parameters: {
+      properties: {
+        workspace: {
+          default: workspace,
+          description: "The workspace",
+          type: "string",
+        },
+      },
+      type: "object",
+    },
+  });
+  wm.disconnect = schemaFunction(rpc.disconnect.bind(rpc), {
+    name: "disconnect",
+    description: "Disconnect from the server.",
+    parameters: { type: "object", properties: {}, required: [] },
+  });
+  wm.registerCodec = schemaFunction(rpc.register_codec.bind(rpc), {
+    name: "registerCodec",
+    description: "Register a codec for the webrtc connection",
+    parameters: {
+      type: "object",
+      properties: {
+        codec: {
+          type: "object",
+          description: "Codec to register",
+          properties: {
+            name: { type: "string" },
+            type: {},
+            encoder: { type: "function" },
+            decoder: { type: "function" },
+          },
+        },
+      },
+    },
+  });
+  wm.emit = schemaFunction(rpc.emit.bind(rpc), {
+    name: "emit",
+    description: "Emit a message.",
+    parameters: {
+      properties: { data: { description: "The data to emit", type: "object" } },
+      required: ["data"],
+      type: "object",
+    },
+  });
+  wm.on = schemaFunction(rpc.on.bind(rpc), {
+    name: "on",
+    description: "Register a message handler.",
+    parameters: {
+      properties: {
+        event: { description: "The event to listen to", type: "string" },
+        handler: { description: "The handler function", type: "function" },
+      },
+      required: ["event", "handler"],
+      type: "object",
+    },
+  });
+  wm.registerService = schemaFunction(rpc.register_service.bind(rpc), {
+    name: "registerService",
+    description: "Register a service.",
+    parameters: {
+      properties: {
+        service: { description: "The service to register", type: "object" },
+        force: {
+          default: false,
+          description: "Force to register the service",
+          type: "boolean",
+        },
+      },
+      required: ["service"],
+      type: "object",
+    },
+  });
+  wm.unregisterService = schemaFunction(rpc.unregister_service.bind(rpc), {
+    name: "unregisterService",
+    description: "Unregister a service.",
+    parameters: {
+      properties: {
+        service: {
+          description: "The service id to unregister",
+          type: "string",
+        },
+        notify: {
+          default: true,
+          description: "Notify the workspace manager",
+          type: "boolean",
+        },
+      },
+      required: ["service"],
+      type: "object",
+    },
+  });
   if (connection.manager_id) {
     rpc.on("force-exit", async (message) => {
       if (message.from === "*/" + connection.manager_id) {
@@ -409,47 +568,33 @@ export async function connectToServer(config) {
   }
   if (config.webrtc) {
     await registerRTCService(wm, clientId + "-rtc", config.webrtc_config);
+    // make a copy of wm
+    const _wm = Object.assign({}, wm);
+    wm.getService = schemaFunction(webrtcGetService.bind(null, _wm, clientId + "-rtc"), {
+      name: "getService",
+      description: "Get a service via webrtc.",
+      parameters: {
+        properties: {
+          query: {
+            description: "The query to get the service",
+            type: "object",
+          },
+          webrtc: {
+            default: "auto",
+            description: "Use webrtc to get the service",
+            type: ["boolean", "string"],
+          },
+          webrtc_config: {
+            description: "The webrtc configuration",
+            type: "object",
+          },
+        },
+        required: ["query"],
+        type: "object",
+      },
+    });
   }
-  if (wm.get_service || wm.getService) {
-    const _get_service = wm.get_service || wm.getService;
-    wm.get_service = async function (query, webrtc, webrtc_config) {
-      assert(
-        [undefined, true, false, "auto"].includes(webrtc),
-        "webrtc must be true, false or 'auto'",
-      );
-      // pass other arguments to get_service
-      const otherArgs = Array.prototype.slice.call(arguments, 3);
-      const svc = await _get_service(query, ...otherArgs);
-      if (webrtc === true || webrtc === "auto") {
-        if (svc.id.includes(":") && svc.id.includes("/")) {
-          const client = svc.id.split(":")[0];
-          try {
-            // Assuming that the client registered a webrtc service with the client_id + "-rtc"
-            const peer = await getRTCService(
-              wm,
-              client + ":" + client.split("/")[1] + "-rtc",
-              webrtc_config,
-            );
-            const rtcSvc = await peer.get_service(svc.id.split(":")[1]);
-            rtcSvc._webrtc = true;
-            rtcSvc._peer = peer;
-            rtcSvc._service = svc;
-            return rtcSvc;
-          } catch (e) {
-            console.warn(
-              "Failed to get webrtc service, using websocket connection",
-              e,
-            );
-          }
-        }
-        if (webrtc === true) {
-          throw new Error("Failed to get the service via webrtc");
-        }
-      }
-      return svc;
-    };
-    wm.getService = wm.get_service;
-  }
+
   return wm;
 }
 

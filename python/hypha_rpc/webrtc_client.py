@@ -8,6 +8,7 @@ from functools import partial
 
 import shortuuid
 from hypha_rpc import RPC
+from .utils.schema import schema_function
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("webrtc-client")
@@ -211,20 +212,58 @@ async def get_rtc_service(server, service_id, config=None):
             rpc = await _setup_rpc(config)
             pc.rpc = rpc
 
-            async def get_service(name):
+            async def get_service(name, *args, **kwargs):
+                assert ":" not in name, "Service name cannot contain ':'"
+                assert "/" not in name, "Service name cannot contain '/'"
                 return await rpc.get_remote_service(
-                    config["workspace"] + "/" + config["peer_id"] + ":" + name
+                    config["workspace"] + "/" + config["peer_id"] + ":" + name,
+                    *args,
+                    **kwargs
                 )
 
             async def disconnect():
                 await rpc.disconnect()
                 await pc.close()
 
-            pc.get_service = get_service
-            pc.getService = get_service
-            pc.disconnect = disconnect
-            pc.register_codec = rpc.register_codec
-            pc.registerCodec = rpc.register_codec
+            pc.get_service = schema_function(
+                get_service,
+                name="get_service",
+                description="Get a remote service via webrtc",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "name of the service"}
+                    },
+                    "required": ["name"],
+                },
+            )
+            pc.disconnect = schema_function(
+                disconnect,
+                name="disconnect",
+                description="Disconnect the webrtc connection",
+                parameters={"type": "object", "properties": {}, "required": []},
+            )
+            pc.register_codec = schema_function(
+                rpc.register_codec,
+                name="register_codec",
+                description="Register a codec",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "codec": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "type": {},
+                                "encoder": {"type": "function"},
+                                "decoder": {"type": "function"},
+                            },
+                            "description": "codec",
+                        }
+                    },
+                    "required": ["codec"],
+                },
+            )
             fut.set_result(pc)
             logger.info("Webrtc-based RPC connection established")
 

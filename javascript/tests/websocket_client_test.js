@@ -1,7 +1,7 @@
 import { expect } from "chai";
 import { login, connectToServer } from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
-import { assert } from "../src/utils.js";
+import { assert } from "../src/utils";
 
 const SERVER_URL = "http://127.0.0.1:9394";
 
@@ -23,6 +23,22 @@ describe("RPC", async () => {
     await api.disconnect();
   }).timeout(20000);
 
+  it("should contain schema", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-plugin-1",
+    });
+    for (let key of Object.keys(api)) {
+      const value = api[key];
+      if (typeof value === "function") {
+        console.log(`checking schema for ${key}`);
+        expect(value.__schema__).to.be.a("object");
+        expect(value.__schema__.name).to.be.equal(key);
+      }
+    }
+    await api.disconnect();
+  }).timeout(20000);
+
   it("should connect via webrtc", async () => {
     const service_id = "test-rtc-service-1";
     const server = await connectToServer({
@@ -40,6 +56,25 @@ describe("RPC", async () => {
     await registerRTCService(server, service_id);
     const pc = await getRTCService(server, service_id);
     const svc = await pc.getService("echo-service-rtc");
+    expect(await svc.echo("hello")).to.equal("hello");
+  }).timeout(20000);
+
+  it("should connect via webrtc (auto)", async () => {
+    const service_id = "test-rtc-service-1";
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-plugin-1",
+      webrtc: true,
+    });
+    await server.registerService({
+      id: "echo-service-rtc",
+      config: {
+        visibility: "public",
+      },
+      type: "echo",
+      echo: (x) => x,
+    });
+    const svc = await server.getService("echo-service-rtc");
     expect(await svc.echo("hello")).to.equal("hello");
   }).timeout(20000);
 
@@ -76,7 +111,7 @@ describe("RPC", async () => {
       /* multiply two numbers */
       return a * b;
     }
-    await api.register_service({
+    await api.registerService({
       name: "my service",
       id: "test-service",
       description: "test service",
@@ -105,7 +140,7 @@ describe("RPC", async () => {
       }
       return a * b;
     }
-    await api.register_service({
+    await api.registerService({
       name: "my service",
       id: "test-service",
       description: "test service",
@@ -180,7 +215,7 @@ describe("RPC", async () => {
         return a + b;
       },
     };
-    await server.register_service(itf);
+    await server.registerService(itf);
     const received_itf = await api.echo(itf);
     expect(await received_itf.add(1, 3)).to.equal(4);
     expect(await received_itf.add(9, 3)).to.equal(12);

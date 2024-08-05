@@ -87,15 +87,14 @@ def test_key_collision():
 
 
 def test_recursive_initialization():
-    d = dotdict({"a": {"b": {"c": 2}}})
+    d = dotdict.from_dict({"a": {"b": {"c": 2}}})
     assert isinstance(d.a, dotdict)
     assert isinstance(d.a.b, dotdict)
     assert d.a.b.c == 2
 
 
 def test_recursive_setitem():
-    d = dotdict()
-    d["a"] = {"b": {"c": 2}}
+    d = dotdict.from_dict({"a": {"b": {"c": 2}}})
     assert isinstance(d.a, dotdict)
     assert isinstance(d.a.b, dotdict)
     assert d.a.b.c == 2

@@ -1,6 +1,6 @@
 {
   "name": "hypha-rpc",
-  "version": "0.20.2",
+  "version": "0.20.3",
   "description": "Hypha RPC client for connecting to Hypha server for data management and AI model serving.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -16,8 +16,8 @@
     "format": "prettier --write \"{src,tests}/**/**\"",
     "check-format": "prettier --check \"{src,tests}/**/**\"",
     "start-hypha-server": "python -m hypha.server --port 9394",
-    "test": "concurrently --kill-others-on-fail \"npm run start-hypha-server\" \"sleep 5 && karma start --single-run --browsers ChromeHeadless,FirefoxHeadless karma.conf.js\"",
-    "test-watch": "concurrently --kill-others-on-fail \"npm run start-hypha-server\" \"sleep 5 && karma start --auto-watch --browsers ChromeDebugging karma.conf.js --debug\""
+    "test": "concurrently --kill-others \"npm run start-hypha-server\" \"sleep 5 && karma start --single-run --browsers ChromeHeadless,FirefoxHeadless karma.conf.js\"",
+    "test-watch": "concurrently --kill-others \"npm run start-hypha-server\" \"sleep 5 && karma start --auto-watch --browsers ChromeDebugging karma.conf.js --debug\""
   },
   "repository": {
     "type": "git",

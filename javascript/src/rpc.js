@@ -9,7 +9,8 @@ import {
   MessageEmitter,
   assert,
   waitFor,
-} from "./utils.js";
+  convertCase,
+} from "./utils";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
@@ -34,20 +35,24 @@ function indexObject(obj, is) {
   else return indexObject(obj[is[0]], is.slice(1));
 }
 
-function _get_schema(obj, prefix = "", skipContext = false) {
+function _get_schema(obj, name = null, skipContext = false) {
   if (obj instanceof Object) {
     let schema = {};
     for (let k in obj) {
-      schema[k] = _get_schema(obj[k], prefix + "." + k, skipContext);
+      schema[k] = _get_schema(obj[k], k, skipContext);
     }
     return schema;
   }
   if (obj instanceof Array) {
-    return obj.map((v, i) => _get_schema(v, prefix + "." + i, skipContext));
+    return obj.map((v, i) => _get_schema(v, null, skipContext));
   }
   if (typeof obj === "function") {
     if (obj.__schema__) {
       const schema = JSON.parse(JSON.stringify(obj.__schema__));
+      if (name) {
+        schema.name = name;
+        obj.__schema__.name = name;
+      }
       if (skipContext) {
         if (schema.parameters && schema.parameters.properties) {
           delete schema.parameters.properties["context"];
@@ -408,11 +413,12 @@ export class RPC extends MessageEmitter {
     await this._connection.disconnect();
   }
 
-  async get_manager_service(timeout) {
+  async get_manager_service(timeout, case_conversion = null) {
     assert(this._connection.manager_id, "Manager id is not set");
     const svc = await this.get_remote_service(
       `*/${this._connection.manager_id}:default`,
       timeout,
+      case_conversion,
     );
     return svc;
   }
@@ -448,7 +454,7 @@ export class RPC extends MessageEmitter {
       `Permission denied for getting protected service: ${service_id}, workspace mismatch: ${ws} != ${context["ws"]}`,
     );
   }
-  async get_remote_service(service_uri, timeout) {
+  async get_remote_service(service_uri, timeout, case_conversion = null) {
     timeout = timeout === undefined ? this._method_timeout : timeout;
     if (!service_uri && this._connection.manager_id) {
       service_uri = "*/" + this._connection.manager_id;
@@ -481,7 +487,8 @@ export class RPC extends MessageEmitter {
         "Timeout Error: Failed to get remote service: " + service_uri,
       );
       svc.id = `${provider}:${service_id}`;
-      return svc;
+      if (case_conversion) return convertCase(svc, case_conversion);
+      else return svc;
     } catch (e) {
       console.warn("Failed to get remote service: " + service_uri, e);
       throw e;
@@ -602,7 +609,7 @@ export class RPC extends MessageEmitter {
 
   _extract_service_info(service) {
     const skipContext = service.config.require_context;
-    const serviceInfo = _get_schema(service, "", skipContext);
+    const serviceInfo = _get_schema(service, null, skipContext);
     (serviceInfo.id = `${this._client_id}:${service["id"]}`),
       (serviceInfo.description = service["description"] || ""),
       (serviceInfo.app_id = this._app_id);
@@ -614,22 +621,27 @@ export class RPC extends MessageEmitter {
     const service = this.add_service(api, overwrite);
     const serviceInfo = this._extract_service_info(service);
     if (notify) {
-      if (this._connection.manager_id) {
-        await this.emit({
-          type: "service-added",
-          to: "*/" + this._connection.manager_id,
-          service: serviceInfo,
-        });
-      } else {
-        await this.emit({
-          type: "service-added",
-          to: "*",
-          service: serviceInfo,
-        });
+      try {
+        if (this._connection.manager_id) {
+          await this.emit({
+            type: "service-added",
+            to: "*/" + this._connection.manager_id,
+            service: serviceInfo,
+          });
+        } else {
+          await this.emit({
+            type: "service-added",
+            to: "*",
+            service: serviceInfo,
+          });
+        }
+      } catch (e) {
+        throw new Error(`Failed to notify workspace manager: ${e}`);
       }
     }
     return serviceInfo;
   }
+
   async unregister_service(service, notify) {
     if (service instanceof Object) {
       service = service.id;

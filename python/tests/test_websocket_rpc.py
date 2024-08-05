@@ -1,7 +1,6 @@
 """Test the hypha server."""
 
 import asyncio
-from inspect import signature
 
 import numpy as np
 import pytest
@@ -38,6 +37,20 @@ class ImJoyPlugin:
     async def add(self, data):
         """Add function."""
         return data + 1.0
+
+
+@pytest.mark.asyncio
+async def test_schema(websocket_server):
+    """Test schema."""
+    api = await connect_to_server(
+        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+    )
+    for k in api:
+        if callable(api[k]):
+            assert (
+                hasattr(api[k], "__schema__") and api[k].__schema__ is not None
+            ), f"Schema not found for {k}"
+            assert api[k].__schema__.get("name") == k, f"Schema name not match for {k}"
 
 
 @pytest.mark.asyncio
@@ -261,6 +274,8 @@ async def test_rtc_service(websocket_server):
             "server_url": WS_SERVER_URL,
         }
     )
+    assert "get_service" in server and "getService" not in server
+    assert "register_service" in server and "registerService" not in server
     await server.register_service(
         {
             "id": "echo-service",
@@ -299,6 +314,29 @@ def test_rtc_service_sync(websocket_server):
     svc = pc.get_service("echo-service")
     assert svc.echo("hello") == "hello", "echo service failed"
     pc.close()
+
+
+def test_rtc_service_auto(websocket_server):
+    """Test RTC service."""
+    from hypha_rpc import connect_to_server_sync
+
+    server = connect_to_server_sync(
+        {
+            "server_url": WS_SERVER_URL,
+            "webrtc": True,
+        }
+    )
+    server.register_service(
+        {
+            "id": "echo-service",
+            "config": {"visibility": "public"},
+            "type": "echo",
+            "echo": lambda x: x,
+        }
+    )
+    
+    svc = server.get_service("echo-service")
+    assert svc.echo("hello") == "hello", "echo service failed"
 
 
 def test_connect_to_server_sync_lock(websocket_server):

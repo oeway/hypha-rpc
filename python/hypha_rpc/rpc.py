@@ -20,8 +20,9 @@ from .utils import (
     dotdict,
     format_traceback,
     callable_doc,
+    convert_case,
 )
-from .utils.schema import parse_schema_function
+from .utils.schema import Field
 
 CHUNK_SIZE = 1024 * 500
 API_VERSION = "0.3.0"
@@ -77,27 +78,27 @@ def index_object(obj, ids):
         return index_object(_obj, ids[1:])
 
 
-def _get_schema(obj, prefix="", skip_context=False):
+def _get_schema(obj, name=None, skip_context=False):
     """Get schema."""
     if isinstance(obj, dict):
         schema = {}
         for k, v in obj.items():
-            schema[k] = _get_schema(
-                v, prefix + "." + k if prefix else k, skip_context=skip_context
-            )
+            schema[k] = _get_schema(v, k, skip_context=skip_context)
         return schema
     elif isinstance(obj, (list, tuple)):
         return [
             _get_schema(
                 v,
-                prefix + "." + str(i) if prefix else str(i),
                 skip_context=skip_context,
             )
-            for i, v in enumerate(obj)
+            for v in obj
         ]
     elif callable(obj):
         if hasattr(obj, "__schema__"):
             schema = obj.__schema__.copy()
+            if name:
+                schema["name"] = name
+                obj.__schema__["name"] = name
             if skip_context:
                 if "parameters" in schema:
                     if "properties" in schema["parameters"]:
@@ -256,7 +257,7 @@ class RPC(MessageEmitter):
 
         self.check_modules()
 
-    def register_codec(self, config):
+    def register_codec(self, config: dict):
         """Register codec."""
         assert "name" in config
         assert "encoder" in config or "decoder" in config
@@ -394,11 +395,13 @@ class RPC(MessageEmitter):
         self._fire("disconnected")
         await self._connection.disconnect()
 
-    async def get_manager_service(self, timeout=None):
+    async def get_manager_service(self, timeout=None, case_conversion=None):
         """Get remote root service."""
         assert self._connection.manager_id, "Manager id is not set"
         svc = await self.get_remote_service(
-            f"*/{self._connection.manager_id}:default", timeout=timeout
+            f"*/{self._connection.manager_id}:default",
+            timeout=timeout,
+            case_conversion=case_conversion,
         )
         return svc
 
@@ -428,7 +431,9 @@ class RPC(MessageEmitter):
             f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}"
         )
 
-    async def get_remote_service(self, service_uri=None, timeout=None):
+    async def get_remote_service(
+        self, service_uri=None, timeout=None, case_conversion=None
+    ):
         """Get a remote service."""
         timeout = timeout or self._method_timeout
         if service_uri is None and self._connection.manager_id:
@@ -454,7 +459,10 @@ class RPC(MessageEmitter):
             )
             svc = await asyncio.wait_for(method(service_id), timeout=timeout)
             svc["id"] = service_uri
-            return svc
+            if case_conversion:
+                return dotdict.from_dict(convert_case(svc, case_conversion))
+            else:
+                return dotdict.from_dict(svc)
         except Exception as exp:
             logger.warning("Failed to get remote service: %s: %s", service_id, exp)
             raise exp
@@ -517,7 +525,7 @@ class RPC(MessageEmitter):
         # convert and store it in a docdict
         # such that the methods are hashable
         if isinstance(api, dict):
-            api = dotdict(
+            api = dotdict.from_dict(
                 {
                     a: api[a]
                     for a in api.keys()
@@ -525,7 +533,7 @@ class RPC(MessageEmitter):
                 }
             )
         elif inspect.isclass(type(api)):
-            api = dotdict(
+            api = dotdict.from_dict(
                 {
                     a: getattr(api, a)
                     for a in dir(api)
@@ -579,28 +587,33 @@ class RPC(MessageEmitter):
         service_info["id"] = f'{self._client_id}:{service["id"]}'
         service_info["description"] = service.get("description", "")
         service_info["app_id"] = self._app_id
-        return dotdict(service_info)
+        return dotdict.from_dict(service_info)
 
-    async def register_service(self, api, overwrite=False, notify=True):
+    async def register_service(
+        self, api: dict, overwrite: bool = False, notify: bool = True
+    ):
         """Register a service."""
         service = self.add_service(api, overwrite=overwrite)
         service_info = self._extract_service_info(service)
         if notify:
-            if self._connection.manager_id:
-                await self.emit(
-                    {
-                        "type": "service-added",
-                        "to": "*/" + self._connection.manager_id,
-                        "service": service_info,
-                    }
-                )
-            else:
-                await self.emit(
-                    {"type": "service-added", "to": "*", "service": service_info}
-                )
+            try:
+                if self._connection.manager_id:
+                    await self.emit(
+                        {
+                            "type": "service-added",
+                            "to": "*/" + self._connection.manager_id,
+                            "service": service_info,
+                        }
+                    )
+                else:
+                    await self.emit(
+                        {"type": "service-added", "to": "*", "service": service_info}
+                    )
+            except Exception as exp:
+                raise Exception(f"Failed to notify workspace manager: {exp}")
         return service_info
 
-    async def unregister_service(self, service, notify=True):
+    async def unregister_service(self, service: dict, notify: bool = True):
         """Register a service."""
         if isinstance(service, str):
             service = self._services.get(service)

@@ -1,7 +1,7 @@
 import inspect
 from functools import wraps, partial
 from inspect import Signature, Parameter, signature
-from typing import Any, Dict
+from typing import get_origin, get_args, Union, Dict, Any, List
 
 
 try:
@@ -38,7 +38,7 @@ def get_type_name(tp):
     return {}  # Return an empty schema for non-primitive types
 
 
-def extract_parameter_schema(param):
+def extract_parameter_schema(param, mode="strict"):
     """Extract the schema for a given parameter."""
     if param.annotation != inspect._empty:
         param_type = get_type_name(param.annotation)
@@ -50,8 +50,43 @@ def extract_parameter_schema(param):
     if param.default != inspect._empty:
         if isinstance(param.default, (int, float, str, bool, list, dict, type(None))):
             param_schema["default"] = param.default
-        if isinstance(param.default, Field):
+        elif isinstance(param.default, Field):
             param_schema["description"] = param.default.description
+            if (
+                param.default.default != Ellipsis
+                and param.default.default != inspect._empty
+            ):
+                serializable = isinstance(
+                    param.default.default,
+                    (int, float, str, bool, list, dict, type(None)),
+                )
+                if mode == "strict" and not serializable:
+                    raise ValueError(
+                        f"Argument `{param.name}` must have a default value that is json serializable"
+                    )
+                if serializable:
+                    param_schema["default"] = param.default.default
+        elif PYDANTIC_AVAILABLE and isinstance(param.default, FieldInfo):
+            param_schema["description"] = param.default.description
+            if (
+                param.default.default != Ellipsis
+                and param.default.default != PydanticUndefined
+                and param.default.default != inspect._empty
+            ):
+                serializable = isinstance(
+                    param.default.default,
+                    (int, float, str, bool, list, dict, type(None)),
+                )
+                if mode == "strict" and not serializable:
+                    raise ValueError(
+                        f"Argument `{param.name}` must have a default value that is json serializable"
+                    )
+                if serializable:
+                    param_schema["default"] = param.default.default
+        elif mode == "strict":
+            raise ValueError(
+                f"Argument `{param.name}` must have a default value that is json serializable or a Field object"
+            )
 
     return param_schema
 
@@ -69,6 +104,17 @@ def fill_missing_args_and_kwargs(original_func_sig, args, kwargs):
     bound_args.apply_defaults()
     return bound_args.args, bound_args.kwargs
 
+def extract_annotations(annotation: Any) -> List[Any]:
+    """Get nested annotations from a given annotation for Union and Optional types."""
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    
+    if origin is Union:
+        # If it's Optional (Union[T, NoneType]), remove NoneType
+        return [arg for arg in args if arg is not type(None)]
+    
+    # Return a list containing the annotation itself
+    return [annotation]
 
 def schema_function_native(original_func, name=None, mode="strict", skip_self=False):
     """Decorator to add input/output schema to a function."""
@@ -101,14 +147,21 @@ def schema_function_native(original_func, name=None, mode="strict", skip_self=Fa
     if skip_self and parameters:
         parameters = parameters[1:]
 
+    required = []
+    for name, param in parameters:
+        if param.default == inspect._empty:
+            required.append(name)
+        elif isinstance(param.default, (Field, FieldInfo)):
+            if param.default.default in [inspect._empty, Ellipsis]:
+                required.append(name)
+
     func_schema = {
         "type": "object",
         "properties": {
-            name: extract_parameter_schema(param) for name, param in parameters
+            name: extract_parameter_schema(param, mode=mode)
+            for name, param in parameters
         },
-        "required": [
-            name for name, param in parameters if param.default == inspect._empty
-        ],
+        "required": required,
     }
 
     if inspect.iscoroutinefunction(original_func):
@@ -196,7 +249,7 @@ def extract_pydantic_schema(
             defaults.append(PydanticField(..., description=name))
         else:
             if mode == "strict":
-                if isinstance(sig.parameters[name].default, FieldInfo):
+                if isinstance(sig.parameters[name].default, (Field, FieldInfo)):
                     assert (
                         sig.parameters[name].default.description is not None
                     ), f"Argument `{name}` for `{func_name}` must have a description"
@@ -206,12 +259,18 @@ def extract_pydantic_schema(
                         raise ValueError(
                             f"Argument `{name}` for `{func_name}` must be a Pydantic FieldInfo object with description"
                         )
-
-            default_value = (
-                sig.parameters[name].default
-                if isinstance(sig.parameters[name].default, FieldInfo)
-                else PydanticField(default=sig.parameters[name].default)
-            )
+            if isinstance(sig.parameters[name].default, Field):
+                # convert native field to pydantic field
+                default_value = PydanticField(
+                    default=sig.parameters[name].default.default,
+                    description=sig.parameters[name].default.description,
+                )
+            else:
+                default_value = (
+                    sig.parameters[name].default
+                    if isinstance(sig.parameters[name].default, FieldInfo)
+                    else PydanticField(default=sig.parameters[name].default)
+                )
             # check if the actual value is json serializable
             if default_value.default != PydanticUndefined and not isinstance(
                 default_value.default, (int, float, str, bool, type(None))
@@ -296,26 +355,28 @@ def schema_function_pydantic(
         # Convert dictionary inputs to Pydantic model if needed
         final_args = []
         for arg, param in zip(new_args, func_sig.parameters.values()):
-            if (
-                isinstance(param.default, FieldInfo)
-                and isinstance(param.annotation, type)
-                and issubclass(param.annotation, BaseModel)
-            ):
-                if isinstance(arg, dict):
-                    arg = param.annotation(**arg)
+            annotations = extract_annotations(param.annotation)
+            for annotation in annotations:
+                if (
+                    isinstance(annotation, type)
+                    and issubclass(annotation, BaseModel)
+                ):
+                    if isinstance(arg, dict):
+                        arg = annotation(**arg)
             final_args.append(arg)
 
         final_kwargs = {}
         for k, v in new_kwargs.items():
             param = func_sig.parameters[k]
-            if (
-                isinstance(param.default, FieldInfo)
-                and isinstance(param.annotation, type)
-                and issubclass(param.annotation, BaseModel)
-            ):
-                if isinstance(v, dict):
-                    v = param.annotation(**v)
-            final_kwargs[k] = v
+            annotations = extract_annotations(param.annotation)
+            for annotation in annotations:
+                if (
+                    isinstance(annotation, type)
+                    and issubclass(annotation, BaseModel)
+                ):
+                    if isinstance(v, dict):
+                        v = annotation(**v)
+                final_kwargs[k] = v
         return final_args, final_kwargs
 
     if inspect.iscoroutinefunction(original_func):
@@ -348,8 +409,42 @@ def schema_function_pydantic(
     return wrapper
 
 
-def schema_function(func=None, name=None, schema_type="auto", skip_self=False):
+def schema_function(
+    func=None,
+    schema_type="auto",
+    skip_self=False,
+    name=None,
+    description=None,
+    parameters=None,
+):
     """Decorator to add input/output schema to a function."""
+    if parameters is not None:
+        assert (
+            schema_type == "auto"
+        ), "Parameters can only be used with schema_type='auto'"
+        schema = {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        }
+        try:
+            func.__schema__ = schema
+        except AttributeError:
+            if inspect.iscoroutinefunction(func):
+
+                @wraps(func)
+                async def wrapper(*args, **kwargs):
+                    return await func(*args, **kwargs)
+
+            else:
+
+                @wraps(func)
+                def wrapper(*args, **kwargs):
+                    return func(*args, **kwargs)
+
+            wrapper.__schema__ = schema
+            return wrapper
+
     if ":" in schema_type:
         schema_type, mode = schema_type.split(":")
     else:

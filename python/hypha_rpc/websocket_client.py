@@ -7,9 +7,12 @@ import sys
 
 import shortuuid
 import json
+from functools import partial
 
 from .rpc import RPC
 from .utils import dotdict
+from .utils.schema import schema_function
+
 
 try:
     import js  # noqa: F401
@@ -351,6 +354,43 @@ def connect_to_server(config):
     return ServerContextManager(config)
 
 
+async def webrtc_get_service(wm, rtc_service_id, query, webrtc=None, webrtc_config=None, **kwargs):
+    assert webrtc in [
+        None,
+        True,
+        False,
+        "auto",
+    ], "webrtc must be true, false or 'auto'"
+    # pass other kwargs to the original get_service function
+    svc = await wm.get_service(query, **kwargs)
+
+    from .webrtc_client import AIORTC_AVAILABLE, get_rtc_service
+
+    if ":" in svc.id and "/" in svc.id and AIORTC_AVAILABLE:
+        try:
+            # Assuming that the client registered
+            # a webrtc service with the client_id + "-rtc"
+            peer = await get_rtc_service(
+                wm,
+                rtc_service_id,
+                webrtc_config,
+            )
+            rtc_svc = await peer.get_service(svc.id.split(":")[1])
+            rtc_svc._webrtc = True
+            rtc_svc._peer = peer
+            rtc_svc._service = svc
+            return rtc_svc
+        except Exception:
+            logger.warning(
+                "Failed to get webrtc service, using websocket connection"
+            )
+    if webrtc is True:
+        if not AIORTC_AVAILABLE:
+            raise Exception("aiortc is not available, please install it first.")
+        raise Exception("Failed to get the service via webrtc")
+    return svc
+
+
 async def _connect_to_server(config):
     """Connect to RPC via a hypha server."""
     client_id = config.get("client_id")
@@ -393,10 +433,12 @@ async def _connect_to_server(config):
         loop=config.get("loop"),
         app_id=config.get("app_id"),
     )
-    wm = await rpc.get_manager_service()
+    wm = await rpc.get_manager_service(
+        timeout=config.get("method_timeout", 30), case_conversion="snake"
+    )
     wm.rpc = rpc
 
-    def export(api):
+    def export(api: dict):
         """Export the api."""
         # Convert class instance to a dict
         if not isinstance(api, dict) and inspect.isclass(type(api)):
@@ -405,29 +447,152 @@ async def _connect_to_server(config):
         api["description"] = api.get("description") or config.get("description")
         return asyncio.ensure_future(rpc.register_service(api, overwrite=True))
 
-    async def get_app(client_id):
-        """Get an app."""
-        assert ":" not in client_id, "client_id should not contain ':'"
-        assert (
-            client_id.count("/") <= 1
-        ), "client_id should not contain more than one '/'"
-        return await wm.get_service(client_id + ":default")
+    async def get_app(client_id: str):
+        """Get the app."""
+        assert ":" not in client_id, "clientId should not contain ':'"
+        query = {"client_id": client_id, "service_id": "default"}
+        return await wm.get_service(query)
 
-    wm.config = dotdict(wm.config)
+    async def list_apps(workspace: str):
+        """List the apps."""
+        assert ":" not in workspace, "workspace should not contain ':'"
+        assert "/" not in workspace, "workspace should not contain '/'"
+        query = {"workspace": workspace, "service_id": "default"}
+        return await wm.list_services(query)
+
     if connection_info:
         wm.config.update(connection_info)
 
-    wm.export = export
-    wm.get_app = get_app
-    wm.list_plugins = wm.list_services
-    wm.disconnect = rpc.disconnect
-    wm.register_codec = rpc.register_codec
-    wm.emit = rpc.emit
-    wm.on = rpc.on
-    wm.register_service = rpc.register_service
-    wm.registerService = wm.register_service
-    wm.unregister_service = rpc.unregister_service
-    wm.unregisterService = wm.unregister_service
+    wm.export = schema_function(
+        export,
+        name="export",
+        description="Export the api.",
+        parameters={
+            "properties": {
+                "api": {"description": "The api to export", "type": "object"}
+            },
+            "required": ["api"],
+            "type": "object",
+        },
+    )
+    wm.get_app = schema_function(
+        get_app,
+        name="get_app",
+        description="Get the app.",
+        parameters={
+            "properties": {
+                "clientId": {
+                    "default": "*",
+                    "description": "The clientId",
+                    "type": "string",
+                }
+            },
+            "type": "object",
+        },
+    )
+    wm.list_apps = schema_function(
+        list_apps,
+        name="list_apps",
+        description="List the apps.",
+        parameters={
+            "properties": {
+                "workspace": {
+                    "default": workspace,
+                    "description": "The workspace",
+                    "type": "string",
+                }
+            },
+            "type": "object",
+        },
+    )
+    wm.disconnect = schema_function(
+        rpc.disconnect,
+        name="disconnect",
+        description="Disconnect.",
+        parameters={"properties": {}, "type": "object"},
+    )
+    wm.register_codec = schema_function(
+        rpc.register_codec,
+        name="register_codec",
+        description="Register a codec",
+        parameters={
+            "type": "object",
+            "properties": {
+                "codec": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "type": {},
+                        "encoder": {"type": "function"},
+                        "decoder": {"type": "function"},
+                    },
+                    "description": "codec",
+                }
+            },
+            "required": ["codec"],
+        },
+    )
+    wm.emit = schema_function(
+        rpc.emit,
+        name="emit",
+        description="Emit a message.",
+        parameters={
+            "properties": {
+                "data": {"description": "The data to emit", "type": "object"}
+            },
+            "required": ["data"],
+            "type": "object",
+        },
+    )
+    wm.on = schema_function(
+        rpc.on,
+        name="on",
+        description="Register a message handler.",
+        parameters={
+            "properties": {
+                "event": {"description": "The event to listen to", "type": "string"},
+                "handler": {"description": "The handler function", "type": "function"},
+            },
+            "required": ["event", "handler"],
+            "type": "object",
+        },
+    )
+    wm.register_service = schema_function(
+        rpc.register_service,
+        name="register_service",
+        description="Register a service.",
+        parameters={
+            "properties": {
+                "service": {"description": "The service to register", "type": "object"},
+                "force": {
+                    "default": False,
+                    "description": "Force to register the service",
+                    "type": "boolean",
+                },
+            },
+            "required": ["service"],
+            "type": "object",
+        },
+    )
+    wm.unregister_service = schema_function(
+        rpc.unregister_service,
+        name="unregister_service",
+        description="Unregister a service.",
+        parameters={
+            "properties": {
+                "service": {
+                    "description": "The service id to unregister",
+                    "type": "string",
+                },
+                "notify": {
+                    "default": True,
+                    "description": "Notify the workspace manager",
+                },
+            },
+            "required": ["service"],
+            "type": "object",
+        },
+    )
     if connection.manager_id:
 
         async def handle_disconnect(message):
@@ -440,56 +605,51 @@ async def _connect_to_server(config):
         rpc.on("force-exit", handle_disconnect)
 
     if config.get("webrtc", False):
-        from .webrtc_client import AIORTC_AVAILABLE, register_rtc_service
+        from .webrtc_client import AIORTC_AVAILABLE, register_rtc_service, get_rtc_service
 
         if not AIORTC_AVAILABLE:
             raise Exception("aiortc is not available, please install it first.")
         await register_rtc_service(wm, client_id + "-rtc", config.get("webrtc_config"))
-
-    if "get_service" in wm or "getService" in wm:
-        _get_service = wm.get_service or wm.getService
-
-        async def get_service(query, webrtc=None, webrtc_config=None, **kwargs):
-            assert webrtc in [
-                None,
-                True,
-                False,
-                "auto",
-            ], "webrtc must be true, false or 'auto'"
-            # pass other kwargs to the original get_service function
-            svc = await _get_service(query, **kwargs)
-            if webrtc in [True, "auto"]:
-                from .webrtc_client import AIORTC_AVAILABLE, get_rtc_service
-
-                if ":" in svc.id and "/" in svc.id and AIORTC_AVAILABLE:
-                    client = svc.id.split(":")[0]
-                    try:
-                        # Assuming that the client registered
-                        # a webrtc service with the client_id + "-rtc"
-                        peer = await get_rtc_service(
-                            wm,
-                            client + ":" + client.split("/")[1] + "-rtc",
-                            webrtc_config,
-                        )
-                        rtc_svc = await peer.get_service(svc.id.split(":")[1])
-                        rtc_svc._webrtc = True
-                        rtc_svc._peer = peer
-                        rtc_svc._service = svc
-                        return rtc_svc
-                    except Exception:
-                        logger.warning(
-                            "Failed to get webrtc service, using websocket connection"
-                        )
-                if webrtc is True:
-                    if not AIORTC_AVAILABLE:
-                        raise Exception(
-                            "aiortc is not available, please install it first."
-                        )
-                    raise Exception("Failed to get the service via webrtc")
-            return svc
-
-        wm["get_service"] = get_service
-        wm["getService"] = get_service
+        # back up wm so, webrtc can use the original wm
+        _wm = dotdict.from_dict(wm)
+        wm.get_service = schema_function(
+            partial(webrtc_get_service, _wm, client_id + "-rtc"),
+            name="get_service",
+            description="Get a service via webrtc.",
+            parameters={
+                "properties": {
+                    "query": {"description": "The query", "type": "object"},
+                    "webrtc": {
+                        "default": False,
+                        "description": "Use webrtc if available",
+                        "type": "boolean",
+                    },
+                    "webrtc_config": {
+                        "description": "The webrtc config",
+                        "type": "object",
+                    },
+                },
+                "required": ["query"],
+                "type": "object",
+            },
+        )
+        
+        wm.get_rtc_service = schema_function(
+            partial(get_rtc_service, wm, client_id + "-rtc"),
+            name="get_rtc_service",
+            description="Get the webrtc connection, returns a peer connection",
+            parameters={
+                "properties": {
+                    "query": {"description": "The query", "type": "object"},
+                    "webrtc_config": {
+                        "description": "The webrtc config",
+                        "type": "object",
+                    },
+                },
+                "required": ["query"],
+                "type": "object",
+            },
+        )
     return wm
 
 

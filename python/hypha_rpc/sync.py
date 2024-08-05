@@ -105,7 +105,7 @@ class SyncHyphaServer:
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.server:
-            self.server.disconnect()
+            self.disconnect()
 
     async def _connect(self, config):
         config["loop"] = self.loop

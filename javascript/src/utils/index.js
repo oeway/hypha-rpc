@@ -2,6 +2,66 @@ export function randId() {
   return Math.random().toString(36).substr(2, 10) + new Date().getTime();
 }
 
+export function toCamelCase(str) {
+  // Check if the string is already in camelCase
+  if (!str.includes("_")) {
+    return str;
+  }
+  // Convert from snake_case to camelCase
+  return str.replace(/_./g, (match) => match[1].toUpperCase());
+}
+
+export function toSnakeCase(str) {
+  // Convert from camelCase to snake_case
+  return str.replace(/([A-Z])/g, "_$1").toLowerCase();
+}
+
+export function convertCase(obj, caseType) {
+  if (typeof obj !== "object" || obj === null || !caseType) {
+    return obj; // Return the value if obj is not an object
+  }
+
+  const newObj = Array.isArray(obj) ? [] : {};
+
+  for (const key in obj) {
+    if (obj.hasOwnProperty(key)) {
+      const value = obj[key];
+      const camelKey = toCamelCase(key);
+      const snakeKey = toSnakeCase(key);
+
+      if (caseType === "camel") {
+        newObj[camelKey] = convertCase(value, caseType);
+        if (typeof value === "function") {
+          newObj[camelKey].__name__ = camelKey;
+          if (value.__schema__) {
+            newObj[camelKey].__schema__ = { ...value.__schema__ };
+            newObj[camelKey].__schema__.name = camelKey;
+          }
+        }
+      } else if (caseType === "snake") {
+        newObj[snakeKey] = convertCase(value, caseType);
+        if (typeof value === "function") {
+          newObj[snakeKey].__name__ = snakeKey;
+          if (value.__schema__) {
+            newObj[snakeKey].__schema__ = { ...value.__schema__ };
+            newObj[snakeKey].__schema__.name = snakeKey;
+          }
+        }
+      } else {
+        // TODO handle schema for camel + snake
+        if (caseType.includes("camel")) {
+          newObj[camelKey] = convertCase(value, "camel");
+        }
+        if (caseType.includes("snake")) {
+          newObj[snakeKey] = convertCase(value, "snake");
+        }
+      }
+    }
+  }
+
+  return newObj;
+}
+
 export const dtypeToTypedArray = {
   int8: Int8Array,
   int16: Int16Array,

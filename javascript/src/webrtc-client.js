@@ -1,5 +1,6 @@
 import { RPC } from "./rpc.js";
-import { assert, randId } from "./utils.js";
+import { assert, randId } from "./utils";
+import { schemaFunction } from "./utils/schema.js";
 
 class WebRTCConnection {
   constructor(channel) {
@@ -172,7 +173,15 @@ async function getRTCService(server, service_id, config) {
         setTimeout(async () => {
           const rpc = await _setupRPC(config);
           pc.rpc = rpc;
-          async function getService(name) {
+          async function get_service(name) {
+            assert(
+              !name.includes(":"),
+              "WebRTC service name should not contain ':'",
+            );
+            assert(
+              !name.includes("/"),
+              "WebRTC service name should not contain '/'",
+            );
             return await rpc.get_remote_service(
               config.workspace + "/" + config.peer_id + ":" + name,
             );
@@ -181,11 +190,40 @@ async function getRTCService(server, service_id, config) {
             await rpc.disconnect();
             pc.close();
           }
-          pc.get_service = getService;
-          pc.getService = getService;
-          pc.disconnect = disconnect;
-          pc.register_codec = rpc.register_codec;
-          pc.registerCodec = rpc.register_codec;
+          pc.getService = schemaFunction(get_service, {
+            name: "get_service",
+            description: "Get a remote service via webrtc",
+            parameters: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "Name of the service" },
+              },
+            },
+          });
+          pc.disconnect = schemaFunction(disconnect, {
+            name: "disconnect",
+            description: "Disconnect from the webrtc connection via webrtc",
+            parameters: { type: "object", properties: {} },
+          });
+          pc.registerCodec = schemaFunction(rpc.register_codec, {
+            name: "registerCodec",
+            description: "Register a codec for the webrtc connection",
+            parameters: {
+              type: "object",
+              properties: {
+                codec: {
+                  type: "object",
+                  description: "Codec to register",
+                  properties: {
+                    name: { type: "string" },
+                    type: {},
+                    encoder: { type: "function" },
+                    decoder: { type: "function" },
+                  },
+                },
+              },
+            },
+          });
           resolve(pc);
         }, 500);
       };

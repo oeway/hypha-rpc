@@ -11,6 +11,7 @@ from hypha_rpc.utils.schema import (
     schema_method,
     Field as NativeField,
 )
+from typing import Optional, Union
 
 from . import WS_SERVER_URL
 
@@ -55,7 +56,9 @@ class OrderManagerNative:
     def place_order(
         self,
         product_id: str,
-        quantity: int = Field(1, description="Quantity of the product to order"),
+        quantity: Optional[int] = Field(
+            1, description="Quantity of the product to order"
+        ),
     ) -> dict:
         """Place an order for a product."""
         assert isinstance(quantity, int)
@@ -81,16 +84,29 @@ class UserInfo(BaseModel):
     email: str = Field(..., description="Email of the user")
 
 
+class UserInfoDetailed(BaseModel):
+    """User information."""
+
+    name: str = Field(..., description="Name of the user")
+    email: str = Field(..., description="Email of the user")
+    age: int = Field(..., description="Age of the user")
+    address: str = Field(..., description="Address of the user")
+
+
 @schema_function(schema_type="pydantic:strict")
 def register_user(
-    user_info: UserInfo = Field(..., description="Information of the user to register"),
-    receive_newsletter: bool = Field(
+    user_info: Union[UserInfo, UserInfoDetailed] = Field(
+        ..., description="Information of the user to register"
+    ),
+    receive_newsletter: bool = NativeField(
         False, description="Whether the user wants to receive newsletters"
     ),
 ) -> str:
     """Register a new user."""
-    assert isinstance(user_info, UserInfo)
+    assert isinstance(user_info, (UserInfo, UserInfoDetailed))
     assert isinstance(receive_newsletter, bool)
+    if isinstance(user_info, UserInfoDetailed):
+        return f"User {user_info.name} registered with detailed information{' with newsletter subscription' if receive_newsletter else ''}"
     return f"User {user_info.name} registered{' with newsletter subscription' if receive_newsletter else ''}"
 
 
@@ -100,6 +116,18 @@ async def test_schema_function():
     assert (
         register_user({"name": "Alice", "email": "alice@example.com"})
         == "User Alice registered"
+    )
+
+    assert (
+        register_user(
+            {
+                "name": "Alice",
+                "email": "alice@example.com",
+                "age": 20,
+                "address": "1234 Main St",
+            }
+        )
+        == "User Alice registered with detailed information"
     )
     assert (
         register_user(UserInfo(name="Alice", email="alice@example.com"))
@@ -119,10 +147,12 @@ class OrderManager:
     def place_order(
         self,
         product_id: str,
-        quantity: int = Field(1, description="Quantity of the product to order"),
+        quantity: Optional[Union[int, str]] = Field(
+            1, description="Quantity of the product to order"
+        ),
     ) -> dict:
         """Place an order for a product."""
-        assert isinstance(quantity, int)
+        assert isinstance(quantity, (int, str))
         return dict(product_id=product_id, quantity=quantity)
 
 
@@ -132,6 +162,26 @@ async def test_schema_function_on_class_method():
     manager = OrderManager()
 
     place_order_with_schema = manager.place_order
+    assert place_order_with_schema.__schema__ == {
+        "name": "place_order",
+        "description": "Place an order for a product.",
+        "parameters": {
+            "properties": {
+                "product_id": {"description": "product_id", "type": "string"},
+                "quantity": {
+                    "anyOf": [
+                        {"type": "integer"},
+                        {"type": "string"},
+                        {"type": "null"},
+                    ],
+                    "default": 1,
+                    "description": "Quantity of the product to order",
+                },
+            },
+            "required": ["product_id"],
+            "type": "object",
+        },
+    }
 
     # If we don't pass any parameter
     # Instead of the Field which was set to the default value, it should use the default value of the Field
@@ -140,7 +190,7 @@ async def test_schema_function_on_class_method():
 
 def place_order(
     product_id: str = Field(..., description="ID of the product to order"),
-    quantity: int = Field(1, description="Quantity of the product to order"),
+    quantity: int = NativeField(1, description="Quantity of the product to order"),
 ) -> dict:
     """Place an order for a product."""
     assert isinstance(quantity, int)
@@ -150,7 +200,7 @@ def place_order(
 
 def place_order_native(
     product_id: str = NativeField(..., description="ID of the product to order"),
-    quantity: int = NativeField(1, description="Quantity of the product to order"),
+    quantity: int = Field(1, description="Quantity of the product to order"),
 ) -> dict:
     """Place an order for a product."""
     assert isinstance(quantity, int)
@@ -206,11 +256,28 @@ async def test_schema_function(websocket_server):
                     },
                     "required": ["name", "email"],
                     "type": "object",
-                }
+                },
+                "UserInfoDetailed": {
+                    "description": "User information.",
+                    "properties": {
+                        "name": {"description": "Name of the user", "type": "string"},
+                        "email": {"description": "Email of the user", "type": "string"},
+                        "age": {"description": "Age of the user", "type": "integer"},
+                        "address": {
+                            "description": "Address of the user",
+                            "type": "string",
+                        },
+                    },
+                    "required": ["name", "email", "age", "address"],
+                    "type": "object",
+                },
             },
             "properties": {
                 "user_info": {
-                    "allOf": [{"$ref": "#/$defs/UserInfo"}],
+                    "anyOf": [
+                        {"$ref": "#/$defs/UserInfo"},
+                        {"$ref": "#/$defs/UserInfoDetailed"},
+                    ],
                     "description": "Information of the user to register",
                 },
                 "receive_newsletter": {
@@ -350,10 +417,11 @@ async def test_schema_service_modes(websocket_server):
                 },
                 "quantity": {
                     "type": "int",
+                    "default": 1,
                     "description": "Quantity of the product to order",
                 },
             },
-            "required": [],
+            "required": ["product_id"],
         },
     }
     assert "name" in test_service_native.place_order.__schema__
