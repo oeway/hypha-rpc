@@ -10,9 +10,8 @@ import json
 from functools import partial
 
 from .rpc import RPC
-from .utils import dotdict
 from .utils.schema import schema_function
-
+from munch import DefaultMunch
 
 try:
     import js  # noqa: F401
@@ -615,7 +614,7 @@ async def _connect_to_server(config):
             raise Exception("aiortc is not available, please install it first.")
         await register_rtc_service(wm, client_id + "-rtc", config.get("webrtc_config"))
         # back up wm so, webrtc can use the original wm
-        _wm = dotdict.from_dict(wm)
+        _wm = DefaultMunch.fromDict(wm)
         wm.get_service = schema_function(
             partial(webrtc_get_service, _wm, client_id + "-rtc"),
             name="get_service",

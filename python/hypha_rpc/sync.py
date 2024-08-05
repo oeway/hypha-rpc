@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 
-from hypha_rpc.utils import dotdict
+from munch import DefaultMunch
 from hypha_rpc.webrtc_client import get_rtc_service as get_rtc_service_async
 from hypha_rpc.webrtc_client import (
     register_rtc_service as register_rtc_service_async,
@@ -78,7 +78,7 @@ def convert_async_to_sync(async_func, loop, executor):
 def _encode_callables(obj, wrap, loop, executor):
     """Encode callables in the given object to sync or async."""
     if isinstance(obj, dict):
-        return dotdict(
+        return DefaultMunch.fromDict(
             {k: _encode_callables(v, wrap, loop, executor) for k, v in obj.items()}
         )
     elif isinstance(obj, (list, tuple)):

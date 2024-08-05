@@ -15,6 +15,7 @@ from functools import partial
 from inspect import Parameter, Signature
 from types import BuiltinFunctionType, FunctionType
 from typing import Any
+from munch import DefaultMunch, Munch
 
 
 def generate_password(length=50):
@@ -73,93 +74,9 @@ def convert_case(obj, case_type):
             if "snake" in case_type:
                 new_obj[snake_key] = convert_case(value, "snake")
 
-    if isinstance(obj, dotdict):
-        return dotdict.from_dict(new_obj)
+    if isinstance(obj, Munch):
+        return DefaultMunch.fromDict(new_obj)
     return new_obj
-
-
-def recursive_hash(obj):
-    """Generate a hash for nested dictionaries and lists."""
-    if isinstance(obj, collections.abc.Hashable) and not isinstance(obj, dotdict):
-        return hash(obj)
-    elif isinstance(obj, dict) or isinstance(obj, dotdict):
-        return hash(tuple(sorted((k, recursive_hash(v)) for k, v in obj.items())))
-    elif isinstance(obj, (list, tuple)):
-        return hash(tuple(recursive_hash(i) for i in obj))
-    else:
-        raise TypeError(f"Unsupported type: {type(obj)}")
-
-
-class dotdict(dict):  # pylint: disable=invalid-name
-    """Access dictionary attributes with dot.notation."""
-
-    __getattr__ = dict.__getitem__
-    __delattr__ = dict.__delitem__
-
-    @classmethod
-    def from_dict(cls, obj):
-        """Convert a dictionary to a dotdict recursively."""
-        assert isinstance(obj, dict), "Input must be a dictionary"
-        new_obj = cls()
-        for key, value in obj.items():
-            if isinstance(value, dict):
-                new_obj[key] = cls.from_dict(value)
-            else:
-                new_obj[key] = value
-        return new_obj
-
-    def __init__(self, *args, **kwargs):
-        """Initialize the dotdict, recursively making all nested dicts dotdicts."""
-        super().__init__(*args, **kwargs)
-
-    def __setattr__(self, name, value):
-        """Set the attribute."""
-        if isinstance(value, dict) and not isinstance(value, dotdict):
-            value = dotdict(value)
-        super().__setitem__(name, value)
-
-    def __hash__(self):
-        """Return the hash."""
-        return hash(tuple(sorted(self.items())))
-
-    def __deepcopy__(self, memo=None):
-        """Make a deep copy."""
-        return dotdict(copy.deepcopy(dict(self), memo=memo))
-
-    def __getattribute__(self, name):
-        if name in self:
-            value = self[name]
-            if isinstance(value, dict) and not isinstance(value, dotdict):
-                value = dotdict(value)
-            return value
-        try:
-            return super().__getattribute__(name)
-        except AttributeError:
-            return None
-
-    def update(self, other=None, **kwargs):
-        """Update the dictionary with the key/value pairs from other, recursively merging nested dictionaries."""
-        if other is not None:
-            if isinstance(other, dict):
-                for key, value in other.items():
-                    if (
-                        isinstance(value, dict)
-                        and key in self
-                        and isinstance(self[key], dict)
-                    ):
-                        self[key].update(value)
-                    else:
-                        if isinstance(value, dict) and not isinstance(value, dotdict):
-                            value = dotdict(value)
-                        self[key] = value
-            else:
-                raise TypeError(
-                    "update() argument must be dict, not {}".format(
-                        type(other).__name__
-                    )
-                )
-        if kwargs:
-            self.update(kwargs)
 
 
 def format_traceback(traceback_string):

@@ -11,18 +11,17 @@ import traceback
 import weakref
 from collections import OrderedDict
 from functools import partial, reduce
+from munch import DefaultMunch
 
 import msgpack
 import shortuuid
 
 from .utils import (
     MessageEmitter,
-    dotdict,
     format_traceback,
     callable_doc,
     convert_case,
 )
-from .utils.schema import Field
 
 CHUNK_SIZE = 1024 * 500
 API_VERSION = "0.3.0"
@@ -268,7 +267,7 @@ class RPC(MessageEmitter):
                     logger.info("Removing duplicated codec: " + tp)
                     del self._codecs[tp]
 
-        self._codecs[config["name"]] = dotdict(config)
+        self._codecs[config["name"]] = DefaultMunch.fromDict(config)
 
     async def _ping(self, msg: str, context=None):
         """Handle ping."""
@@ -460,9 +459,9 @@ class RPC(MessageEmitter):
             svc = await asyncio.wait_for(method(service_id), timeout=timeout)
             svc["id"] = service_uri
             if case_conversion:
-                return dotdict.from_dict(convert_case(svc, case_conversion))
+                return DefaultMunch.fromDict(convert_case(svc, case_conversion))
             else:
-                return dotdict.from_dict(svc)
+                return DefaultMunch.fromDict(svc)
         except Exception as exp:
             logger.warning("Failed to get remote service: %s: %s", service_id, exp)
             raise exp
@@ -525,7 +524,7 @@ class RPC(MessageEmitter):
         # convert and store it in a docdict
         # such that the methods are hashable
         if isinstance(api, dict):
-            api = dotdict.from_dict(
+            api = DefaultMunch.fromDict(
                 {
                     a: api[a]
                     for a in api.keys()
@@ -533,7 +532,7 @@ class RPC(MessageEmitter):
                 }
             )
         elif inspect.isclass(type(api)):
-            api = dotdict.from_dict(
+            api = DefaultMunch.fromDict(
                 {
                     a: getattr(api, a)
                     for a in dir(api)
@@ -587,7 +586,7 @@ class RPC(MessageEmitter):
         service_info["id"] = f'{self._client_id}:{service["id"]}'
         service_info["description"] = service.get("description", "")
         service_info["app_id"] = self._app_id
-        return dotdict.from_dict(service_info)
+        return DefaultMunch.fromDict(service_info)
 
     async def register_service(
         self, api: dict, overwrite: bool = False, notify: bool = True
@@ -1426,7 +1425,7 @@ class RPC(MessageEmitter):
             elif a_object["_rtype"] == "memoryview":
                 b_object = memoryview(a_object["_rvalue"])
             elif a_object["_rtype"] == "iostream":
-                b_object = dotdict(
+                b_object = DefaultMunch.fromDict(
                     {
                         k: self._decode(
                             a_object[k],
@@ -1491,7 +1490,7 @@ class RPC(MessageEmitter):
             if isinstance(a_object, tuple):
                 a_object = list(a_object)
             isarray = isinstance(a_object, list)
-            b_object = [] if isarray else dotdict()
+            b_object = [] if isarray else DefaultMunch(None)
             keys = range(len(a_object)) if isarray else a_object.keys()
             for key in keys:
                 val = a_object[key]

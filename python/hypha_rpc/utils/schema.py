@@ -3,12 +3,11 @@ from functools import wraps, partial
 from inspect import Signature, Parameter, signature
 from typing import get_origin, get_args, Union, Dict, Any, List
 
-
 try:
     from pydantic import create_model, BaseModel
     from pydantic import Field as PydanticField
     from pydantic.fields import FieldInfo
-    from pydantic_core import PydanticUndefined
+    from pydantic_core import PydanticUndefined, ValidationError
 
     PYDANTIC_AVAILABLE = True
 except ImportError:
@@ -112,7 +111,7 @@ def extract_annotations(annotation: Any) -> List[Any]:
 
     if origin is Union:
         # If it's Optional (Union[T, NoneType]), remove NoneType
-        return [arg for arg in args if arg is not type(None)]
+        return [arg for arg in args]
 
     # Return a list containing the annotation itself
     return [annotation]
@@ -357,11 +356,18 @@ def schema_function_pydantic(
         # Convert dictionary inputs to Pydantic model if needed
         final_args = []
         for arg, param in zip(new_args, func_sig.parameters.values()):
+
             annotations = extract_annotations(param.annotation)
             for annotation in annotations:
-                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-                    if isinstance(arg, dict):
-                        arg = annotation(**arg)
+                if (
+                    isinstance(arg, dict)
+                    and isinstance(annotation, type)
+                    and issubclass(annotation, BaseModel)
+                ):
+                    try:
+                        arg = annotation.model_validate(arg)
+                    except ValidationError:
+                        pass
             final_args.append(arg)
 
         final_kwargs = {}
@@ -370,8 +376,7 @@ def schema_function_pydantic(
             annotations = extract_annotations(param.annotation)
             for annotation in annotations:
                 if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-                    if isinstance(v, dict):
-                        v = annotation(**v)
+                    v = annotation.model_validate(v)
                 final_kwargs[k] = v
         return final_args, final_kwargs
 
