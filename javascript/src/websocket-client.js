@@ -1,5 +1,5 @@
 import { RPC, API_VERSION } from "./rpc.js";
-import { assert, randId, waitFor } from "./utils";
+import { assert, randId, waitFor, loadRequirements } from "./utils";
 import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
