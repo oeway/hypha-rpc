@@ -449,7 +449,15 @@ async def _connect_to_server(config):
     async def get_app(client_id: str):
         """Get the app."""
         assert ":" not in client_id, "clientId should not contain ':'"
-        query = {"client_id": client_id, "service_id": "default"}
+        if "/" in client_id:
+            workspace, client_id = client_id.split("/")
+        else:
+            workspace = connection_info["workspace"]
+        query = {
+            "workspace": workspace,
+            "client_id": client_id,
+            "service_id": "default",
+        }
         return await wm.get_service(query)
 
     async def list_apps(workspace: str = None):

@@ -432,7 +432,17 @@ export async function connectToServer(config) {
   async function getApp(clientId) {
     clientId = clientId || "*";
     assert(!clientId.includes(":"), "clientId should not contain ':'");
-    const query = { client_id: clientId, service_id: "default" };
+    let workspace;
+    if (clientId.includes("/")) {
+      [workspace, clientId] = clientId.split("/");
+    } else {
+      workspace = connection_info.workspace;
+    }
+    const query = {
+      workspace: workspace,
+      client_id: clientId,
+      service_id: "default",
+    };
     return await wm.getService(query);
   }
 
