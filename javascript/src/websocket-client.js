@@ -423,18 +423,14 @@ export async function connectToServer(config) {
   async function getApp(clientId) {
     clientId = clientId || "*";
     assert(!clientId.includes(":"), "clientId should not contain ':'");
-    let workspace;
-    if (clientId.includes("/")) {
-      [workspace, clientId] = clientId.split("/");
-    } else {
-      workspace = connection_info.workspace;
+    if (!clientId.includes("/")) {
+      clientId = connection_info.workspace + "/" + clientId;
     }
-    const query = {
-      workspace: workspace,
-      client_id: clientId,
-      service_id: "default",
-    };
-    return await wm.getService(query);
+    assert(
+      clientId.split("/").length === 2,
+      "clientId should match pattern workspace/clientId",
+    );
+    return await wm.getService(`${clientId}:default`);
   }
 
   async function listApps(ws) {
