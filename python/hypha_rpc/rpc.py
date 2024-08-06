@@ -311,15 +311,10 @@ class RPC(MessageEmitter):
             async def on_connected(connection_info):
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
-                    for service in self._services.values():
+                    manager = await self.get_manager_service(10, "snake")
+                    for service in list(self._services.values()):
                         service_info = self._extract_service_info(service)
-                        await self.emit(
-                            {
-                                "type": "service-added",
-                                "to": "*/" + self._connection.manager_id,
-                                "service": service_info,
-                            }
-                        )
+                        await manager.register_service(service_info)
                 else:
                     logger.info("Connection established: %s", connection_info)
                 self._fire("connected", connection_info)
@@ -694,10 +689,11 @@ class RPC(MessageEmitter):
         """Register a service."""
         if isinstance(api, ObjectProxy):
             api = ObjectProxy.toDict(api)
+        manager = None
         if check_type and api.get("type"):
             try:
-                manager_svc = await self.get_manager_service()
-                type_info = await manager_svc.get_service_type(api["type"])
+                manager = await self.get_manager_service(10, "snake")
+                type_info = await manager.get_service_type(api["type"])
                 api = _annotate_service(api, type_info)
             except Exception as exp:
                 raise Exception(
@@ -708,18 +704,8 @@ class RPC(MessageEmitter):
         service_info = self._extract_service_info(service)
         if notify:
             try:
-                if self._connection.manager_id:
-                    await self.emit(
-                        {
-                            "type": "service-added",
-                            "to": "*/" + self._connection.manager_id,
-                            "service": service_info,
-                        }
-                    )
-                else:
-                    await self.emit(
-                        {"type": "service-added", "to": "*", "service": service_info}
-                    )
+                manager = manager or await self.get_manager_service(10, "snake")
+                await manager.register_service(service_info)
             except Exception as exp:
                 raise Exception(f"Failed to notify workspace manager: {exp}")
         return service_info
@@ -732,19 +718,8 @@ class RPC(MessageEmitter):
             raise Exception(f"Service not found: {service.get('id')}")
         del self._services[service["id"]]
         if notify:
-            service_info = self._extract_service_info(service)
-            if self._connection.manager_id:
-                self.emit(
-                    {
-                        "type": "service-removed",
-                        "to": "*/" + self._connection.manager_id,
-                        "service": service_info,
-                    }
-                )
-            else:
-                self.emit(
-                    {"type": "service-removed", "to": "*", "service": service_info}
-                )
+            manager = await self.get_manager_service(10, "snake")
+            await manager.unregister_service(service.id)
 
     def check_modules(self):
         """Check if all the modules exists."""

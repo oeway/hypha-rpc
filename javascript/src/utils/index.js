@@ -388,4 +388,18 @@ export class MessageEmitter {
       }
     }
   }
+
+  waitFor(event, timeout) {
+    return new Promise((resolve, reject) => {
+      const handler = (data) => {
+        clearTimeout(timer);
+        resolve(data);
+      };
+      this.once(event, handler);
+      const timer = setTimeout(() => {
+        this.off(event, handler);
+        reject(new Error("Timeout"));
+      }, timeout);
+    });
+  }
 }

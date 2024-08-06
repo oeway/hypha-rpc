@@ -324,13 +324,10 @@ export class RPC extends MessageEmitter {
       const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
           console.log("Connection established, reporting services...");
+          const manager = await this.get_manager_service(10, "camel");
           for (let service of Object.values(this._services)) {
             const serviceInfo = this._extract_service_info(service);
-            await this.emit({
-              type: "service-added",
-              to: "*/" + this._connection.manager_id,
-              service: serviceInfo,
-            });
+            await manager.registerService(serviceInfo);
           }
         } else {
           console.log("Connection established", connectionInfo);
@@ -710,10 +707,11 @@ export class RPC extends MessageEmitter {
   }
 
   async register_service(api, overwrite, notify = true, check_type = false) {
+    let manager;
     if (check_type && api.type) {
       try {
-        const manager_svc = await this.get_manager_service();
-        const type_info = await manager_svc.get_service_type(api.type);
+        manager = await this.get_manager_service(10, "camel");
+        const type_info = await manager.get_service_type(api.type);
         api = _annotate_service(api, type_info);
       } catch (e) {
         throw new Error(`Failed to get service type ${api.type}, error: ${e}`);
@@ -724,19 +722,8 @@ export class RPC extends MessageEmitter {
     const serviceInfo = this._extract_service_info(service);
     if (notify) {
       try {
-        if (this._connection.manager_id) {
-          await this.emit({
-            type: "service-added",
-            to: "*/" + this._connection.manager_id,
-            service: serviceInfo,
-          });
-        } else {
-          await this.emit({
-            type: "service-added",
-            to: "*",
-            service: serviceInfo,
-          });
-        }
+        manager = manager || (await this.get_manager_service(10, "camel"));
+        await manager.registerService(serviceInfo);
       } catch (e) {
         throw new Error(`Failed to notify workspace manager: ${e}`);
       }
@@ -754,16 +741,8 @@ export class RPC extends MessageEmitter {
     const api = this._services[service];
     delete this._services[service];
     if (notify) {
-      const serviceInfo = this._extract_service_info(api);
-      if (this._connection.manager_id) {
-        this.emit({
-          type: "service-removed",
-          to: "*/" + this._connection.manager_id,
-          service: serviceInfo,
-        });
-      } else {
-        this.emit({ type: "service-removed", to: "*", service: serviceInfo });
-      }
+      const manager = await this.get_manager_service(10, "camel");
+      await manager.registerService(api.id);
     }
   }
 

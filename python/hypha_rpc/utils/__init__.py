@@ -240,6 +240,22 @@ class MessageEmitter:
             if self._logger and self._logger.debug:
                 self._logger.debug("Unhandled event: {}, data: {}".format(event, data))
 
+    async def wait_for(self, event, timeout):
+        """Wait for an event to be emitted, or timeout."""
+        future = asyncio.get_event_loop().create_future()
+
+        def handler(data):
+            if not future.done():
+                future.set_result(data)
+
+        self.once(event, handler)
+
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError as err:
+            self.off(event, handler)
+            raise err
+
 
 def encode_zarr_store(zobj):
     """Encode the zarr store."""
