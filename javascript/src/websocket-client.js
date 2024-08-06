@@ -4,6 +4,7 @@ import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
 export { RPC, API_VERSION, schemaFunction };
+export { loadRequirements };
 export { getRTCService, registerRTCService };
 
 const MAX_RETRY = 1000000;
@@ -618,7 +619,7 @@ export async function connectToServer(config) {
   return wm;
 }
 
-class LocalWebSocket {
+export class LocalWebSocket {
   constructor(url, client_id, workspace) {
     this.url = url;
     this.onopen = () => {};
