@@ -3,7 +3,7 @@ import { assert, loadRequirements, randId, waitFor } from "./utils";
 import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
-export { RPC, API_VERSION };
+export { RPC, API_VERSION, schemaFunction };
 export { loadRequirements };
 export { getRTCService, registerRTCService };
 
@@ -419,15 +419,6 @@ export async function connectToServer(config) {
     api.description = api.description || config.description;
     await rpc.register_service(api, true);
   }
-  _export.__schema__ = {
-    name: "export",
-    description: "Export the api.",
-    parameters: {
-      properties: { api: { description: "The api to export", type: "object" } },
-      required: ["api"],
-      type: "object",
-    },
-  };
 
   async function getApp(clientId) {
     clientId = clientId || "*";
@@ -628,7 +619,7 @@ export async function connectToServer(config) {
   return wm;
 }
 
-class LocalWebSocket {
+export class LocalWebSocket {
   constructor(url, client_id, workspace) {
     this.url = url;
     this.onopen = () => {};
