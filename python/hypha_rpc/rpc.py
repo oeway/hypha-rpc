@@ -657,13 +657,14 @@ class RPC(MessageEmitter):
     def _extract_service_info(self, service):
         service = ObjectProxy.toDict(service)
         config = service.get("config", {})
-        if not config.get("workspace"):
-            config["workspace"] = self._local_workspace
+        config["workspace"] = config.get(
+            "workspace", self._local_workspace or self._connection.workspace
+        )
         skip_context = config.get("require_context", False)
         service_schema = _get_schema(service, skip_context=skip_context)
         service_info = {
             "config": ObjectProxy.fromDict(config),
-            "id": f'{self._client_id}:{service["id"]}',
+            "id": f"{config['workspace']}/{self._client_id}:{service['id']}",
             "name": service.get("name", service["id"]),
             "description": service.get("description", None),
             "type": service.get("type", "generic"),

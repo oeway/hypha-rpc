@@ -60,7 +60,7 @@ async def test_service_with_builtin_key(websocket_server):
         {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
     ) as api:
         data = {}
-        await api.register_service(
+        info = await api.register_service(
             {
                 "name": "Dictionary Service",
                 "id": "dict-service",
@@ -76,6 +76,7 @@ async def test_service_with_builtin_key(websocket_server):
                 "values": lambda: list(data.values()),
             }
         )
+        assert "/" in info["id"] and ":" in info["id"], "Service id should be absolute"
         svc = await api.get_service("dict-service")
         await svc.put("key", "value")
         assert await svc.get("key") == "value"

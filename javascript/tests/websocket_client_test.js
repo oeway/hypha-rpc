@@ -173,7 +173,9 @@ describe("RPC", async () => {
       server_url: SERVER_URL,
       client_id: "test-plugin-1",
     });
-    await server.registerService(plugin_interface);
+    const info = await server.registerService(plugin_interface);
+    expect(info.id).to.contain("/");
+    expect(info.id).to.contain(":");
     const api = await server.rpc.get_remote_service("default");
 
     const msg = "this is an messge.";
