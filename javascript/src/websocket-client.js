@@ -1,10 +1,9 @@
 import { RPC, API_VERSION } from "./rpc.js";
-import { assert, loadRequirements, randId, waitFor } from "./utils";
+import { assert, randId, waitFor } from "./utils";
 import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
-export { RPC, API_VERSION };
-export { loadRequirements };
+export { RPC, API_VERSION, schemaFunction };
 export { getRTCService, registerRTCService };
 
 const MAX_RETRY = 1000000;
@@ -419,15 +418,6 @@ export async function connectToServer(config) {
     api.description = api.description || config.description;
     await rpc.register_service(api, true);
   }
-  _export.__schema__ = {
-    name: "export",
-    description: "Export the api.",
-    parameters: {
-      properties: { api: { description: "The api to export", type: "object" } },
-      required: ["api"],
-      type: "object",
-    },
-  };
 
   async function getApp(clientId) {
     clientId = clientId || "*";

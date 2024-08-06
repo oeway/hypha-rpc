@@ -68,23 +68,20 @@ interface API {
   name: string;
 }
 
+interface FunctionAnnotation {
+  schema_type: string;
+  name: string;
+  description: string;
+  parameters: any;
+}
+
 declare module "hypha-rpc" {
   const hyphaRPCModule: {
     hyphaWebsocketClient: {
       RPC: hRPC;
       API_VERSION: string;
       VERSION: string;
-      loadRequirements: (config: any) => Promise<any>;
-      login: (config: LoginConfig) => Promise<any>;
-      connectToServer: (config: ServerConfig) => Promise<any>;
-      registerRTCService: (server: any, service_id: string, config?: any) => Promise<any>;
-      getRTCService: (server: any, service_id: string, config?: any) => Promise<any>;
-    };
-    hyphaSSEClient: {
-      RPC: hRPC;
-      API_VERSION: string;
-      VERSION: string;
-      loadRequirements: (config: any) => Promise<any>;
+      schemaFunction: (func: Function, annotation: FunctionAnnotation ) => Function;
       login: (config: LoginConfig) => Promise<any>;
       connectToServer: (config: ServerConfig) => Promise<any>;
       registerRTCService: (server: any, service_id: string, config?: any) => Promise<any>;
