@@ -146,7 +146,7 @@ def connect_to_server(config):
 def login(config):
     """Login to the Hypha server."""
     server_url = normalize_server_url(config.get("server_url"))
-    service_id = config.get("login_service_id", "public/*:hypha-login")
+    service_id = config.get("login_service_id", "public/hypha-login")
     timeout = config.get("login_timeout", 60)
     callback = config.get("login_callback")
 
