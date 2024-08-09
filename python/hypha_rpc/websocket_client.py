@@ -675,6 +675,14 @@ async def _connect_to_server(config):
                 "type": "object",
             },
         )
+
+    def serve():
+        loop = asyncio.get_event_loop()
+        loop.run_forever()
+
+    wm.serve = schema_function(
+        serve, name="serve", description="Start the event loop", parameters={}
+    )
     return wm
 
 

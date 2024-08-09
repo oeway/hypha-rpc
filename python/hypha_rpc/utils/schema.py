@@ -173,6 +173,7 @@ def schema_function_native(original_func, name=None, mode="strict", skip_self=Fa
             new_args, new_kwargs = fill_missing_args_and_kwargs(
                 original_func_sig, args, kwargs
             )
+            # TODO: Validate the input types
             return await original_func(*new_args, **new_kwargs)
 
     else:
@@ -182,6 +183,7 @@ def schema_function_native(original_func, name=None, mode="strict", skip_self=Fa
             new_args, new_kwargs = fill_missing_args_and_kwargs(
                 original_func_sig, args, kwargs
             )
+            # TODO: Validate the input types
             return original_func(*new_args, **new_kwargs)
 
     wrapper.__schema__ = {
@@ -372,6 +374,7 @@ def schema_function_pydantic(
                             arg = annotation.model_validate(arg)
                     except ValidationError:
                         pass
+            # TODO: Validate the input, for primitive types and Pydantic models
             final_args.append(arg)
 
         final_kwargs = {}
