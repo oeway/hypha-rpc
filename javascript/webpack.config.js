@@ -45,7 +45,7 @@ const esmConfig = {
   ...commonConfig,
   output: {
       path: path.resolve(__dirname, 'dist'),
-      filename: process.env.NODE_ENV === 'production' ? 'hypha-rpc-websocket.esm.min.js' : 'hypha-rpc-websocket.esm.js',
+      filename: process.env.NODE_ENV === 'production' ? 'hypha-rpc-websocket.min.mjs' : 'hypha-rpc-websocket.mjs',
       module: true,
       libraryTarget: 'module',
   },
