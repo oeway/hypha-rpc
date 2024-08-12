@@ -1,23 +1,9 @@
 const path = require('path');
 
-module.exports = {
+const commonConfig = {
   mode: process.env.NODE_ENV || 'development',
   entry: {
       'hyphaWebsocketClient': path.resolve(__dirname, 'src', 'websocket-client.js'),
-  },
-  output: {
-      globalObject: 'this',
-      path: path.resolve(__dirname, 'dist'),
-      filename: (pathData) => {
-        const outputNames = {
-          "hyphaWebsocketClient": "hypha-rpc-websocket",
-        };
-        const name = outputNames[pathData.chunk.name];
-        return process.env.NODE_ENV === 'production' ? name + '.min.js' : name + '.js';
-      },
-      library: '[name]',
-      libraryTarget: 'umd',
-      umdNamedDefine: true
   },
   devtool: 'source-map',
   devServer: {
@@ -42,3 +28,30 @@ module.exports = {
     ],
   },
 };
+
+const umdConfig = {
+  ...commonConfig,
+  output: {
+      path: path.resolve(__dirname, 'dist'),
+      filename: process.env.NODE_ENV === 'production' ? 'hypha-rpc-websocket.min.js' : 'hypha-rpc-websocket.js',
+      globalObject: 'this',
+      library: 'hyphaWebsocketClient',
+      libraryTarget: 'umd',
+      umdNamedDefine: true,
+  },
+};
+
+const esmConfig = {
+  ...commonConfig,
+  output: {
+      path: path.resolve(__dirname, 'dist'),
+      filename: process.env.NODE_ENV === 'production' ? 'hypha-rpc-websocket.esm.min.js' : 'hypha-rpc-websocket.esm.js',
+      module: true,
+      libraryTarget: 'module',
+  },
+  experiments: {
+    outputModule: true, // Required for module output
+  },
+};
+
+module.exports = [umdConfig, esmConfig];
