@@ -250,6 +250,8 @@ class Timer {
   }
 }
 
+class RemoteService extends Object {}
+
 /**
  * RPC object represents a single site in the
  * communication protocol between the application and the plugin
@@ -324,7 +326,10 @@ export class RPC extends MessageEmitter {
       const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
           console.log("Connection established, reporting services...");
-          const manager = await this.get_manager_service(10, "camel");
+          const manager = await this.get_manager_service({
+            timeout: 10,
+            case_conversion: "camel",
+          });
           for (let service of Object.values(this._services)) {
             const serviceInfo = this._extract_service_info(service);
             await manager.registerService(serviceInfo);
@@ -489,12 +494,16 @@ export class RPC extends MessageEmitter {
     await this._connection.disconnect();
   }
 
-  async get_manager_service(timeout, case_conversion = null) {
+  async get_manager_service(config) {
+    config = config || {};
+    let { timeout, case_conversion } = config;
     assert(this._connection.manager_id, "Manager id is not set");
     const svc = await this.get_remote_service(
       `*/${this._connection.manager_id}:default`,
-      timeout,
-      case_conversion,
+      {
+        timeout: timeout,
+        case_conversion: case_conversion,
+      },
     );
     return svc;
   }
@@ -530,7 +539,8 @@ export class RPC extends MessageEmitter {
       `Permission denied for getting protected service: ${service_id}, workspace mismatch: ${ws} != ${context["ws"]}`,
     );
   }
-  async get_remote_service(service_uri, timeout, case_conversion = null) {
+  async get_remote_service(service_uri, config) {
+    let { timeout, case_conversion } = config || {};
     timeout = timeout === undefined ? this._method_timeout : timeout;
     if (!service_uri && this._connection.manager_id) {
       service_uri = "*/" + this._connection.manager_id;
@@ -563,8 +573,12 @@ export class RPC extends MessageEmitter {
         "Timeout Error: Failed to get remote service: " + service_uri,
       );
       svc.id = `${provider}:${service_id}`;
-      if (case_conversion) return convertCase(svc, case_conversion);
-      else return svc;
+      if (case_conversion)
+        return Object.assign(
+          new RemoteService(),
+          convertCase(svc, case_conversion),
+        );
+      else return Object.assign(new RemoteService(), svc);
     } catch (e) {
       console.warn("Failed to get remote service: " + service_uri, e);
       throw e;
@@ -711,7 +725,10 @@ export class RPC extends MessageEmitter {
     let manager;
     if (check_type && api.type) {
       try {
-        manager = await this.get_manager_service(10, "camel");
+        manager = await this.get_manager_service({
+          timeout: 10,
+          case_conversion: "camel",
+        });
         const type_info = await manager.get_service_type(api.type);
         api = _annotate_service(api, type_info);
       } catch (e) {
@@ -723,7 +740,12 @@ export class RPC extends MessageEmitter {
     const serviceInfo = this._extract_service_info(service);
     if (notify) {
       try {
-        manager = manager || (await this.get_manager_service(10, "camel"));
+        manager =
+          manager ||
+          (await this.get_manager_service({
+            timeout: 10,
+            case_conversion: "camel",
+          }));
         await manager.registerService(serviceInfo);
       } catch (e) {
         throw new Error(`Failed to notify workspace manager: ${e}`);
@@ -742,7 +764,10 @@ export class RPC extends MessageEmitter {
     const api = this._services[service];
     delete this._services[service];
     if (notify) {
-      const manager = await this.get_manager_service(10, "camel");
+      const manager = await this.get_manager_service({
+        timeout: 10,
+        case_conversion: "camel",
+      });
       await manager.registerService(api.id);
     }
   }

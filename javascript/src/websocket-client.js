@@ -330,26 +330,25 @@ export async function login(config) {
   }
 }
 
-async function webrtcGetService(
-  wm,
-  rtc_service_id,
-  query,
-  webrtc,
-  webrtc_config,
-) {
+async function webrtcGetService(wm, rtc_service_id, query, config) {
+  config = config || {};
+  config.case_conversion = config.case_conversion || "camel";
+  const webrtc = config.webrtc;
+  const webrtc_config = config.webrtc_config;
+  if (config.webrtc !== undefined) delete config.webrtc;
+  if (config.webrtc_config !== undefined) delete config.webrtc_config;
   assert(
     [undefined, true, false, "auto"].includes(webrtc),
     "webrtc must be true, false or 'auto'",
   );
-  // pass other arguments to get_service
-  const otherArgs = Array.prototype.slice.call(arguments, 3);
-  const svc = await wm.getService(query, ...otherArgs);
+
+  const svc = await wm.getService(query, config);
   if (webrtc === true || webrtc === "auto") {
     if (svc.id.includes(":") && svc.id.includes("/")) {
       try {
         // Assuming that the client registered a webrtc service with the client_id + "-rtc"
         const peer = await getRTCService(wm, rtc_service_id, webrtc_config);
-        const rtcSvc = await peer.get_service(svc.id.split(":")[1]);
+        const rtcSvc = await peer.get_service(svc.id.split(":")[1], config);
         rtcSvc._webrtc = true;
         rtcSvc._peer = peer;
         rtcSvc._service = svc;
@@ -410,7 +409,10 @@ export async function connectToServer(config) {
     method_timeout: config.method_timeout,
     app_id: config.app_id,
   });
-  const wm = await rpc.get_manager_service(config.method_timeout, "camel");
+  const wm = await rpc.get_manager_service({
+    timeout: config.method_timeout,
+    case_conversion: "camel",
+  });
   wm.rpc = rpc;
 
   async function _export(api) {
@@ -595,13 +597,52 @@ export async function connectToServer(config) {
               description: "The query to get the service",
               type: "object",
             },
-            webrtc: {
-              default: "auto",
-              description: "Use webrtc to get the service",
-              type: ["boolean", "string"],
+            config: {
+              description:
+                "The config for the service, including `webrtc`, `webrtc_config` and other get_service options",
+              type: "object",
             },
-            webrtc_config: {
-              description: "The webrtc configuration",
+          },
+          required: ["query"],
+          type: "object",
+        },
+      },
+    );
+
+    wm.getRTCService = schemaFunction(getRTCService.bind(null, wm), {
+      name: "getRTCService",
+      description: "Get the webrtc connection, returns a peer connection.",
+      parameters: {
+        properties: {
+          config: {
+            description: "The config for the webrtc service",
+            type: "object",
+          },
+        },
+        required: ["config"],
+        type: "object",
+      },
+    });
+  } else {
+    const _getService = wm.getService;
+    wm.getService = schemaFunction(
+      (query, config) => {
+        config = config || {};
+        config.case_conversion = config.case_conversion || "camel";
+        return _getService(query, config);
+      },
+      {
+        name: "getService",
+        description: "Get a service.",
+        parameters: {
+          properties: {
+            query: {
+              description: "The query to get the service",
+              type: "object",
+            },
+            config: {
+              description:
+                "The config for the service, including `webrtc`, `webrtc_config` and other get_service options",
               type: "object",
             },
           },
@@ -611,7 +652,6 @@ export async function connectToServer(config) {
       },
     );
   }
-
   return wm;
 }
 

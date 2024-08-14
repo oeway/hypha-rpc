@@ -173,7 +173,7 @@ async function getRTCService(server, service_id, config) {
         setTimeout(async () => {
           const rpc = await _setupRPC(config);
           pc.rpc = rpc;
-          async function get_service(name) {
+          async function get_service(name, ...args) {
             assert(
               !name.includes(":"),
               "WebRTC service name should not contain ':'",
@@ -184,6 +184,7 @@ async function getRTCService(server, service_id, config) {
             );
             return await rpc.get_remote_service(
               config.workspace + "/" + config.peer_id + ":" + name,
+              ...args,
             );
           }
           async function disconnect() {

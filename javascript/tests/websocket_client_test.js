@@ -73,9 +73,14 @@ describe("RPC", async () => {
       },
       type: "echo",
       echo: (x) => x,
+      my_func: (a, b) => a + b,
     });
-    const svc = await server.getService("echo-service-rtc");
+    const svc = await server.getService("echo-service-rtc", {
+      case_conversion: "camel",
+    });
     expect(await svc.echo("hello")).to.equal("hello");
+    // the function will be converted to camel case
+    expect(await svc.myFunc(2, 3)).to.equal(5);
   }).timeout(20000);
 
   it("should login to the server", async () => {

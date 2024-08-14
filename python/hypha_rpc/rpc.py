@@ -194,6 +194,12 @@ class RemoteException(Exception):
     pass
 
 
+class RemoteService(ObjectProxy):
+    """Wrapper for remote service."""
+
+    pass
+
+
 class Timer:
     """Represent a timer."""
 
@@ -311,7 +317,9 @@ class RPC(MessageEmitter):
             async def on_connected(connection_info):
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
-                    manager = await self.get_manager_service(10, "snake")
+                    manager = await self.get_manager_service(
+                        {"timeout": 10, "case_conversion": "snake"}
+                    )
                     for service in list(self._services.values()):
                         service_info = self._extract_service_info(service)
                         await manager.register_service(service_info)
@@ -468,13 +476,12 @@ class RPC(MessageEmitter):
         self._fire("disconnected")
         await self._connection.disconnect()
 
-    async def get_manager_service(self, timeout=None, case_conversion=None):
+    async def get_manager_service(self, config=None):
         """Get remote root service."""
+        config = config or {}
         assert self._connection.manager_id, "Manager id is not set"
         svc = await self.get_remote_service(
-            f"*/{self._connection.manager_id}:default",
-            timeout=timeout,
-            case_conversion=case_conversion,
+            f"*/{self._connection.manager_id}:default", config
         )
         return svc
 
@@ -504,10 +511,11 @@ class RPC(MessageEmitter):
             f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}"
         )
 
-    async def get_remote_service(
-        self, service_uri=None, timeout=None, case_conversion=None
-    ):
+    async def get_remote_service(self, service_uri=None, config=None):
         """Get a remote service."""
+        config = config or {}
+        timeout = config.get("timeout", None)
+        case_conversion = config.get("case_conversion", None)
         timeout = timeout or self._method_timeout
         if service_uri is None and self._connection.manager_id:
             service_uri = "*/" + self._connection.manager_id
@@ -532,10 +540,12 @@ class RPC(MessageEmitter):
             )
             svc = await asyncio.wait_for(method(service_id), timeout=timeout)
             svc["id"] = service_uri
+            if isinstance(svc, ObjectProxy):
+                svc = svc.toDict()
             if case_conversion:
-                return ObjectProxy.fromDict(convert_case(svc, case_conversion))
+                return RemoteService.fromDict(convert_case(svc, case_conversion))
             else:
-                return ObjectProxy.fromDict(svc)
+                return RemoteService.fromDict(svc)
         except Exception as exp:
             logger.warning("Failed to get remote service: %s: %s", service_id, exp)
             raise exp
@@ -693,7 +703,9 @@ class RPC(MessageEmitter):
         manager = None
         if check_type and api.get("type"):
             try:
-                manager = await self.get_manager_service(10, "snake")
+                manager = await self.get_manager_service(
+                    {"timeout": 10, "case_conversion": "snake"}
+                )
                 type_info = await manager.get_service_type(api["type"])
                 api = _annotate_service(api, type_info)
             except Exception as exp:
@@ -705,7 +717,9 @@ class RPC(MessageEmitter):
         service_info = self._extract_service_info(service)
         if notify:
             try:
-                manager = manager or await self.get_manager_service(10, "snake")
+                manager = manager or await self.get_manager_service(
+                    {"timeout": 10, "case_conversion": "snake"}
+                )
                 await manager.register_service(service_info)
             except Exception as exp:
                 raise Exception(f"Failed to notify workspace manager: {exp}")
@@ -719,7 +733,9 @@ class RPC(MessageEmitter):
             raise Exception(f"Service not found: {service.get('id')}")
         del self._services[service["id"]]
         if notify:
-            manager = await self.get_manager_service(10, "snake")
+            manager = await self.get_manager_service(
+                {"timeout": 10, "case_conversion": "snake"}
+            )
             await manager.unregister_service(service.id)
 
     def check_modules(self):

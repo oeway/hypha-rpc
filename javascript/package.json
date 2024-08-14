@@ -1,11 +1,11 @@
 {
   "name": "hypha-rpc",
-  "version": "0.20.17",
+  "version": "0.20.18",
   "description": "Hypha RPC client for connecting to Hypha server for data management and AI model serving.",
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "build": "rm -rf dist && npm run build-umd",
+    "build": "rm -rf dist && npm run build-umd && BUILD_ESM=true  npm run build-umd",
     "build-umd": "webpack --config webpack.config.js --mode development && NODE_ENV=production webpack --config webpack.config.js --mode production --devtool source-map",
     "watch": "NODE_ENV=production webpack --watch --progress --config webpack.config.js --mode production --devtool source-map",
     "publish-npm": "npm install && npm run build && npm publish",

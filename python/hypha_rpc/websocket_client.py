@@ -353,9 +353,15 @@ def connect_to_server(config):
     return ServerContextManager(config)
 
 
-async def webrtc_get_service(
-    wm, rtc_service_id, query, webrtc=None, webrtc_config=None, **kwargs
-):
+async def webrtc_get_service(wm, rtc_service_id, query, config=None):
+    config = config or {}
+    config["case_conversion"] = config.get("case_conversion", "snake")
+    webrtc = config.get("webrtc")
+    webrtc_config = config.get("webrtc_config")
+    if "webrtc" in config:
+        del config["webrtc"]
+    if "webrtc_config" in config:
+        del config["webrtc_config"]
     assert webrtc in [
         None,
         True,
@@ -363,7 +369,7 @@ async def webrtc_get_service(
         "auto",
     ], "webrtc must be true, false or 'auto'"
     # pass other kwargs to the original get_service function
-    svc = await wm.get_service(query, **kwargs)
+    svc = await wm.get_service(query, config)
 
     from .webrtc_client import AIORTC_AVAILABLE, get_rtc_service
 
@@ -376,7 +382,7 @@ async def webrtc_get_service(
                 rtc_service_id,
                 webrtc_config,
             )
-            rtc_svc = await peer.get_service(svc.id.split(":")[1])
+            rtc_svc = await peer.get_service(svc.id.split(":")[1], config)
             rtc_svc._webrtc = True
             rtc_svc._peer = peer
             rtc_svc._service = svc
@@ -433,7 +439,7 @@ async def _connect_to_server(config):
         app_id=config.get("app_id"),
     )
     wm = await rpc.get_manager_service(
-        timeout=config.get("method_timeout", 30), case_conversion="snake"
+        {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
     )
     wm.rpc = rpc
 
@@ -644,14 +650,10 @@ async def _connect_to_server(config):
             parameters={
                 "properties": {
                     "query": {"description": "The query", "type": "object"},
-                    "webrtc": {
+                    "config": {
                         "default": False,
-                        "description": "Use webrtc if available",
+                        "description": "The config, including webrtc, webrtc_config and other options",
                         "type": "boolean",
-                    },
-                    "webrtc_config": {
-                        "description": "The webrtc config",
-                        "type": "object",
                     },
                 },
                 "required": ["query"],
@@ -665,12 +667,29 @@ async def _connect_to_server(config):
             description="Get the webrtc connection, returns a peer connection",
             parameters={
                 "properties": {
-                    "query": {"description": "The query", "type": "object"},
-                    "webrtc_config": {
-                        "description": "The webrtc config",
+                    "config": {
+                        "description": "The config for the webrtc service",
                         "type": "object",
                     },
                 },
+                "required": ["config"],
+                "type": "object",
+            },
+        )
+    else:
+        _get_service = wm.get_service
+
+        def get_service(query, config=None):
+            config = config or {}
+            config["case_conversion"] = config.get("case_conversion", "snake")
+            return _get_service(query, config)
+
+        wm.get_service = schema_function(
+            get_service,
+            name="get_service",
+            description="Get a service.",
+            parameters={
+                "properties": {"query": {"description": "The query", "type": "object"}},
                 "required": ["query"],
                 "type": "object",
             },
