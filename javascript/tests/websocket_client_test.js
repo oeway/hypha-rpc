@@ -60,7 +60,6 @@ describe("RPC", async () => {
   }).timeout(20000);
 
   it("should connect via webrtc (auto)", async () => {
-    const service_id = "test-rtc-service-1";
     const server = await connectToServer({
       server_url: SERVER_URL,
       client_id: "test-plugin-1",

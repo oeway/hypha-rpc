@@ -232,9 +232,16 @@ async def get_rtc_service(server, service_id, config=None):
                 parameters={
                     "type": "object",
                     "properties": {
-                        "name": {"type": "string", "description": "name of the service"}
+                        "service_id": {
+                            "type": "string",
+                            "description": "the id of the service",
+                        },
+                        "config": {
+                            "type": "object",
+                            "description": "the config for the service",
+                        },
                     },
-                    "required": ["name"],
+                    "required": ["service_id"],
                 },
             )
             pc.disconnect = schema_function(

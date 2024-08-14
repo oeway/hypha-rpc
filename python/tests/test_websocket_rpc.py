@@ -237,7 +237,7 @@ async def test_connect_to_server(websocket_server):
             },
             "hello": hello,
         },
-        overwrite=True,
+        {"overwrite": True},
     )
 
     svc = await ws.get_service("hello-world")

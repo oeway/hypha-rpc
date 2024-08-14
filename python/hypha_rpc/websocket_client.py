@@ -450,7 +450,7 @@ async def _connect_to_server(config):
             api = {a: getattr(api, a) for a in dir(api)}
         api["id"] = "default"
         api["description"] = api.get("description") or config.get("description")
-        return asyncio.ensure_future(rpc.register_service(api, overwrite=True))
+        return asyncio.ensure_future(rpc.register_service(api, {"overwrite": True}))
 
     async def get_app(client_id: str):
         """Get the app."""
@@ -640,25 +640,17 @@ async def _connect_to_server(config):
 
         if not AIORTC_AVAILABLE:
             raise Exception("aiortc is not available, please install it first.")
-        await register_rtc_service(wm, client_id + "-rtc", config.get("webrtc_config"))
+        await register_rtc_service(wm, f"{client_id}-rtc", config.get("webrtc_config"))
         # Make a copy of wm so, webrtc can use the original wm.get_service
         _wm = ObjectProxy.fromDict(dict(wm))
+        description = _wm.get_service.__schema__.get("description")
+        # TODO: add webrtc options to the get_service schema
+        parameters = _wm.get_service.__schema__.get("parameters")
         wm.get_service = schema_function(
-            partial(webrtc_get_service, _wm, client_id + "-rtc"),
+            partial(webrtc_get_service, _wm, f"{workspace}/{client_id}-rtc"),
             name="get_service",
-            description="Get a service via webrtc.",
-            parameters={
-                "properties": {
-                    "query": {"description": "The query", "type": "object"},
-                    "config": {
-                        "default": False,
-                        "description": "The config, including webrtc, webrtc_config and other options",
-                        "type": "boolean",
-                    },
-                },
-                "required": ["query"],
-                "type": "object",
-            },
+            description=description,
+            parameters=parameters,
         )
 
         wm.get_rtc_service = schema_function(
@@ -684,16 +676,8 @@ async def _connect_to_server(config):
             config["case_conversion"] = config.get("case_conversion", "snake")
             return _get_service(query, config)
 
-        wm.get_service = schema_function(
-            get_service,
-            name="get_service",
-            description="Get a service.",
-            parameters={
-                "properties": {"query": {"description": "The query", "type": "object"}},
-                "required": ["query"],
-                "type": "object",
-            },
-        )
+        get_service.__schema__ = wm.get_service.__schema__
+        wm.get_service = get_service
 
     def serve():
         loop = asyncio.get_event_loop()

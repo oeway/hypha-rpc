@@ -348,7 +348,7 @@ async function webrtcGetService(wm, rtc_service_id, query, config) {
       try {
         // Assuming that the client registered a webrtc service with the client_id + "-rtc"
         const peer = await getRTCService(wm, rtc_service_id, webrtc_config);
-        const rtcSvc = await peer.get_service(svc.id.split(":")[1], config);
+        const rtcSvc = await peer.getService(svc.id.split(":")[1], config);
         rtcSvc._webrtc = true;
         rtcSvc._peer = peer;
         rtcSvc._service = svc;
@@ -419,7 +419,7 @@ export async function connectToServer(config) {
     api.id = "default";
     api.name = api.name || config.name || api.id;
     api.description = api.description || config.description;
-    await rpc.register_service(api, true);
+    await rpc.register_service(api, { overwrite: true });
   }
 
   async function getApp(clientId) {
@@ -583,29 +583,18 @@ export async function connectToServer(config) {
     });
   }
   if (config.webrtc) {
-    await registerRTCService(wm, clientId + "-rtc", config.webrtc_config);
+    await registerRTCService(wm, `${clientId}-rtc`, config.webrtc_config);
     // make a copy of wm, so webrtc can use the original wm.getService
     const _wm = Object.assign({}, wm);
+    const description = _wm.getService.__schema__.description;
+    // TODO: Fix the schema for adding options for webrtc
+    const parameters = _wm.getService.__schema__.parameters;
     wm.getService = schemaFunction(
-      webrtcGetService.bind(null, _wm, clientId + "-rtc"),
+      webrtcGetService.bind(null, _wm, `${workspace}/${clientId}-rtc`),
       {
         name: "getService",
-        description: "Get a service via webrtc.",
-        parameters: {
-          properties: {
-            query: {
-              description: "The query to get the service",
-              type: "object",
-            },
-            config: {
-              description:
-                "The config for the service, including `webrtc`, `webrtc_config` and other get_service options",
-              type: "object",
-            },
-          },
-          required: ["query"],
-          type: "object",
-        },
+        description,
+        parameters,
       },
     );
 
@@ -625,32 +614,12 @@ export async function connectToServer(config) {
     });
   } else {
     const _getService = wm.getService;
-    wm.getService = schemaFunction(
-      (query, config) => {
-        config = config || {};
-        config.case_conversion = config.case_conversion || "camel";
-        return _getService(query, config);
-      },
-      {
-        name: "getService",
-        description: "Get a service.",
-        parameters: {
-          properties: {
-            query: {
-              description: "The query to get the service",
-              type: "object",
-            },
-            config: {
-              description:
-                "The config for the service, including `webrtc`, `webrtc_config` and other get_service options",
-              type: "object",
-            },
-          },
-          required: ["query"],
-          type: "object",
-        },
-      },
-    );
+    wm.getService = (query, config) => {
+      config = config || {};
+      config.case_conversion = config.case_conversion || "camel";
+      return _getService(query, config);
+    };
+    wm.getService.__schema__ = _getService.__schema__;
   }
   return wm;
 }

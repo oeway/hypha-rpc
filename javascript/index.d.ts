@@ -30,8 +30,7 @@ interface hRPC extends MessageEmitter {
   add_service(api: any, overwrite?: any): any;
   register_service(
     api: any,
-    overwrite?: any,
-    notify?: any,
+    config?: any,
     context?: any
   ): Promise<any>;
   unregister_service(service: any, notify?: any): Promise<void>;

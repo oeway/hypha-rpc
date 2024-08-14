@@ -721,7 +721,9 @@ export class RPC extends MessageEmitter {
     return _get_schema(service, null, skipContext);
   }
 
-  async register_service(api, overwrite, notify = true, check_type = false) {
+  async register_service(api, config) {
+    let { check_type, notify, overwrite } = config || {};
+    notify = notify === undefined ? true : notify;
     let manager;
     if (check_type && api.type) {
       try {

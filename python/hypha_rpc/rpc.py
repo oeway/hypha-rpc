@@ -514,9 +514,8 @@ class RPC(MessageEmitter):
     async def get_remote_service(self, service_uri=None, config=None):
         """Get a remote service."""
         config = config or {}
-        timeout = config.get("timeout", None)
+        timeout = config.get("timeout", self._method_timeout)
         case_conversion = config.get("case_conversion", None)
-        timeout = timeout or self._method_timeout
         if service_uri is None and self._connection.manager_id:
             service_uri = "*/" + self._connection.manager_id
         elif ":" not in service_uri:
@@ -693,11 +692,13 @@ class RPC(MessageEmitter):
     async def register_service(
         self,
         api: dict,
-        overwrite: bool = False,
-        notify: bool = True,
-        check_type: bool = False,
+        config: dict = None,
     ):
         """Register a service."""
+        config = config or {}
+        overwrite = config.get("overwrite", False)
+        notify = config.get("notify", True)
+        check_type = config.get("check_type", False)
         if isinstance(api, ObjectProxy):
             api = ObjectProxy.toDict(api)
         manager = None

@@ -192,13 +192,22 @@ async function getRTCService(server, service_id, config) {
             pc.close();
           }
           pc.getService = schemaFunction(get_service, {
-            name: "get_service",
+            name: "getService",
             description: "Get a remote service via webrtc",
             parameters: {
               type: "object",
               properties: {
-                name: { type: "string", description: "Name of the service" },
+                service_id: {
+                  type: "string",
+                  description:
+                    "Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
+                },
+                config: {
+                  type: "object",
+                  description: "Options for the service",
+                },
               },
+              required: ["id"],
             },
           });
           pc.disconnect = schemaFunction(disconnect, {
