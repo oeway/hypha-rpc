@@ -64,7 +64,7 @@ class WebsocketRPCConnection {
 
       websocket.onerror = (event) => {
         console.error("WebSocket connection error:", event);
-        reject(new Error(`ConnectionAbortedError: ${event}`));
+        reject(new Error(`WebSocket connection error: ${event}`));
       };
 
       websocket.onclose = (event) => {
@@ -185,6 +185,10 @@ class WebsocketRPCConnection {
       this._closed = false;
       this._websocket.onmessage = (event) => {
         this._handle_message(event.data);
+      };
+
+      this._websocket.onerror = (event) => {
+        console.error("WebSocket connection error:", event);
       };
 
       this._websocket.onclose = this._handle_close.bind(this);
