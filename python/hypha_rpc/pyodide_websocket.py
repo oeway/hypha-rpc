@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import sys
+import js
 from js import WebSocket
 import json
 import logging
@@ -146,6 +147,10 @@ class PyodideWebsocketRPCConnection:
         self.connection_info = None
         self._enable_reconnect = False
         self.manager_id = None
+        if self._server_url.startswith("wss://local-hypha-server:"):
+            self._WebSocketClass = js.eval(local_websocket_patch)
+        else:
+            self._WebSocketClass = WebSocket
 
     def on_message(self, handler):
         """Register a message handler."""
@@ -156,7 +161,7 @@ class PyodideWebsocketRPCConnection:
         """Attempt to establish a WebSocket connection."""
         fut = asyncio.Future()
         self._legacy_auth = False
-        websocket = WebSocket.new(server_url)
+        websocket = self._WebSocketClass.new(server_url)
         websocket.binaryType = "arraybuffer"
         websocket.onopen = lambda evt: fut.set_result(websocket)
 
@@ -282,7 +287,7 @@ class PyodideWebsocketRPCConnection:
         query_string = "&".join(query_params)
         server_url = f"{server_url}?{query_string}" if query_string else server_url
         fut = asyncio.Future()
-        websocket = WebSocket.new(server_url)
+        websocket = self._WebSocketClass.new(server_url)
         websocket.binaryType = "arraybuffer"
         websocket.onopen = lambda evt: fut.set_result(websocket)
 

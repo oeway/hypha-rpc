@@ -758,6 +758,12 @@ export function setupLocalClient({
             return;
           }
 
+          class FixedLocalWebSocket extends LocalWebSocket {
+            constructor(url) {
+              // Call the parent class's constructor with fixed values
+              super(url, client_id, workspace);
+            }
+          }
           connectToServer({
             server_url,
             workspace,
@@ -765,6 +771,7 @@ export function setupLocalClient({
             token,
             method_timeout,
             name,
+            WebSocketClass: FixedLocalWebSocket,
           }).then(async (server) => {
             globalThis.api = server;
             try {
