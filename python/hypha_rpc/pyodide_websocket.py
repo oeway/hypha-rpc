@@ -21,14 +21,14 @@ logger.setLevel(logging.WARNING)
 
 local_websocket_patch = """
 class LocalWebSocket {
-  constructor(url, client_id, workspace) {
+  constructor(url) {
     this.url = url;
     this.onopen = () => {};
     this.onmessage = () => {};
     this.onclose = () => {};
     this.onerror = () => {};
-    this.client_id = client_id;
-    this.workspace = workspace;
+    this.client_id = "{{CLIENT_ID}}";
+    this.workspace = "{{WORKSPACE}}";
     const context = typeof window !== "undefined" ? window : self;
     const isWindow = typeof window !== "undefined";
     this.postMessage = message => {
@@ -148,7 +148,13 @@ class PyodideWebsocketRPCConnection:
         self._enable_reconnect = False
         self.manager_id = None
         if self._server_url.startswith("wss://local-hypha-server:"):
-            self._WebSocketClass = js.eval("(" + local_websocket_patch + ")")
+            self._WebSocketClass = js.eval(
+                "("
+                + local_websocket_patch.replace("{{CLIENT_ID}}", client_id).replace(
+                    "{{WORKSPACE}}", workspace
+                )
+                + ")"
+            )
         else:
             self._WebSocketClass = WebSocket
 
