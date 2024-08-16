@@ -5,6 +5,7 @@ import asyncio
 import numpy as np
 import pytest
 import requests
+import httpx
 from hypha_rpc import (
     connect_to_server,
     connect_to_server_sync,
@@ -277,6 +278,26 @@ async def test_case_conversion(websocket_server):
 
     svc = await ws.get_service(info.id, {"case_conversion": "snake"})
     assert await svc.hello_world("world") == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_probe(websocket_server):
+    """Test probes"""
+    ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+
+    await ws.register_probes(
+        {
+            "readiness": lambda: True,
+            "liveness": lambda: True,
+        }
+    )
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{WS_SERVER_URL}/{ws.config.workspace}/services/probes/readiness"
+        )
+        response.raise_for_status()
+        assert response.json() == True
 
 
 @pytest.mark.asyncio

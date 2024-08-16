@@ -677,12 +677,37 @@ async def _connect_to_server(config):
         get_service.__schema__ = wm.get_service.__schema__
         wm.get_service = get_service
 
-    def serve():
-        loop = asyncio.get_event_loop()
-        loop.run_forever()
+    async def serve():
+        await asyncio.Event().wait()
 
     wm.serve = schema_function(
-        serve, name="serve", description="Start the event loop", parameters={}
+        serve, name="serve", description="Run the event loop forever", parameters={}
+    )
+
+    async def register_probes(probes):
+        probes["id"] = "probes"
+        probes["name"] = "Probes"
+        probes["config"] = {"visibility": "public"}
+        probes["type"] = "probes"
+        probes["description"] = (
+            f"Probes Service, visit {server_url}/{workspace}services/probes for the available probes."
+        )
+        return await wm.register_service(probes, {"overwrite": True})
+
+    wm.register_probes = schema_function(
+        register_probes,
+        name="register_probes",
+        description="Register probes service",
+        parameters={
+            "properties": {
+                "probes": {
+                    "description": "The probes to register, e.g. {'liveness': {'type': 'function', 'description': 'Check the liveness of the service'}}",
+                    "type": "object",
+                }
+            },
+            "required": ["probes"],
+            "type": "object",
+        },
     )
     return wm
 

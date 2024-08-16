@@ -23,6 +23,27 @@ describe("RPC", async () => {
     await api.disconnect();
   }).timeout(20000);
 
+  it("should allow probes", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-plugin-1",
+    });
+    await api.registerProbes({
+      readiness: async () => {
+        return true;
+      },
+      liveness: async () => {
+        return true;
+      },
+    });
+    const response = await fetch(
+      `${SERVER_URL}/${api.config.workspace}/services/probes/readiness`,
+    );
+    expect(response.ok).to.equal(true);
+    const data = await response.json();
+    expect(data).to.equal(true);
+  }).timeout(20000);
+
   it("should contain schema", async () => {
     const api = await connectToServer({
       server_url: SERVER_URL,

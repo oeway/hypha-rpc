@@ -623,6 +623,32 @@ export async function connectToServer(config) {
     };
     wm.getService.__schema__ = _getService.__schema__;
   }
+
+  async function registerProbes(probes) {
+    probes.id = "probes";
+    probes.name = "Probes";
+    probes.config = { visibility: "public" };
+    probes.type = "probes";
+    probes.description = `Probes Service, visit ${server_url}/${workspace}services/probes for the available probes.`;
+    return await wm.registerService(probes, { overwrite: true });
+  }
+
+  wm.registerProbes = schemaFunction(registerProbes, {
+    name: "registerProbes",
+    description: "Register probes service",
+    parameters: {
+      properties: {
+        probes: {
+          description:
+            "The probes to register, e.g. {'liveness': {'type': 'function', 'description': 'Check the liveness of the service'}}",
+          type: "object",
+        },
+      },
+      required: ["probes"],
+      type: "object",
+    },
+  });
+
   return wm;
 }
 
