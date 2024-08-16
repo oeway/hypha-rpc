@@ -336,7 +336,6 @@ export async function login(config) {
 
 async function webrtcGetService(wm, rtc_service_id, query, config) {
   config = config || {};
-  config.case_conversion = config.case_conversion || "camel";
   const webrtc = config.webrtc;
   const webrtc_config = config.webrtc_config;
   if (config.webrtc !== undefined) delete config.webrtc;
@@ -620,7 +619,6 @@ export async function connectToServer(config) {
     const _getService = wm.getService;
     wm.getService = (query, config) => {
       config = config || {};
-      config.case_conversion = config.case_conversion || "camel";
       return _getService(query, config);
     };
     wm.getService.__schema__ = _getService.__schema__;

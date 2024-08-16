@@ -515,7 +515,7 @@ class RPC(MessageEmitter):
         """Get a remote service."""
         config = config or {}
         timeout = config.get("timeout", self._method_timeout)
-        case_conversion = config.get("case_conversion", None)
+        case_conversion = config.get("case_conversion")
         if service_uri is None and self._connection.manager_id:
             service_uri = "*/" + self._connection.manager_id
         elif ":" not in service_uri:

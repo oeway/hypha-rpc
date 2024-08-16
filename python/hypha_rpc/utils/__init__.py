@@ -114,7 +114,7 @@ def generate_password(length=50):
 def to_camel_case(snake_str):
     # Check if the string is already in camelCase
     if "_" not in snake_str:
-        return snake_str
+        return snake_str[0].lower() + snake_str[1:]
     # Convert from snake_case to camelCase
     components = snake_str.split("_")
     return components[0] + "".join(x.title() for x in components[1:])

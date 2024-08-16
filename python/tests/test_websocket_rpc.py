@@ -246,6 +246,40 @@ async def test_connect_to_server(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_case_conversion(websocket_server):
+    """Test case conversion."""
+    ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    await ws.export(ImJoyPlugin(ws))
+
+    def hello(name, key=12, context=None):
+        """Say hello."""
+        print("Hello " + name)
+        return "Hello " + name
+
+    info = await ws.register_service(
+        {
+            "name": "Hello World",
+            "id": "hello-world",
+            "description": "hello world service",
+            "config": {
+                "visibility": "protected",
+                "run_in_executor": True,
+            },
+            "HelloWorld": hello,
+        }
+    )
+
+    svc = await ws.get_service(info.id)
+    assert await svc.HelloWorld("world") == "Hello world"
+
+    svc = await ws.get_service(info.id, {"case_conversion": "camel"})
+    assert await svc.helloWorld("world") == "Hello world"
+
+    svc = await ws.get_service(info.id, {"case_conversion": "snake"})
+    assert await svc.hello_world("world") == "Hello world"
+
+
+@pytest.mark.asyncio
 async def test_reconnect_to_server(websocket_server):
     """Test reconnecting to the server."""
     # test workspace is an exception, so it can pass directly
@@ -263,7 +297,7 @@ async def test_reconnect_to_server(websocket_server):
         }
     )
     # simulate abnormal close
-    await ws.rpc._connection._websocket.close(1010)
+    await ws.rpc._connection._websocket.close(1002)
     # will trigger reconnect
     svc = await ws.get_service("hello-world")
     assert await svc.hello("world") == "hello world"

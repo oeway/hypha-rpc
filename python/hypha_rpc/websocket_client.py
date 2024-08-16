@@ -355,7 +355,6 @@ def connect_to_server(config):
 
 async def webrtc_get_service(wm, rtc_service_id, query, config=None):
     config = config or {}
-    config["case_conversion"] = config.get("case_conversion", "snake")
     webrtc = config.get("webrtc")
     webrtc_config = config.get("webrtc_config")
     if "webrtc" in config:
@@ -673,7 +672,6 @@ async def _connect_to_server(config):
 
         def get_service(query, config=None):
             config = config or {}
-            config["case_conversion"] = config.get("case_conversion", "snake")
             return _get_service(query, config)
 
         get_service.__schema__ = wm.get_service.__schema__
