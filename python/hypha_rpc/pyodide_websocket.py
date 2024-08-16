@@ -148,7 +148,7 @@ class PyodideWebsocketRPCConnection:
         self._enable_reconnect = False
         self.manager_id = None
         if self._server_url.startswith("wss://local-hypha-server:"):
-            self._WebSocketClass = js.eval(local_websocket_patch)
+            self._WebSocketClass = js.eval("(" + local_websocket_patch + ")")
         else:
             self._WebSocketClass = WebSocket
 
@@ -340,7 +340,7 @@ class PyodideWebsocketRPCConnection:
                             "to a hypha server that is older than 0.20.0, "
                             "please upgrade the hypha server or "
                             "use imjoy-rpc(https://pypi.org/project/imjoy-rpc/) "
-                            "with `from imjoy_rpc.hypha import connect_to_sever` instead"
+                            "with 'from imjoy_rpc.hypha import connect_to_sever' instead"
                         )
                         return
                     except Exception as e:
