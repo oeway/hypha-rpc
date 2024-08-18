@@ -687,9 +687,9 @@ export async function connectToServer(config) {
   return wm;
 }
 
-export async function getRemoteService(url, config = {}) {
+export async function getRemoteService(serviceUri, config = {}) {
   const { serverUrl, workspace, clientId, serviceId, appId } =
-    parseServiceUrl(url);
+    parseServiceUrl(serviceUri);
   const fullServiceId = `${workspace}/${clientId}:${serviceId}@${appId}`;
 
   if (config.serverUrl) {
@@ -707,10 +707,10 @@ export async function getRemoteService(url, config = {}) {
 export class LocalWebSocket {
   constructor(url, client_id, workspace) {
     this.url = url;
-    this.onopen = () => {};
-    this.onmessage = () => {};
-    this.onclose = () => {};
-    this.onerror = () => {};
+    this.onopen = () => { };
+    this.onmessage = () => { };
+    this.onclose = () => { };
+    this.onerror = () => { };
     this.client_id = client_id;
     this.workspace = workspace;
     const context = typeof window !== "undefined" ? window : self;
