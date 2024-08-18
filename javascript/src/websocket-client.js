@@ -1,5 +1,11 @@
 import { RPC, API_VERSION } from "./rpc.js";
-import { assert, randId, waitFor, loadRequirements } from "./utils";
+import {
+  assert,
+  randId,
+  waitFor,
+  loadRequirements,
+  parseServiceUrl,
+} from "./utils";
 import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
@@ -506,6 +512,7 @@ export async function connectToServer(config) {
       },
     },
   });
+
   wm.emit = schemaFunction(rpc.emit.bind(rpc), {
     name: "emit",
     description: "Emit a message.",
@@ -515,6 +522,7 @@ export async function connectToServer(config) {
       type: "object",
     },
   });
+
   wm.on = schemaFunction(rpc.on.bind(rpc), {
     name: "on",
     description: "Register a message handler.",
@@ -527,6 +535,33 @@ export async function connectToServer(config) {
       type: "object",
     },
   });
+
+  wm.off = schemaFunction(rpc.off.bind(rpc), {
+    name: "off",
+    description: "Remove a message handler.",
+    parameters: {
+      properties: {
+        event: { description: "The event to remove", type: "string" },
+        handler: { description: "The handler function", type: "function" },
+      },
+      required: ["event", "handler"],
+      type: "object",
+    },
+  });
+
+  wm.once = schemaFunction(rpc.once.bind(rpc), {
+    name: "once",
+    description: "Register a one-time message handler.",
+    parameters: {
+      properties: {
+        event: { description: "The event to listen to", type: "string" },
+        handler: { description: "The handler function", type: "function" },
+      },
+      required: ["event", "handler"],
+      type: "object",
+    },
+  });
+
   wm.getServiceSchema = schemaFunction(rpc.get_service_schema, {
     name: "getServiceSchema",
     description: "Get the service schema.",
@@ -650,6 +685,23 @@ export async function connectToServer(config) {
   });
 
   return wm;
+}
+
+export async function getRemoteService(url, config = {}) {
+  const { serverUrl, workspace, clientId, serviceId, appId } =
+    parseServiceUrl(url);
+  const fullServiceId = `${workspace}/${clientId}:${serviceId}@${appId}`;
+
+  if (config.serverUrl) {
+    if (config.serverUrl !== serverUrl) {
+      throw new Error(
+        "server_url in config does not match the server_url in the url",
+      );
+    }
+  }
+  config.serverUrl = serverUrl;
+  const server = await connectToServer(config);
+  return await server.getService(fullServiceId);
 }
 
 export class LocalWebSocket {

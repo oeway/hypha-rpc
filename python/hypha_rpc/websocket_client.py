@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import sys
+import re
 
 import shortuuid
 import json
@@ -11,7 +12,7 @@ from functools import partial
 
 from .rpc import RPC
 from .utils.schema import schema_function
-from .utils import ObjectProxy
+from .utils import ObjectProxy, parse_service_url
 
 try:
     import js  # noqa: F401
@@ -330,27 +331,40 @@ async def login(config):
 class ServerContextManager:
     """Server context manager."""
 
-    def __init__(self, config):
+    def __init__(self, config, service_id=None):
         self.config = config
+        self._service_id = service_id
+        self.wm = None
 
     async def __aenter__(self):
         self.wm = await _connect_to_server(self.config)
+        if self._service_id:
+            return await self.wm.get_service(self._service_id)
         return self.wm
 
     async def __aexit__(self, exc_type, exc, tb):
         await self.wm.disconnect()
 
     def __await__(self):
-        self.wm = _connect_to_server(self.config).__await__()
-        return self.wm
-
-    async def __aexit__(self, exc_type, exc, tb):
-        await self.wm.disconnect()
+        return self.__aenter__().__await__()
 
 
 def connect_to_server(config):
     """Connect to the server."""
     return ServerContextManager(config)
+
+
+def get_remote_service(url, config=None):
+    """Get a remote service."""
+    server_url, workspace, client_id, service_id, app_id = parse_service_url(url)
+    full_service_id = f"{workspace}/{client_id}:{service_id}@{app_id}"
+    config = config or {}
+    if "server_url" in config:
+        assert (
+            config["server_url"] == server_url
+        ), "server_url in config does not match the server_url in the url"
+    config["server_url"] = server_url
+    return ServerContextManager(config, service_id=full_service_id)
 
 
 async def webrtc_get_service(wm, rtc_service_id, query, config=None):
@@ -567,6 +581,34 @@ async def _connect_to_server(config):
         },
     )
 
+    wm.off = schema_function(
+        rpc.off,
+        name="off",
+        description="Remove a message handler.",
+        parameters={
+            "properties": {
+                "event": {"description": "The event to remove", "type": "string"},
+                "handler": {"description": "The handler function", "type": "function"},
+            },
+            "required": ["event", "handler"],
+            "type": "object",
+        },
+    )
+
+    wm.once = schema_function(
+        rpc.once,
+        name="once",
+        description="Register a one-time message handler.",
+        parameters={
+            "properties": {
+                "event": {"description": "The event to listen to", "type": "string"},
+                "handler": {"description": "The handler function", "type": "function"},
+            },
+            "required": ["event", "handler"],
+            "type": "object",
+        },
+    )
+
     wm.get_service_schema = schema_function(
         rpc.get_service_schema,
         name="get_service_schema",
@@ -670,9 +712,9 @@ async def _connect_to_server(config):
     else:
         _get_service = wm.get_service
 
-        def get_service(query, config=None):
+        async def get_service(query, config=None):
             config = config or {}
-            return _get_service(query, config)
+            return await _get_service(query, config)
 
         get_service.__schema__ = wm.get_service.__schema__
         wm.get_service = get_service

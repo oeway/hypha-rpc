@@ -1,7 +1,44 @@
 """Tests for the utils module."""
 
 from functools import partial
-from hypha_rpc.utils import callable_sig, callable_doc
+from hypha_rpc.utils import callable_sig, callable_doc, parse_service_url
+
+import pytest
+
+
+def test_parse_service_url():
+    # Test case 1: Basic service URL
+    assert parse_service_url("https://hypha.aicell.io/public/services/hypha-login") == (
+        "https://hypha.aicell.io",
+        "public",
+        None,
+        "hypha-login",
+        None,
+    )
+
+    # Test case 2: Service URL with client_id
+    assert parse_service_url(
+        "https://hypha.aicell.io/public/services/client:hypha-login"
+    ) == ("https://hypha.aicell.io", "public", "client", "hypha-login", None)
+
+    # Test case 3: Service URL with app_id
+    assert parse_service_url(
+        "https://hypha.aicell.io/public/services/hypha-login@app"
+    ) == ("https://hypha.aicell.io", "public", None, "hypha-login", "app")
+
+    # Test case 4: Service URL with both client_id and app_id
+    assert parse_service_url(
+        "https://hypha.aicell.io/public/services/client:hypha-login@app"
+    ) == ("https://hypha.aicell.io", "public", "client", "hypha-login", "app")
+
+    # Test case 5: Service URL with trailing slash
+    assert parse_service_url(
+        "https://hypha.aicell.io/public/services/hypha-login/"
+    ) == ("https://hypha.aicell.io", "public", None, "hypha-login", None)
+
+    # Test case 6: Invalid service URL (should raise ValueError)
+    with pytest.raises(ValueError):
+        parse_service_url("https://hypha.aicell.io/public/hypha-login")
 
 
 def test_callable_sig():

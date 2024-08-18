@@ -1328,6 +1328,7 @@ class RPC(MessageEmitter):
                     ),
                     "_rmethod": annotation["method_id"],
                     "_rpromise": True,
+                    "_rasync": inspect.iscoroutinefunction(a_object),
                 }
             else:
                 assert isinstance(session_id, str)

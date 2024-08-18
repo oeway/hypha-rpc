@@ -7,13 +7,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 
-from hypha_rpc.utils import ObjectProxy
+from hypha_rpc.utils import ObjectProxy, parse_service_url
 from hypha_rpc.webrtc_client import get_rtc_service as get_rtc_service_async
 from hypha_rpc.webrtc_client import (
     register_rtc_service as register_rtc_service_async,
 )
 from hypha_rpc.websocket_client import (
     connect_to_server as connect_to_server_async,
+    get_remote_service as get_remote_service_async,
 )
 from hypha_rpc.websocket_client import normalize_server_url
 
@@ -89,58 +90,99 @@ def _encode_callables(obj, wrap, loop, executor):
         return obj
 
 
-class SyncHyphaServer:
+class SyncHyphaServer(ObjectProxy):
     """A class to interact with the Hypha server synchronously."""
 
-    def __init__(self, sync_max_workers=2):
+    def __init__(self, config, service_id=None):
         """Initialize the SyncHyphaServer."""
-        self.loop = None
-        self.thread = None
-        self.server = None
+        self._loop = None
+        self._thread = None
+        self._server = None
+        self._service_id = service_id
+        sync_max_workers = config.get("sync_max_workers", 2)
         # Note: we need at least 2 workers to avoid deadlock
-        self.executor = ThreadPoolExecutor(max_workers=sync_max_workers)
+        self._executor = ThreadPoolExecutor(max_workers=sync_max_workers)
+
+        if not self._loop:
+            self._thread = threading.Thread(target=self._start_loop, daemon=True)
+            self._thread.start()
+
+        while not self._loop or not self._loop.is_running():
+            pass
+
+        future = asyncio.run_coroutine_threadsafe(self._connect(config), self._loop)
+        future.result()
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        if self.server:
-            self.disconnect()
+        if self._server:
+            self._server.disconnect()
 
     async def _connect(self, config):
-        config["loop"] = self.loop
-        self.server = await connect_to_server_async(config)
-        skip_keys = ["register_codec"]
-        skipped = {k: v for k, v in self.server.items() if k not in skip_keys}
-        obj = _encode_callables(
-            skipped, convert_async_to_sync, self.loop, self.executor
-        )
-        for k in skip_keys:
-            obj[k] = self.server[k]
-        for k, v in obj.items():
-            setattr(self, k, v)
+        config["loop"] = self._loop
+        # get the a config to see if we need to convert
+        mix_async = config.get("mix_async", False)
+        self._server = await connect_to_server_async(config)
+        if self._service_id:
+            service = await self._server.get_service(self._service_id)
+        else:
+            service = self._server
+
+        for k, v in service.items():
+            if callable(v):
+                if hasattr(v, "__rpc_object__"):
+                    rpc_obj = v.__rpc_object__
+                    if mix_async and "_rasync" in rpc_obj and rpc_obj["_rasync"]:
+                        setattr(self, k, v)
+                    else:
+                        setattr(
+                            self,
+                            k,
+                            _encode_callables(
+                                v, convert_async_to_sync, self._loop, self._executor
+                            ),
+                        )
+                else:
+                    if k in ["on", "off", "once", "register_codec"]:
+                        setattr(self, k, v)
+                    else:
+                        setattr(
+                            self,
+                            k,
+                            _encode_callables(
+                                v, convert_async_to_sync, self._loop, self._executor
+                            ),
+                        )
+
+            else:
+                setattr(self, k, v)
 
     def _start_loop(self):
         asyncio.set_event_loop(asyncio.new_event_loop())
-        self.loop = asyncio.get_event_loop()
-        self.loop.run_forever()
+        self._loop = asyncio.get_event_loop()
+        self._loop.run_forever()
 
 
 def connect_to_server(config):
     """Connect to the Hypha server synchronously."""
-    server = SyncHyphaServer(sync_max_workers=config.get("sync_max_workers", 2))
-
-    if not server.loop:
-        server.thread = threading.Thread(target=server._start_loop, daemon=True)
-        server.thread.start()
-
-    while not server.loop or not server.loop.is_running():
-        pass
-
-    future = asyncio.run_coroutine_threadsafe(server._connect(config), server.loop)
-    future.result()
-
+    server = SyncHyphaServer(config)
     return server
+
+
+def get_remote_service(url, config=None):
+    """Get a remote service from the Hypha server."""
+    server_url, workspace, client_id, service_id, app_id = parse_service_url(url)
+    full_service_id = f"{workspace}/{client_id}:{service_id}@{app_id}"
+    config = config or {}
+    if "server_url" in config:
+        assert (
+            config["server_url"] == server_url
+        ), "server_url in config does not match the server_url in the url"
+    config["server_url"] = server_url
+    service = SyncHyphaServer(config, service_id=full_service_id)
+    return service
 
 
 def login(config):
@@ -176,13 +218,13 @@ def register_rtc_service(server, service_id, config=None):
     ), "server must be an instance of SyncHyphaServer, please use hypha.sync.connect_to_server to create a server instance."
     future = asyncio.run_coroutine_threadsafe(
         register_rtc_service_async(
-            server.server,
+            server._server,
             service_id,
             _encode_callables(
-                config, convert_sync_to_async, server.loop, server.executor
+                config, convert_sync_to_async, server._loop, server._executor
             ),
         ),
-        server.loop,
+        server._loop,
     )
     future.result()
 
@@ -195,20 +237,20 @@ def get_rtc_service(server, service_id, config=None):
 
     future = asyncio.run_coroutine_threadsafe(
         get_rtc_service_async(
-            server.server,
+            server._server,
             service_id,
             _encode_callables(
-                config, convert_sync_to_async, server.loop, server.executor
+                config, convert_sync_to_async, server._loop, server._executor
             ),
         ),
-        server.loop,
+        server._loop,
     )
     pc = future.result()
     for func in get_async_methods(pc):
         setattr(
             pc,
             func,
-            convert_async_to_sync(getattr(pc, func), server.loop, server.executor),
+            convert_async_to_sync(getattr(pc, func), server._loop, server._executor),
         )
     return pc
 

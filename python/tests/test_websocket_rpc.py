@@ -7,7 +7,9 @@ import pytest
 import requests
 import httpx
 from hypha_rpc import (
+    get_remote_service,
     connect_to_server,
+    get_remote_service_sync,
     connect_to_server_sync,
     get_rtc_service,
     get_rtc_service_sync,
@@ -190,6 +192,16 @@ def test_connect_to_server_sync(websocket_server):
         )
 
 
+def test_connect_to_server_sync(websocket_server):
+    """Test connecting to the server sync."""
+    # Now all the functions are sync
+    with get_remote_service_sync(
+        f"{WS_SERVER_URL}/public/services/hypha-login"
+    ) as login:
+        info = login.start()
+        assert "key" in info
+
+
 @pytest.mark.asyncio
 async def test_connect_to_server(websocket_server):
     """Test connecting to the server."""
@@ -298,6 +310,20 @@ async def test_probe(websocket_server):
         )
         response.raise_for_status()
         assert response.json() == True
+
+
+@pytest.mark.asyncio
+async def test_get_remote_service(websocket_server):
+    """Test getting a remote service."""
+    login = await get_remote_service(f"{WS_SERVER_URL}/public/services/hypha-login")
+    info = await login.start()
+    assert "key" in info
+
+    async with get_remote_service(
+        f"{WS_SERVER_URL}/public/services/hypha-login"
+    ) as login:
+        info = await login.start()
+        assert "key" in info
 
 
 @pytest.mark.asyncio

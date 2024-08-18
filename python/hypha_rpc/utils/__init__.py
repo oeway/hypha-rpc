@@ -167,6 +167,34 @@ def convert_case(obj, case_type):
     return new_obj
 
 
+def parse_service_url(url):
+    """Parse the service URL and return server_url, workspace, client_id, service_id, app_id."""
+    # Ensure no trailing slash
+    url = url.rstrip("/")
+
+    # Regex pattern to match the URL structure
+    pattern = re.compile(
+        r"^(https?://[^/]+)"  # server_url (http or https followed by domain)
+        r"/([a-z0-9_-]+)"  # workspace (lowercase letters, numbers, - or _)
+        r"/services/"  # static part of the URL
+        r"(?:(?P<client_id>[a-zA-Z0-9_-]+):)?"  # optional client_id
+        r"(?P<service_id>[a-zA-Z0-9_-]+)"  # service_id
+        r"(?:@(?P<app_id>[a-zA-Z0-9_-]+))?"  # optional app_id
+    )
+
+    match = pattern.match(url)
+    if not match:
+        raise ValueError("URL does not match the expected pattern")
+
+    server_url = match.group(1)
+    workspace = match.group(2)
+    client_id = match.group("client_id") or "*"
+    service_id = match.group("service_id")
+    app_id = match.group("app_id") or "*"
+
+    return server_url, workspace, client_id, service_id, app_id
+
+
 def format_traceback(traceback_string):
     """Format traceback."""
     formatted_lines = traceback_string.splitlines()

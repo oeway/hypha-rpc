@@ -62,6 +62,34 @@ export function convertCase(obj, caseType) {
   return newObj;
 }
 
+export function parseServiceUrl(url) {
+  // Ensure no trailing slash
+  url = url.replace(/\/$/, "");
+
+  // Regex pattern to match the URL structure
+  const pattern = new RegExp(
+    "^(https?:\\/\\/[^/]+)" + // server_url (http or https followed by domain)
+      "\\/([a-z0-9_-]+)" + // workspace (lowercase letters, numbers, - or _)
+      "\\/services\\/" + // static part of the URL
+      "(?:(?<clientId>[a-zA-Z0-9_-]+):)?" + // optional client_id
+      "(?<serviceId>[a-zA-Z0-9_-]+)" + // service_id
+      "(?:@(?<appId>[a-zA-Z0-9_-]+))?", // optional app_id
+  );
+
+  const match = url.match(pattern);
+  if (!match) {
+    throw new Error("URL does not match the expected pattern");
+  }
+
+  const serverUrl = match[1];
+  const workspace = match[2];
+  const clientId = match.groups?.clientId || "*";
+  const serviceId = match.groups?.serviceId;
+  const appId = match.groups?.appId || "*";
+
+  return { serverUrl, workspace, clientId, serviceId, appId };
+}
+
 export const dtypeToTypedArray = {
   int8: Int8Array,
   int16: Int16Array,
