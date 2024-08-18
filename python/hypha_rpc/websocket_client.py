@@ -356,7 +356,9 @@ def connect_to_server(config):
 
 def get_remote_service(service_uri, config=None):
     """Get a remote service."""
-    server_url, workspace, client_id, service_id, app_id = parse_service_url(service_uri)
+    server_url, workspace, client_id, service_id, app_id = parse_service_url(
+        service_uri
+    )
     full_service_id = f"{workspace}/{client_id}:{service_id}@{app_id}"
     config = config or {}
     if "server_url" in config:

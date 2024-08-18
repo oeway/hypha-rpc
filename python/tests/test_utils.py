@@ -11,20 +11,20 @@ def test_parse_service_url():
     assert parse_service_url("https://hypha.aicell.io/public/services/hypha-login") == (
         "https://hypha.aicell.io",
         "public",
-        None,
+        "*",
         "hypha-login",
-        None,
+        "*",
     )
 
     # Test case 2: Service URL with client_id
     assert parse_service_url(
         "https://hypha.aicell.io/public/services/client:hypha-login"
-    ) == ("https://hypha.aicell.io", "public", "client", "hypha-login", None)
+    ) == ("https://hypha.aicell.io", "public", "client", "hypha-login", "*")
 
     # Test case 3: Service URL with app_id
     assert parse_service_url(
         "https://hypha.aicell.io/public/services/hypha-login@app"
-    ) == ("https://hypha.aicell.io", "public", None, "hypha-login", "app")
+    ) == ("https://hypha.aicell.io", "public", "*", "hypha-login", "app")
 
     # Test case 4: Service URL with both client_id and app_id
     assert parse_service_url(
@@ -34,7 +34,7 @@ def test_parse_service_url():
     # Test case 5: Service URL with trailing slash
     assert parse_service_url(
         "https://hypha.aicell.io/public/services/hypha-login/"
-    ) == ("https://hypha.aicell.io", "public", None, "hypha-login", None)
+    ) == ("https://hypha.aicell.io", "public", "*", "hypha-login", "*")
 
     # Test case 6: Invalid service URL (should raise ValueError)
     with pytest.raises(ValueError):
