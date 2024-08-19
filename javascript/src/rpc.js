@@ -274,6 +274,7 @@ export class RPC extends MessageEmitter {
       workspace = null,
       silent = false,
       app_id = null,
+      server_base_url = null,
     },
   ) {
     super(debug);
@@ -290,6 +291,7 @@ export class RPC extends MessageEmitter {
     this._max_message_buffer_size = max_message_buffer_size;
     this._chunk_store = {};
     this._method_timeout = method_timeout || 30;
+    this._server_base_url = server_base_url;
 
     // make sure there is an execute function
     this._services = {};
@@ -325,7 +327,7 @@ export class RPC extends MessageEmitter {
       this._connection = connection;
       const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
-          console.log("Connection established, reporting services...");
+          console.debug("Connection established, reporting services...");
           const manager = await this.get_manager_service({
             timeout: 10,
             case_conversion: "camel",
@@ -335,9 +337,14 @@ export class RPC extends MessageEmitter {
             await manager.registerService(serviceInfo);
           }
         } else {
-          console.log("Connection established", connectionInfo);
+          console.debug("Connection established", connectionInfo);
         }
-        this._fire("connected", connectionInfo);
+        if (connectionInfo) {
+          if (connectionInfo.public_base_url) {
+            this._server_base_url = connectionInfo.public_base_url;
+          }
+          this._fire("connected", connectionInfo);
+        }
       };
       connection.on_connected(onConnected);
       onConnected();
@@ -373,6 +380,7 @@ export class RPC extends MessageEmitter {
 
   async ping(client_id, timeout) {
     let method = this._generate_remote_method({
+      _rserver: this._server_base_url,
       _rtarget: client_id,
       _rmethod: "services.built-in.ping",
       _rpromise: true,
@@ -562,6 +570,7 @@ export class RPC extends MessageEmitter {
 
     try {
       const method = this._generate_remote_method({
+        _rserver: this._server_base_url,
         _rtarget: provider,
         _rmethod: "services.built-in.get_service",
         _rpromise: true,
@@ -801,6 +810,7 @@ export class RPC extends MessageEmitter {
     let method_id = `${session_id}.${name}`;
     let encoded = {
       _rtype: "method",
+      _rserver: this._server_base_url,
       _rtarget: local_workspace
         ? `${local_workspace}/${this._client_id}`
         : this._client_id,
@@ -894,7 +904,7 @@ export class RPC extends MessageEmitter {
         data.slice(start_byte, start_byte + CHUNK_SIZE),
         !!session_id,
       );
-      console.log(
+      console.debug(
         `Sending chunk ${idx + 1}/${chunk_num} (${total_size} bytes)`,
       );
     }
@@ -1056,7 +1066,7 @@ export class RPC extends MessageEmitter {
             ._send_chunks(message_package, target_id, remote_parent)
             .then(function () {
               if (timer) {
-                // console.log(`Start watchdog timer.`);
+                console.debug(`Start watchdog timer.`);
                 // Only start the timer after we send the message successfully
                 timer.start();
               }
@@ -1073,6 +1083,9 @@ export class RPC extends MessageEmitter {
     remote_method.__rpc_object__ = encoded_method;
     const parts = method_id.split(".");
     remote_method.__name__ = parts[parts.length - 1];
+    if (remote_method.__name__.includes("#")) {
+      remote_method.__name__ = remote_method.__name__.split("#")[1];
+    }
     remote_method.__doc__ =
       encoded_method._rdoc || `Remote method: ${method_id}`;
     remote_method.__schema__ = encoded_method._rschema;
@@ -1137,7 +1150,7 @@ export class RPC extends MessageEmitter {
         if (promise.heartbeat && promise.interval) {
           async function heartbeat() {
             try {
-              console.log("Reset heartbeat timer: " + data.method);
+              console.debug("Reset heartbeat timer: " + data.method);
               await promise.heartbeat();
             } catch (err) {
               console.error(err);
@@ -1242,7 +1255,7 @@ export class RPC extends MessageEmitter {
           `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
         );
       }
-      // console.log("Executing method: " + method_name);
+      console.debug("Executing method: " + method_name);
       if (data.promise) {
         const result = method.apply(null, args);
         if (result instanceof Promise) {
@@ -1335,7 +1348,14 @@ export class RPC extends MessageEmitter {
     }
     // Reuse the remote object
     if (aObject.__rpc_object__) {
-      return aObject.__rpc_object__;
+      const _server = aObject.__rpc_object__._rserver || this._server_base_url;
+      if (_server === this._server_base_url) {
+        return aObject.__rpc_object__;
+      } else {
+        console.debug(
+          `Encoding remote function from a different server ${_server}, current server: ${this._server_base_url}`,
+        );
+      }
     }
 
     let bObject;
@@ -1355,6 +1375,7 @@ export class RPC extends MessageEmitter {
         let annotation = this._method_annotations.get(aObject);
         bObject = {
           _rtype: "method",
+          _rserver: this._server_base_url,
           _rtarget: this._client_id,
           _rmethod: annotation.method_id,
           _rpromise: true,
@@ -1363,12 +1384,13 @@ export class RPC extends MessageEmitter {
         assert(typeof session_id === "string");
         let object_id;
         if (aObject.__name__) {
-          object_id = `${randId()}-${aObject.__name__}`;
+          object_id = `${randId()}#${aObject.__name__}`;
         } else {
           object_id = randId();
         }
         bObject = {
           _rtype: "method",
+          _rserver: this._server_base_url,
           _rtarget: this._client_id,
           _rmethod: `${session_id}.${object_id}`,
           _rpromise: true,

@@ -452,6 +452,7 @@ async def _connect_to_server(config):
         method_timeout=config.get("method_timeout"),
         loop=config.get("loop"),
         app_id=config.get("app_id"),
+        server_base_url=connection_info.get("public_base_url"),
     )
     wm = await rpc.get_manager_service(
         {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}

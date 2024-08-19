@@ -262,6 +262,7 @@ class RPC(MessageEmitter):
         workspace=None,
         silent=False,
         app_id=None,
+        server_base_url=None,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -278,6 +279,7 @@ class RPC(MessageEmitter):
         self._chunk_store = {}
         self._method_timeout = 30 if method_timeout is None else method_timeout
         self._remote_logger = logger
+        self._server_base_url = server_base_url
         self.loop = loop or asyncio.get_event_loop()
         super().__init__(self._remote_logger)
 
@@ -315,6 +317,7 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
+
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     manager = await self.get_manager_service(
@@ -325,7 +328,10 @@ class RPC(MessageEmitter):
                         await manager.register_service(service_info)
                 else:
                     logger.info("Connection established: %s", connection_info)
-                self._fire("connected", connection_info)
+                if connection_info:
+                    if connection_info.get("public_base_url"):
+                        self._server_base_url = connection_info.get("public_base_url")
+                    self._fire("connected", connection_info)
 
             connection.on_connected(on_connected)
             self.loop.create_task(on_connected(None))
@@ -346,7 +352,7 @@ class RPC(MessageEmitter):
             for tp in list(self._codecs.keys()):
                 codec = self._codecs[tp]
                 if codec.type == config["type"] or tp == config["name"]:
-                    logger.info("Removing duplicated codec: " + tp)
+                    logger.debug("Removing duplicated codec: " + tp)
                     del self._codecs[tp]
 
         self._codecs[config["name"]] = DefaultObjectProxy.fromDict(config)
@@ -360,6 +366,7 @@ class RPC(MessageEmitter):
         """Send a ping."""
         method = self._generate_remote_method(
             {
+                "_rserver": self._server_base_url,
                 "_rtarget": client_id,
                 "_rmethod": "services.built-in.ping",
                 "_rpromise": True,
@@ -531,6 +538,7 @@ class RPC(MessageEmitter):
         try:
             method = self._generate_remote_method(
                 {
+                    "_rserver": self._server_base_url,
                     "_rtarget": provider,
                     "_rmethod": "services.built-in.get_service",
                     "_rpromise": True,
@@ -763,6 +771,7 @@ class RPC(MessageEmitter):
         method_id = f"{session_id}.{name}"
         encoded = {
             "_rtype": "method",
+            "_rserver": self._server_base_url,
             "_rtarget": (
                 f"{local_workspace}/{self._client_id}"
                 if local_workspace
@@ -851,13 +860,13 @@ class RPC(MessageEmitter):
                 package[start_byte : start_byte + CHUNK_SIZE],
                 bool(session_id),
             )
-            logger.info(
+            logger.debug(
                 "Sending chunk %d/%d (%d bytes)",
                 idx + 1,
                 chunk_num,
                 total_size,
             )
-        logger.info("All chunks sent (%d)", chunk_num)
+        logger.debug("All chunks sent (%d)", chunk_num)
         await message_cache.process(message_id, bool(session_id))
 
     def emit(self, main_message, extra_data=None):
@@ -945,12 +954,12 @@ class RPC(MessageEmitter):
             if kwargs:
                 extra_data["with_kwargs"] = bool(kwargs)
 
-            logger.info(
-                "Calling remote method %s:%s, session: %s",
-                target_id,
-                method_id,
-                local_session_id,
-            )
+            # logger.info(
+            #     "Calling remote method %s:%s, session: %s",
+            #     target_id,
+            #     method_id,
+            #     local_session_id,
+            # )
             if remote_parent:
                 # Set the parent session
                 # Note: It's a session id for the remote, not the current client
@@ -1009,7 +1018,7 @@ class RPC(MessageEmitter):
                         )
                     )
                 elif timer:
-                    logger.info("Start watchdog timer.")
+                    # logger.info("Start watchdog timer.")
                     # Only start the timer after we send the message successfully
                     timer.start()
 
@@ -1021,6 +1030,9 @@ class RPC(MessageEmitter):
             encoded_method.copy()
         )  # pylint: disable=protected-access
         remote_method.__name__ = method_id.split(".")[-1]
+        # remove the hash part in the method name
+        if "#" in remote_method.__name__:
+            remote_method.__name__ = remote_method.__name__.split("#")[-1]
         remote_method.__doc__ = encoded_method.get(
             "_rdoc", f"Remote method: {method_id}"
         )
@@ -1058,7 +1070,7 @@ class RPC(MessageEmitter):
                     if resolve is not None:
                         return resolve(result)
                     elif result is not None:
-                        logger.debug("returned value (%s): %s", method_name, result)
+                        logger.debug("Returned value (%s): %s", method_name, result)
                 except Exception as err:
                     traceback_error = traceback.format_exc()
                     logger.exception("Error in method (%s): %s", method_name, err)
@@ -1228,7 +1240,7 @@ class RPC(MessageEmitter):
                 method in self._method_annotations
                 and self._method_annotations[method].get("run_in_executor")
             )
-            logger.info("Executing method: %s", method_name)
+            logger.debug("Executing method: %s", method_name)
             method_task = self._call_method(
                 method,
                 args,
@@ -1300,7 +1312,14 @@ class RPC(MessageEmitter):
 
         # Reuse the remote object
         if hasattr(a_object, "__rpc_object__"):
-            return a_object.__rpc_object__
+            # we will skip the encoding if the function is on the same server
+            _server = a_object.__rpc_object__.get("_rserver", self._server_base_url)
+            if _server == self._server_base_url:
+                return a_object.__rpc_object__
+            else:
+                logger.debug(
+                    f"Encoding remote function from a different server {_server}, current server: {self._server_base_url}"
+                )
 
         # skip if already encoded
         if isinstance(a_object, dict) and "_rtype" in a_object:
@@ -1321,6 +1340,7 @@ class RPC(MessageEmitter):
                 annotation = self._method_annotations[a_object]
                 b_object = {
                     "_rtype": "method",
+                    "_rserver": self._server_base_url,
                     "_rtarget": (
                         f"{local_workspace}/{self._client_id}"
                         if local_workspace
@@ -1333,11 +1353,12 @@ class RPC(MessageEmitter):
             else:
                 assert isinstance(session_id, str)
                 if hasattr(a_object, "__name__"):
-                    object_id = f"{shortuuid.uuid()}-{a_object.__name__}"
+                    object_id = f"{shortuuid.uuid()}#{a_object.__name__}"
                 else:
                     object_id = shortuuid.uuid()
                 b_object = {
                     "_rtype": "method",
+                    "_rserver": self._server_base_url,
                     "_rtarget": (
                         f"{local_workspace}/{self._client_id}"
                         if local_workspace

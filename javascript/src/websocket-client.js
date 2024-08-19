@@ -417,6 +417,7 @@ export async function connectToServer(config) {
     name: config.name,
     method_timeout: config.method_timeout,
     app_id: config.app_id,
+    server_base_url: connection_info.public_base_url,
   });
   const wm = await rpc.get_manager_service({
     timeout: config.method_timeout,
@@ -707,10 +708,10 @@ export async function getRemoteService(serviceUri, config = {}) {
 export class LocalWebSocket {
   constructor(url, client_id, workspace) {
     this.url = url;
-    this.onopen = () => { };
-    this.onmessage = () => { };
-    this.onclose = () => { };
-    this.onerror = () => { };
+    this.onopen = () => {};
+    this.onmessage = () => {};
+    this.onclose = () => {};
+    this.onerror = () => {};
     this.client_id = client_id;
     this.workspace = workspace;
     const context = typeof window !== "undefined" ? window : self;
