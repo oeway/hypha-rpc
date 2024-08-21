@@ -22,17 +22,21 @@ class API(ObjectProxy):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._registry = {}
+        self._export_handler = self._default_export_handler
 
-    def list(self):
-        return list(self._registry.keys())
-
-    def get(self, name):
-        return self._registry.get(name)
-
-    def export(self, obj, config=None):
+    def _default_export_handler(self, obj, config=None):
         config = config or {}
         name = config.get("name", shortuuid.uuid())
         self._registry[name] = obj
+
+    def set_export_handler(self, handler):
+        self._export_handler = handler
+
+    def export(self, obj, config=None):
+        return self._export_handler(obj, config=config)
+
+    def get_registry(self):
+        return self._registry
 
 
 # An placeholder object for the API

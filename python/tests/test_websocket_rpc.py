@@ -201,13 +201,25 @@ def test_connect_to_server_sync(websocket_server):
         info = login.start()
         assert "key" in info
 
+
 @pytest.mark.asyncio
 async def test_export_api(websocket_server):
     """Test exporting API."""
     from hypha_rpc import api
+
+    api.export({"hello": lambda x: "hello " + x}, {"name": "hello"})
+    assert "hello" in api.get_registry()
+
+    api.get_registry().clear()
+    api.set_export_handler(lambda obj, config=None: None)
     api.export({"hello": lambda x: "hello " + x})
+    assert "hello" not in api.get_registry().keys()
+
+    api.get_registry().clear()
+    api.set_export_handler(api._default_export_handler)
     api.export({"hello": lambda x: "hello " + x}, {"name": "hello2"})
-    assert "hello2" in api.list()
+    assert "hello2" in api.get_registry().keys()
+
 
 @pytest.mark.asyncio
 async def test_connect_to_server(websocket_server):
