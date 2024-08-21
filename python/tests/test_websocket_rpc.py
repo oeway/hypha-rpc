@@ -201,6 +201,13 @@ def test_connect_to_server_sync(websocket_server):
         info = login.start()
         assert "key" in info
 
+@pytest.mark.asyncio
+async def test_export_api(websocket_server):
+    """Test exporting API."""
+    from hypha_rpc import api
+    api.export({"hello": lambda x: "hello " + x})
+    api.export({"hello": lambda x: "hello " + x}, {"name": "hello2"})
+    assert "hello2" in api.list()
 
 @pytest.mark.asyncio
 async def test_connect_to_server(websocket_server):
