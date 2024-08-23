@@ -52,6 +52,7 @@ class WebsocketRPCConnection:
         token=None,
         reconnection_token=None,
         timeout=60,
+        ssl=None,
     ):
         """Set up instance."""
         self._websocket = None
@@ -69,6 +70,7 @@ class WebsocketRPCConnection:
         self._legacy_auth = None
         self.connection_info = None
         self._enable_reconnect = False
+        self._ssl = ssl
         self.manager_id = None
 
     def on_message(self, handler):
@@ -92,7 +94,7 @@ class WebsocketRPCConnection:
         try:
             self._legacy_auth = False
             websocket = await asyncio.wait_for(
-                websockets.connect(server_url), self._timeout
+                websockets.connect(server_url, ssl=self._ssl), self._timeout
             )
             return websocket
         except websockets.exceptions.InvalidStatusCode as e:
@@ -128,7 +130,7 @@ class WebsocketRPCConnection:
         full_url = f"{server_url}?{query_string}" if query_string else server_url
 
         # Attempt to establish the WebSocket connection with the constructed URL
-        return await websockets.connect(full_url)
+        return await websockets.connect(full_url, ssl=self._ssl)
 
     async def open(self):
         """Open the connection with fallback logic for backward compatibility."""
@@ -431,6 +433,7 @@ async def _connect_to_server(config):
         token=config.get("token"),
         reconnection_token=config.get("reconnection_token"),
         timeout=config.get("method_timeout", 30),
+        ssl=config.get("ssl"),
     )
     connection_info = await connection.open()
     assert connection_info, (
