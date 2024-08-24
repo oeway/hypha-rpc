@@ -1316,10 +1316,10 @@ class RPC(MessageEmitter):
             _server = a_object.__rpc_object__.get("_rserver", self._server_base_url)
             if _server == self._server_base_url:
                 return a_object.__rpc_object__
-            else:
-                logger.debug(
-                    f"Encoding remote function from a different server {_server}, current server: {self._server_base_url}"
-                )
+            # else:
+            #     logger.debug(
+            #         f"Encoding remote function from a different server {_server}, current server: {self._server_base_url}"
+            #     )
 
         # skip if already encoded
         if isinstance(a_object, dict) and "_rtype" in a_object:

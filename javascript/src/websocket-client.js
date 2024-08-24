@@ -730,7 +730,7 @@ export class LocalWebSocket {
       (event) => {
         const { type, data, to } = event.data;
         if (to !== this.client_id) {
-          console.debug("message not for me", to, this.client_id);
+          // console.debug("message not for me", to, this.client_id);
           return;
         }
         switch (type) {

@@ -337,7 +337,7 @@ export class RPC extends MessageEmitter {
             await manager.registerService(serviceInfo);
           }
         } else {
-          console.debug("Connection established", connectionInfo);
+          // console.debug("Connection established", connectionInfo);
         }
         if (connectionInfo) {
           if (connectionInfo.public_base_url) {
@@ -445,7 +445,7 @@ export class RPC extends MessageEmitter {
       throw new Error(`Message with key ${key} does not exists.`);
     }
     cache[key] = concatArrayBuffers(cache[key]);
-    console.debug(`Processing message ${key} (bytes=${cache[key].byteLength})`);
+    // console.debug(`Processing message ${key} (bytes=${cache[key].byteLength})`);
     let unpacker = decodeMulti(cache[key]);
     const { done, value } = unpacker.next();
     const main = value;
@@ -462,10 +462,10 @@ export class RPC extends MessageEmitter {
       Object.assign(main, extra.value);
     }
     this._fire(main["type"], main);
-    console.debug(
-      this._client_id,
-      `Processed message ${key} (bytes=${cache[key].byteLength})`,
-    );
+    // console.debug(
+    //   this._client_id,
+    //   `Processed message ${key} (bytes=${cache[key].byteLength})`,
+    // );
     delete cache[key];
   }
 
@@ -904,9 +904,9 @@ export class RPC extends MessageEmitter {
         data.slice(start_byte, start_byte + CHUNK_SIZE),
         !!session_id,
       );
-      console.debug(
-        `Sending chunk ${idx + 1}/${chunk_num} (${total_size} bytes)`,
-      );
+      // console.debug(
+      //   `Sending chunk ${idx + 1}/${chunk_num} (${total_size} bytes)`,
+      // );
     }
     // console.log(`All chunks sent (${chunk_num})`);
     await message_cache.process(message_id, !!session_id);
@@ -1066,7 +1066,7 @@ export class RPC extends MessageEmitter {
             ._send_chunks(message_package, target_id, remote_parent)
             .then(function () {
               if (timer) {
-                console.debug(`Start watchdog timer.`);
+                // console.debug(`Start watchdog timer.`);
                 // Only start the timer after we send the message successfully
                 timer.start();
               }
@@ -1150,7 +1150,7 @@ export class RPC extends MessageEmitter {
         if (promise.heartbeat && promise.interval) {
           async function heartbeat() {
             try {
-              console.debug("Reset heartbeat timer: " + data.method);
+              // console.debug("Reset heartbeat timer: " + data.method);
               await promise.heartbeat();
             } catch (err) {
               console.error(err);
@@ -1165,7 +1165,7 @@ export class RPC extends MessageEmitter {
       try {
         method = indexObject(this._object_store, data["method"]);
       } catch (e) {
-        console.debug("Failed to find method", method_name, this._client_id, e);
+        // console.debug("Failed to find method", method_name, this._client_id, e);
         throw new Error(
           `Method not found: ${method_name} at ${this._client_id}`,
         );
@@ -1255,7 +1255,7 @@ export class RPC extends MessageEmitter {
           `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
         );
       }
-      console.debug("Executing method: " + method_name);
+      // console.debug("Executing method: " + method_name);
       if (data.promise) {
         const result = method.apply(null, args);
         if (result instanceof Promise) {
@@ -1279,7 +1279,7 @@ export class RPC extends MessageEmitter {
     } catch (err) {
       if (reject) {
         reject(err);
-        console.debug("Error during calling method: ", err);
+        // console.debug("Error during calling method: ", err);
       } else {
         console.error("Error during calling method: ", err);
       }
@@ -1351,11 +1351,11 @@ export class RPC extends MessageEmitter {
       const _server = aObject.__rpc_object__._rserver || this._server_base_url;
       if (_server === this._server_base_url) {
         return aObject.__rpc_object__;
-      } else {
-        console.debug(
-          `Encoding remote function from a different server ${_server}, current server: ${this._server_base_url}`,
-        );
-      }
+      } // else {
+      //   console.debug(
+      //     `Encoding remote function from a different server ${_server}, current server: ${this._server_base_url}`,
+      //   );
+      // }
     }
 
     let bObject;
