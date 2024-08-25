@@ -766,21 +766,34 @@ export class RPC extends MessageEmitter {
   }
 
   async unregister_service(service, notify) {
-    if (service instanceof Object) {
-      service = service.id;
+    notify = notify === undefined ? true : notify;
+    let service_id;
+    if (typeof service === "string") {
+      service_id = service;
+    } else {
+      service_id = service.id;
     }
-    if (!this._services[service]) {
-      throw new Error(`Service not found: ${service}`);
+    assert(
+      service_id && typeof service_id === "string",
+      `Invalid service id: ${service_id}`,
+    );
+    if (service_id.includes(":")) {
+      service_id = service_id.split(":")[1];
     }
-    const api = this._services[service];
-    delete this._services[service];
+    if (service_id.includes("@")) {
+      service_id = service_id.split("@")[0];
+    }
+    if (!this._services[service_id]) {
+      throw new Error(`Service not found: ${service_id}`);
+    }
     if (notify) {
       const manager = await this.get_manager_service({
         timeout: 10,
         case_conversion: "camel",
       });
-      await manager.registerService(api.id);
+      await manager.unregisterService(service_id);
     }
+    delete this._services[service_id];
   }
 
   _ndarray(typedArray, shape, dtype) {

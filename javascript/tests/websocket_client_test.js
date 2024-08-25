@@ -20,6 +20,23 @@ describe("RPC", async () => {
     });
     expect(api.config.hypha_version).to.be.a("string");
     expect(typeof api.log).to.equal("function");
+    const svc_info = await api.registerService({
+      id: "test-service",
+      config: {
+        visibility: "public",
+      },
+      type: "echo",
+      echo: (x) => x,
+    });
+
+    const svc = await api.getService("test-service");
+    expect(await svc.echo("hello")).to.equal("hello");
+    await api.unregisterService(svc_info.id);
+    try {
+      await api.getService("test-service");
+    } catch (e) {
+      expect(e.message).to.include("Service not found");
+    }
     await api.disconnect();
   }).timeout(20000);
 

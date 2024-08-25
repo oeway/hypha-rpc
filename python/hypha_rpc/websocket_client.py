@@ -70,6 +70,15 @@ class WebsocketRPCConnection:
         self._legacy_auth = None
         self.connection_info = None
         self._enable_reconnect = False
+        if ssl == False:
+            import ssl as ssl_module
+
+            ssl = ssl_module.create_default_context()
+            ssl.check_hostname = False
+            ssl.verify_mode = ssl_module.CERT_NONE
+            logger.warning(
+                "SSL is disabled, this is not recommended for production use."
+            )
         self._ssl = ssl
         self.manager_id = None
 

@@ -257,7 +257,7 @@ async def test_connect_to_server(websocket_server):
     assert svc.hello.__doc__ == hello.__doc__
     assert svc.hello.__name__ == hello.__name__
 
-    await ws.register_service(
+    svc_info = await ws.register_service(
         {
             "name": "Hello World",
             "id": "hello-world",
@@ -275,6 +275,15 @@ async def test_connect_to_server(websocket_server):
     svc = await ws.get_service("hello-world")
     assert svc.hello.__doc__ == hello.__doc__
     assert svc.hello.__name__ == hello.__name__
+
+    await ws.unregister_service(svc_info["id"])
+
+    try:
+        svc = await ws.get_service("hello-world")
+    except Exception as e:
+        assert "Service not found" in str(e)
+
+    await ws.disconnect()
 
 
 @pytest.mark.asyncio

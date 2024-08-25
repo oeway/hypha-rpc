@@ -11,6 +11,7 @@ import traceback
 import weakref
 from collections import OrderedDict
 from functools import partial, reduce
+from typing import Union
 from .utils import ObjectProxy, DefaultObjectProxy
 
 import msgpack
@@ -734,18 +735,25 @@ class RPC(MessageEmitter):
                 raise Exception(f"Failed to notify workspace manager: {exp}")
         return service_info
 
-    async def unregister_service(self, service: dict, notify: bool = True):
+    async def unregister_service(self, service: Union[dict, str], notify: bool = True):
         """Register a service."""
-        if isinstance(service, str):
-            service = self._services.get(service)
-        if service["id"] not in self._services:
-            raise Exception(f"Service not found: {service.get('id')}")
-        del self._services[service["id"]]
+        if isinstance(service, dict):
+            service_id = service["id"]
+        else:
+            service_id = service
+        assert isinstance(service_id, str), f"Invalid service id: {service_id}"
+        if ":" in service_id:
+            service_id = service_id.split(":")[1]
+        if "@" in service_id:
+            service_id = service_id.split("@")[0]
+        if service_id not in self._services:
+            raise Exception(f"Service not found: {service_id}")
         if notify:
             manager = await self.get_manager_service(
                 {"timeout": 10, "case_conversion": "snake"}
             )
-            await manager.unregister_service(service.id)
+            await manager.unregister_service(service_id)
+        del self._services[service_id]
 
     def check_modules(self):
         """Check if all the modules exists."""
