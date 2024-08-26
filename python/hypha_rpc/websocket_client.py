@@ -327,12 +327,14 @@ async def login(config):
     timeout = config.get("login_timeout", 60)
     callback = config.get("login_callback")
     profile = config.get("profile", False)
+    ssl = config.get("ssl")
 
     server = await connect_to_server(
         {
             "name": "initial login client",
             "server_url": config.get("server_url"),
             "method_timeout": timeout,
+            "ssl": ssl,
         }
     )
     try:
@@ -795,6 +797,7 @@ def setup_local_client(enable_execution=False, on_ready=None):
         method_timeout = data.get("method_timeout")
         name = data.get("name")
         config = data.get("config")
+        ssl = data.get("ssl")
 
         if type == "initializeHyphaClient":
             if not server_url or not workspace or not client_id:
@@ -813,6 +816,7 @@ def setup_local_client(enable_execution=False, on_ready=None):
                     "token": token,
                     "method_timeout": method_timeout,
                     "name": name,
+                    "ssl": ssl,
                 }
             )
 
