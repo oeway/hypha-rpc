@@ -193,9 +193,10 @@ def login(config):
     service_id = config.get("login_service_id", "public/hypha-login")
     timeout = config.get("login_timeout", 60)
     callback = config.get("login_callback")
+    ssl = config.get("ssl")
 
     server = connect_to_server(
-        {"name": "initial login client", "server_url": server_url}
+        {"name": "initial login client", "server_url": server_url, "ssl": ssl}
     )
     try:
         svc = server.get_service(service_id)
