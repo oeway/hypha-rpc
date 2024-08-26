@@ -102,9 +102,15 @@ class WebsocketRPCConnection:
         """Attempt to establish a WebSocket connection."""
         try:
             self._legacy_auth = False
-            websocket = await asyncio.wait_for(
-                websockets.connect(server_url, ssl=self._ssl), self._timeout
-            )
+            # Only pass ssl if it's not None
+            if self._ssl is None:
+                websocket = await asyncio.wait_for(
+                    websockets.connect(server_url), self._timeout
+                )
+            else:
+                websocket = await asyncio.wait_for(
+                    websockets.connect(server_url, ssl=self._ssl), self._timeout
+                )
             return websocket
         except websockets.exceptions.InvalidStatusCode as e:
             # websocket code should be 1003, but it's not available in the library
@@ -139,7 +145,13 @@ class WebsocketRPCConnection:
         full_url = f"{server_url}?{query_string}" if query_string else server_url
 
         # Attempt to establish the WebSocket connection with the constructed URL
-        return await websockets.connect(full_url, ssl=self._ssl)
+        # Only pass ssl if it's not None
+        if self._ssl is None:
+            return await asyncio.wait_for(websockets.connect(full_url), self._timeout)
+        else:
+            return await asyncio.wait_for(
+                websockets.connect(full_url, ssl=self._ssl), self._timeout
+            )
 
     async def open(self):
         """Open the connection with fallback logic for backward compatibility."""
