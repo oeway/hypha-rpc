@@ -359,7 +359,6 @@ def schema_function_pydantic(
         # Convert dictionary inputs to Pydantic model if needed
         final_args = []
         for arg, param in zip(new_args, func_sig.parameters.values()):
-
             annotations = extract_annotations(param.annotation)
             for annotation in annotations:
                 if (

@@ -760,9 +760,9 @@ async def _connect_to_server(config):
         probes["name"] = "Probes"
         probes["config"] = {"visibility": "public"}
         probes["type"] = "probes"
-        probes["description"] = (
-            f"Probes Service, visit {server_url}/{workspace}services/probes for the available probes."
-        )
+        probes[
+            "description"
+        ] = f"Probes Service, visit {server_url}/{workspace}services/probes for the available probes."
         return await wm.register_service(probes, {"overwrite": True})
 
     wm.register_probes = schema_function(

@@ -51,7 +51,6 @@ async def test_schema_function_native():
 
 
 class OrderManagerNative:
-
     @schema_method(schema_type="native:auto")
     def place_order(
         self,
@@ -142,7 +141,6 @@ async def test_schema_function():
 
 
 class OrderManager:
-
     @schema_function(skip_self=True, schema_type="pydantic:auto")
     def place_order(
         self,

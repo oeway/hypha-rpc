@@ -318,7 +318,6 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
-
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     manager = await self.get_manager_service(
@@ -1343,7 +1342,6 @@ class RPC(MessageEmitter):
             return b_object
 
         if callable(a_object):
-
             if a_object in self._method_annotations:
                 annotation = self._method_annotations[a_object]
                 b_object = {
