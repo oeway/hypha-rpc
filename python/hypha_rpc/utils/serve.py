@@ -25,7 +25,17 @@ async def serve_app(
 
     # Connect to the Hypha server
     server = await connect_to_server(connection_options)
+    svc_info = await register_asgi_service(
+        server, app, server_url, service_id, service_name
+    )
+    print(
+        f"Access your app at: {server_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}"
+    )
+    # Keep the server running
+    await server.serve()
 
+
+async def register_asgi_service(server, app, server_url, service_id, service_name):
     async def serve_fastapi(args, context=None):
         await app(args["scope"], args["receive"], args["send"])
 
@@ -33,18 +43,12 @@ async def serve_app(
         {
             "id": service_id,
             "name": service_name or service_id,
-            "type": "ASGI",
+            "type": "asgi",
             "serve": serve_fastapi,
             "config": {"visibility": "public"},
         }
     )
-
-    print(
-        f"Access your app at: {server_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}"
-    )
-
-    # Keep the server running
-    await server.serve()
+    return svc_info
 
 
 async def main(args):
@@ -94,11 +98,12 @@ def main_entry():
         "--server-url", type=str, required=True, help="The Hypha server URL"
     )
     parser.add_argument(
-        "--workspace", type=str, required=True, help="The workspace to connect to"
+        "--workspace", type=str, default=None, help="The workspace to connect to"
     )
     parser.add_argument(
         "--token",
         type=str,
+        default=None,
         help="The token for authentication (not needed if --login is used)",
     )
     parser.add_argument(
