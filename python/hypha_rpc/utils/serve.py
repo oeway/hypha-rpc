@@ -131,14 +131,20 @@ def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
 # Streaming helper to package text chunks in the response structure
 async def stream_chunks(generator: Callable) -> dict:
     async for chunk in generator:
-        delta = DeltaMessage(content=chunk, role="assistant")
-        choice_data = ChatCompletionResponseStreamChoice(index=0, delta=delta)
-        chunk_response = ChatCompletionResponse(
-            model="test-chat-model",
-            choices=[choice_data],
-            object="chat.completion.chunk",
-        )
-        yield chunk_response.model_dump_json(exclude_unset=True)
+        if isinstance(chunk, str):
+            delta = DeltaMessage(content=chunk, role="assistant")
+            choice_data = ChatCompletionResponseStreamChoice(index=0, delta=delta)
+            chunk_response = ChatCompletionResponse(
+                model="test-chat-model",
+                choices=[choice_data],
+                object="chat.completion.chunk",
+            )
+            yield chunk_response.model_dump_json(exclude_unset=True)
+        elif isinstance(chunk, dict):
+            chunk_response = ChatCompletionResponse.model_validate(chunk)
+            yield chunk_response.model_dump_json(exclude_unset=True)
+        else:
+            raise ValueError("Invalid chunk type")
 
 
 async def serve_app(
