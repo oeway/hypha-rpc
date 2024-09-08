@@ -5,10 +5,12 @@ from functools import partial
 from hypha_rpc.utils import callable_sig, callable_doc, parse_service_url
 import asyncio
 import pytest
+import random
 import httpx
 from hypha_rpc import connect_to_server
-from hypha_rpc.utils.serve import serve_app
+from hypha_rpc.utils.serve import register_asgi_service, create_openai_chat_server
 from fastapi import FastAPI
+from openai import AsyncOpenAI
 from . import WS_SERVER_URL
 
 from hypha_rpc.utils.launch import launch_external_services
@@ -142,16 +144,11 @@ async def test_serve_fastapi_app(websocket_server):
     server = await connect_to_server({"server_url": WS_SERVER_URL})
     workspace = server.config["workspace"]
     token = await server.generate_token()
-    proc = asyncio.create_task(
-        serve_app(app, WS_SERVER_URL, service_id, workspace, token)
-    )
-
-    # Allow some time for the server to start
-    await asyncio.sleep(1)
+    await register_asgi_service(server, service_id, app)
 
     # Test the service using httpx
     async with httpx.AsyncClient() as client:
-        response = await client.get(f"{WS_SERVER_URL}/{workspace}/apps/{service_id}")
+        response = await client.get(f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/")
         assert response.status_code == 200
         assert response.json() == {"message": "Hello, World!"}
 
@@ -161,15 +158,88 @@ async def test_serve_fastapi_app(websocket_server):
         assert response.status_code == 200
         assert response.json() == {"message": "Hello, it works!"}
 
-    # Clean up by cancelling the server task
-    proc.cancel()
-    await asyncio.sleep(0.1)
     try:
         # Ensure the server is no longer running
         response = await client.get(f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/")
         assert response.status_code == 404
     except RuntimeError as exp:
         assert "the client has been closed" in str(exp)
+
+
+@pytest.mark.asyncio
+async def test_openai_server_proxy(websocket_server):
+    """Test the OpenAI server proxy."""
+
+    async def text_generator(request: dict):
+        max_tokens = request.get("max_tokens", 50)
+        words = [
+            "hello",
+            "world",
+            "foo",
+            "bar",
+            "chatbot",
+            "test",
+            "api",
+            "response",
+            "markdown",
+        ]
+        # Simulate streaming random markdown text
+        for _ in range(5):  # Stream 5 chunks of random text
+            delta_text = " ".join(random.choices(words, k=max_tokens // 5))
+            yield delta_text
+            await asyncio.sleep(0.1)  # Simulate delay between chunks
+
+    model_registry = {"test-chat-model": text_generator}
+    app = create_openai_chat_server(model_registry)
+
+    server = await connect_to_server({"server_url": WS_SERVER_URL})
+    workspace = server.config["workspace"]
+    token = await server.generate_token()
+
+    service_id = "openai-server"
+
+    await register_asgi_service(server, service_id, app)
+
+    # Let's test it using httpx
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/v1/models"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["object"] == "list"
+        assert data["data"][0]["id"] == "test-chat-model"
+
+        response = await client.post(
+            f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/v1/chat/completions",
+            json={
+                "model": "test-chat-model",
+                "messages": [{"role": "user", "content": "Tell me a story."}],
+                "temperature": 0.8,
+                "max_tokens": 50,
+                "stream": False,
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        data = response.json()
+        assert data["model"] == "test-chat-model"
+        assert data["choices"][0]["message"]["role"] == "assistant"
+
+    client = AsyncOpenAI(
+        base_url=f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/v1", api_key=token
+    )
+    response = await client.chat.completions.create(
+        model="test-chat-model",
+        messages=[{"role": "user", "content": "Tell me a story."}],
+        temperature=0.8,
+        max_tokens=50,
+        stream=True,
+    )
+
+    async for chunk in response:
+        print("Chunk:", chunk.choices[0].delta.content)
+        assert chunk.choices[0].delta.role == "assistant"
 
 
 @pytest.mark.asyncio

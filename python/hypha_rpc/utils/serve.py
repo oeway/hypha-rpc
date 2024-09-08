@@ -2,7 +2,143 @@ import argparse
 import importlib
 import asyncio
 from hypha_rpc import connect_to_server, login
-from fastapi import FastAPI
+import time
+import random
+from typing import List, Literal, Union, Optional, Callable, Dict
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
+
+# Define the model registry type for better type hints
+ModelRegistry = Dict[str, callable]
+
+
+# Base API Models
+class ModelCard(BaseModel):
+    id: str
+    object: str = "model"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    owned_by: str = "owner"
+    root: Optional[str] = None
+    parent: Optional[str] = None
+    permission: Optional[list] = None
+
+
+class ModelList(BaseModel):
+    object: str = "list"
+    data: List[ModelCard] = []
+
+
+class ChatMessageInput(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: Union[str, List[str]]
+    name: Optional[str] = None
+
+
+class ChatMessageResponse(BaseModel):
+    role: Literal["assistant"]
+    content: str = None
+    name: Optional[str] = None
+
+
+class DeltaMessage(BaseModel):
+    role: Optional[Literal["user", "assistant", "system"]] = None
+    content: Optional[str] = None
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessageInput]
+    temperature: Optional[float] = 0.8
+    top_p: Optional[float] = 0.8
+    max_tokens: Optional[int] = 50
+    stream: Optional[bool] = False
+
+
+class ChatCompletionResponseChoice(BaseModel):
+    index: int
+    message: ChatMessageResponse
+
+
+class ChatCompletionResponseStreamChoice(BaseModel):
+    index: int
+    delta: DeltaMessage
+
+
+class ChatCompletionResponse(BaseModel):
+    model: str
+    object: Literal["chat.completion", "chat.completion.chunk"]
+    choices: List[
+        Union[ChatCompletionResponseChoice, ChatCompletionResponseStreamChoice]
+    ]
+    created: Optional[int] = Field(default_factory=lambda: int(time.time()))
+
+
+# Function to create FastAPI app based on the model registry
+def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
+    app = FastAPI()
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/v1/models", response_model=ModelList)
+    async def list_models():
+        model_cards = [ModelCard(id=model_name) for model_name in model_registry.keys()]
+        return ModelList(data=model_cards)
+
+    @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+    async def create_chat_completion(request: ChatCompletionRequest):
+        if len(request.messages) < 1 or request.messages[-1].role == "assistant":
+            raise HTTPException(status_code=400, detail="Invalid request")
+
+        model_id = request.model
+        if model_id not in model_registry:
+            raise HTTPException(status_code=404, detail="Model not found")
+
+        # Get the model's text generator function
+        text_generator = model_registry[model_id]
+
+        # Streaming mode
+        if request.stream:
+            generate = text_generator(request.dict())
+            return EventSourceResponse(
+                stream_chunks(generate), media_type="text/event-stream"
+            )
+
+        # Non-streaming mode
+        response_text = ""
+        async for chunk in text_generator(request.dict()):
+            response_text += chunk
+            if len(response_text) >= request.max_tokens:
+                break
+        response_text = response_text[: request.max_tokens]
+
+        message = ChatMessageResponse(role="assistant", content=response_text)
+        choice_data = ChatCompletionResponseChoice(index=0, message=message)
+        return ChatCompletionResponse(
+            model=request.model, choices=[choice_data], object="chat.completion"
+        )
+
+    return app
+
+
+# Streaming helper to package text chunks in the response structure
+async def stream_chunks(generator: Callable) -> dict:
+    async for chunk in generator:
+        delta = DeltaMessage(content=chunk, role="assistant")
+        choice_data = ChatCompletionResponseStreamChoice(index=0, delta=delta)
+        chunk_response = ChatCompletionResponse(
+            model="test-chat-model",
+            choices=[choice_data],
+            object="chat.completion.chunk",
+        )
+        yield chunk_response.model_dump_json(exclude_unset=True)
 
 
 async def serve_app(
@@ -25,9 +161,7 @@ async def serve_app(
 
     # Connect to the Hypha server
     server = await connect_to_server(connection_options)
-    svc_info = await register_asgi_service(
-        server, app, server_url, service_id, service_name
-    )
+    svc_info = await register_asgi_service(server, service_id, app)
     print(
         f"Access your app at: {server_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}"
     )
@@ -35,19 +169,19 @@ async def serve_app(
     await server.serve()
 
 
-async def register_asgi_service(server, app, server_url, service_id, service_name):
+async def register_asgi_service(server, service_id, app, **kwargs):
     async def serve_fastapi(args, context=None):
         await app(args["scope"], args["receive"], args["send"])
 
-    svc_info = await server.register_service(
-        {
-            "id": service_id,
-            "name": service_name or service_id,
-            "type": "asgi",
-            "serve": serve_fastapi,
-            "config": {"visibility": "public"},
-        }
-    )
+    svc = {
+        "id": service_id,
+        "name": service_id,
+        "type": "asgi",
+        "serve": serve_fastapi,
+        "config": {"visibility": "public"},
+    }
+    svc.update(kwargs)
+    svc_info = await server.register_service(svc)
     return svc_info
 
 
