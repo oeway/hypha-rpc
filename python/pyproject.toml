@@ -17,7 +17,7 @@ email = "oeway007@gmail.com"
 text = "MIT"
 
 [project.optional-dependencies]
-full = [ "aiortc; platform_system != 'Emscripten'", "zarr",]
+full = [ "aiortc; platform_system != 'Emscripten'", "zarr", "fastapi", "sse-starlette", "openai"]
 
 [tool.setuptools]
 include-package-data = true
