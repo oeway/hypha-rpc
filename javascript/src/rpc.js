@@ -230,7 +230,7 @@ class Timer {
   }
 
   clear() {
-    if (this._task) {
+    if (this._task && this.started) {
       clearTimeout(this._task);
       this._task = null;
       this.started = false;
@@ -838,12 +838,12 @@ export class RPC extends MessageEmitter {
       } catch (error) {
         console.error("Error in callback:", method_id, error);
       } finally {
+        if (timer && timer.started) {
+          timer.clear();
+        }
         if (clear_after_called && self._object_store[session_id]) {
           // console.log("Deleting session", session_id, "from", self._client_id);
           delete self._object_store[session_id];
-        }
-        if (timer && timer.started) {
-          timer.clear();
         }
       }
     };
@@ -1066,27 +1066,37 @@ export class RPC extends MessageEmitter {
         }
         const total_size = message_package.length;
         if (total_size <= CHUNK_SIZE + 1024) {
-          self._emit_message(message_package).then(function () {
-            if (timer) {
-              // console.log(`Start watchdog timer.`);
-              // Only start the timer after we send the message successfully
-              timer.start();
-            }
-          });
+          self
+            ._emit_message(message_package)
+            .then(function () {
+              if (timer) {
+                // If resolved successfully, reset the timer
+                timer.reset();
+              }
+            })
+            .catch(function (err) {
+              console.error("Failed to send message", err);
+              reject(err);
+              if (timer) {
+                timer.clear();
+              }
+            });
         } else {
           // send chunk by chunk
           self
             ._send_chunks(message_package, target_id, remote_parent)
             .then(function () {
               if (timer) {
-                // console.debug(`Start watchdog timer.`);
-                // Only start the timer after we send the message successfully
-                timer.start();
+                // If resolved successfully, reset the timer
+                timer.reset();
               }
             })
             .catch(function (err) {
               console.error("Failed to send message", err);
               reject(err);
+              if (timer) {
+                timer.clear();
+              }
             });
         }
       });

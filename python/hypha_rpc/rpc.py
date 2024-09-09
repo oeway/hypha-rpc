@@ -231,7 +231,7 @@ class Timer:
 
     def clear(self):
         """Clear the timer."""
-        if self._task:
+        if self._task and self.started:
             self._task.cancel()
             self._task = None
             self.started = False
@@ -795,13 +795,13 @@ class RPC(MessageEmitter):
                 # This probably means the task was cancelled
                 logger.debug("Invalid state error in callback: %s", method_id)
             finally:
+                if timer and timer.started:
+                    timer.clear()  # Clear the timer first before deleting the session
                 if clear_after_called and session_id in self._object_store:
                     logger.info(
                         "Deleting session %s from %s", session_id, self._client_id
                     )
                     del self._object_store[session_id]
-                if timer and timer.started:
-                    timer.clear()
 
         return encoded, wrapped_callback
 
@@ -1024,10 +1024,12 @@ class RPC(MessageEmitter):
                             f"({target_id}:{method_id}), error: {fut.exception()}"
                         )
                     )
-                elif timer:
-                    # logger.info("Start watchdog timer.")
-                    # Only start the timer after we send the message successfully
-                    timer.start()
+                    if timer:
+                        timer.clear()
+                else:
+                    # If resolved successfully, reset the timer
+                    if timer:
+                        timer.reset()
 
             emit_task.add_done_callback(handle_result)
             return fut
@@ -1153,10 +1155,9 @@ class RPC(MessageEmitter):
                                 if method_task and not method_task.done():
                                     method_task.cancel()
                                 break
-                            except Exception as exp:  # pylint: disable=broad-except
+                            except Exception as exp:
                                 logger.error(
-                                    "Failed to reset the heartbeat"
-                                    " timer: %s, error: %s",
+                                    "Failed to reset the heartbeat timer: %s, error: %s",
                                     data["method"],
                                     exp,
                                 )
@@ -1164,10 +1165,10 @@ class RPC(MessageEmitter):
                                     method_task.cancel()
                                 break
                             if method_task and method_task.done():
-                                logger.warning(
-                                    "quiting heartbeat because the method task is done"
+                                logger.debug(
+                                    "Stopping heartbeat as the method task is done"
                                 )
-                                break
+                                break  # Stop the heartbeat if the task is done
                             await asyncio.sleep(interval)
 
                     heartbeat_task = asyncio.ensure_future(
