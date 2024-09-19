@@ -130,6 +130,7 @@ class PyodideWebsocketRPCConnection:
         reconnection_token=None,
         timeout=5,
         ssl=None,
+        refresh_interval=2 * 60 * 60,
     ):
         assert server_url and client_id, "server_url and client_id are required"
         self._server_url = server_url
@@ -148,6 +149,8 @@ class PyodideWebsocketRPCConnection:
         self.connection_info = None
         self._enable_reconnect = False
         self.manager_id = None
+        self._refresh_interval = refresh_interval
+        self._refresh_token_task = None
         assert ssl is None, "SSL is not supported in Pyodide"
         if self._server_url.startswith("wss://local-hypha-server:"):
             self._WebSocketClass = js.eval(
@@ -188,6 +191,25 @@ class PyodideWebsocketRPCConnection:
             )
             self._legacy_auth = True
             return await self._attempt_connection_with_query_params(server_url)
+
+    async def _send_refresh_token(self, refresh_interval):
+        """Send refresh token at regular intervals."""
+        try:
+            assert self._websocket, "Websocket connection is not established"
+            await asyncio.sleep(2)
+            while not self._closed and self._websocket and not self._websocket.closed:
+                # Create the refresh token message
+                refresh_message = json.dumps({"type": "refresh_token"})
+                # Send the message to the server
+                self._websocket.send(to_js(refresh_message))
+                logger.info("Requested refresh token")
+                # Wait for the next refresh interval
+                await asyncio.sleep(refresh_interval)
+        except asyncio.CancelledError:
+            # Task was cancelled, cleanup or exit gracefully
+            logger.info("Refresh token task was cancelled.")
+        except Exception as exp:
+            logger.error(f"Failed to send refresh token: {exp}")
 
     async def open(self):
         """Open connection, attempting fallback on specific errors."""
@@ -256,9 +278,33 @@ class PyodideWebsocketRPCConnection:
 
             self._enable_reconnect = True
             self._closed = False
-            self._websocket.onmessage = lambda evt: self._handle_message(
-                evt.data.to_py().tobytes()
-            )
+            if self._refresh_interval > 0:
+                self._refresh_token_task = asyncio.create_task(
+                    self._send_refresh_token(self._refresh_interval)
+                )
+
+            def on_message(evt):
+                data = evt.data.to_py()
+                if isinstance(data, str):
+                    data = json.loads(data)
+                    if data.get("type") == "reconnection_token":
+                        self._reconnection_token = data["reconnection_token"]
+                        logger.info("Reconnection token received")
+                    else:
+                        logger.info("Received message from the server: %s", data)
+                elif self._handle_message:
+                    data = data.tobytes()
+                    try:
+                        if self._is_async:
+                            asyncio.create_task(self._handle_message(data))
+                        else:
+                            self._handle_message(data)
+                    except Exception as exp:
+                        logger.exception(
+                            "Failed to handle message: %s, error: %s", data, exp
+                        )
+
+            self._websocket.onmessage = on_message
             self._websocket.onerror = lambda evt: logger.error(
                 f"WebSocket error: {evt}"
             )
@@ -379,8 +425,7 @@ class PyodideWebsocketRPCConnection:
             await self.open()
 
         try:
-            data = to_js(data)
-            self._websocket.send(data)
+            self._websocket.send(to_js(data))
         except Exception as exp:
             logger.error("Failed to send data, error: %s", exp)
             raise exp
@@ -390,4 +435,7 @@ class PyodideWebsocketRPCConnection:
         self._closed = True
         if self._websocket and self._websocket.readyState == WebSocket.OPEN:
             self._websocket.close(1000, reason)
+        if self._refresh_token_task:
+            self._refresh_token_task.cancel()
+            self._refresh_token_task = None
         logger.info(f"WebSocket connection disconnected ({reason})")
