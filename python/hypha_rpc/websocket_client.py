@@ -53,7 +53,7 @@ class WebsocketRPCConnection:
         reconnection_token=None,
         timeout=60,
         ssl=None,
-        refresh_interval=2 * 60 * 60,
+        token_refresh_interval=2 * 60 * 60,
     ):
         """Set up instance."""
         self._websocket = None
@@ -73,7 +73,7 @@ class WebsocketRPCConnection:
         self._enable_reconnect = False
         self._refresh_token_task = None
         self._listen_task = None
-        self._refresh_interval = refresh_interval
+        self._token_refresh_interval = token_refresh_interval
         if ssl == False:
             import ssl as ssl_module
 
@@ -157,7 +157,7 @@ class WebsocketRPCConnection:
                 websockets.connect(full_url, ssl=self._ssl), self._timeout
             )
 
-    async def _send_refresh_token(self, refresh_interval):
+    async def _send_refresh_token(self, token_refresh_interval):
         """Send refresh token at regular intervals."""
         try:
             assert self._websocket, "Websocket connection is not established"
@@ -169,7 +169,7 @@ class WebsocketRPCConnection:
                 await self._websocket.send(refresh_message)
                 logger.info("Requested refresh token")
                 # Wait for the next refresh interval
-                await asyncio.sleep(refresh_interval)
+                await asyncio.sleep(token_refresh_interval)
         except asyncio.CancelledError:
             # Task was cancelled, cleanup or exit gracefully
             logger.info("Refresh token task was cancelled.")
@@ -225,9 +225,9 @@ class WebsocketRPCConnection:
                 raise ConnectionAbortedError(
                     "Unexpected message received from the server"
                 )
-            if self._refresh_interval > 0:
+            if self._token_refresh_interval > 0:
                 self._refresh_token_task = asyncio.create_task(
-                    self._send_refresh_token(self._refresh_interval)
+                    self._send_refresh_token(self._token_refresh_interval)
                 )
             self._listen_task = asyncio.ensure_future(self._listen())
             if self._handle_connected:
@@ -261,7 +261,7 @@ class WebsocketRPCConnection:
                     data = json.loads(data)
                     if data.get("type") == "reconnection_token":
                         self._reconnection_token = data.get("reconnection_token")
-                        logger.info("Reconnection token received")
+                        print("Reconnection token received")
                     else:
                         logger.info("Received message from the server: %s", data)
                 elif self._handle_message:
@@ -497,7 +497,7 @@ async def _connect_to_server(config):
         reconnection_token=config.get("reconnection_token"),
         timeout=config.get("method_timeout", 30),
         ssl=config.get("ssl"),
-        refresh_interval=config.get("refresh_interval", 2 * 60 * 60),
+        token_refresh_interval=config.get("token_refresh_interval", 2 * 60 * 60),
     )
     connection_info = await connection.open()
     assert connection_info, (

@@ -130,7 +130,7 @@ class PyodideWebsocketRPCConnection:
         reconnection_token=None,
         timeout=5,
         ssl=None,
-        refresh_interval=2 * 60 * 60,
+        token_refresh_interval=2 * 60 * 60,
     ):
         assert server_url and client_id, "server_url and client_id are required"
         self._server_url = server_url
@@ -149,7 +149,7 @@ class PyodideWebsocketRPCConnection:
         self.connection_info = None
         self._enable_reconnect = False
         self.manager_id = None
-        self._refresh_interval = refresh_interval
+        self._token_refresh_interval = token_refresh_interval
         self._refresh_token_task = None
         assert ssl is None, "SSL is not supported in Pyodide"
         if self._server_url.startswith("wss://local-hypha-server:"):
@@ -192,7 +192,7 @@ class PyodideWebsocketRPCConnection:
             self._legacy_auth = True
             return await self._attempt_connection_with_query_params(server_url)
 
-    async def _send_refresh_token(self, refresh_interval):
+    async def _send_refresh_token(self, token_refresh_interval):
         """Send refresh token at regular intervals."""
         try:
             assert self._websocket, "Websocket connection is not established"
@@ -204,7 +204,7 @@ class PyodideWebsocketRPCConnection:
                 self._websocket.send(to_js(refresh_message))
                 logger.info("Requested refresh token")
                 # Wait for the next refresh interval
-                await asyncio.sleep(refresh_interval)
+                await asyncio.sleep(token_refresh_interval)
         except asyncio.CancelledError:
             # Task was cancelled, cleanup or exit gracefully
             logger.info("Refresh token task was cancelled.")
@@ -278,9 +278,9 @@ class PyodideWebsocketRPCConnection:
 
             self._enable_reconnect = True
             self._closed = False
-            if self._refresh_interval > 0:
+            if self._token_refresh_interval > 0:
                 self._refresh_token_task = asyncio.create_task(
-                    self._send_refresh_token(self._refresh_interval)
+                    self._send_refresh_token(self._token_refresh_interval)
                 )
 
             def on_message(evt):
