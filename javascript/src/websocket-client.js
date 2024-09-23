@@ -24,7 +24,7 @@ class WebsocketRPCConnection {
     reconnection_token = null,
     timeout = 60,
     WebSocketClass = null,
-    refresh_interval = 2*60*60*1000,
+    refresh_interval = 2 * 60 * 60 * 1000,
   ) {
     assert(server_url && client_id, "server_url and client_id are required");
     this._server_url = server_url;
@@ -207,14 +207,12 @@ class WebsocketRPCConnection {
           if (parsedData.type === "reconnection_token") {
             this._reconnection_token = parsedData.reconnection_token;
             console.log("Reconnection token received");
-          }
-          else{
+          } else {
             console.log("Received message from the server:", parsedData);
           }
         } else {
           this._handle_message(event.data);
         }
-        
       };
 
       this._websocket.onerror = (event) => {
