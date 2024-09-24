@@ -1088,6 +1088,7 @@ class RPC(MessageEmitter):
                         logger.error(
                             "Error in method (%s): %s", method_name, traceback_error
                         )
+
             return asyncio.ensure_future(_wait(result))
         else:
             if heartbeat_task:
