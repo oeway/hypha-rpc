@@ -1082,9 +1082,12 @@ class RPC(MessageEmitter):
                         logger.debug("Returned value (%s): %s", method_name, result)
                 except Exception as err:
                     traceback_error = traceback.format_exc()
-                    logger.debug("Error in method (%s): %s", method_name, traceback_error)
                     if reject is not None:
                         return reject(Exception(format_traceback(traceback_error)))
+                    else:
+                        logger.error(
+                            "Error in method (%s): %s", method_name, traceback_error
+                        )
 
             return asyncio.ensure_future(_wait(result))
         else:
