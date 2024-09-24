@@ -207,6 +207,17 @@ class WebsocketRPCConnection:
                     self._reconnection_token = self.connection_info[
                         "reconnection_token"
                     ]
+                if "reconnection_token_life_time" in self.connection_info:
+                    if (
+                        self._token_refresh_interval
+                        > self.connection_info["reconnection_token_life_time"] / 1.5
+                    ):
+                        logger.warning(
+                            f"Token refresh interval is too long ({self._token_refresh_interval}), setting it to 1.5 times of the token life time({self.connection_info['reconnection_token_life_time']})."
+                        )
+                        self._token_refresh_interval = (
+                            self.connection_info["reconnection_token_life_time"] / 1.5
+                        )
                 self.manager_id = self.connection_info.get("manager_id", None)
                 logger.info(
                     f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
@@ -261,7 +272,7 @@ class WebsocketRPCConnection:
                     data = json.loads(data)
                     if data.get("type") == "reconnection_token":
                         self._reconnection_token = data.get("reconnection_token")
-                        print("Reconnection token received")
+                        logger.info("Reconnection token received")
                     else:
                         logger.info("Received message from the server: %s", data)
                 elif self._handle_message:
@@ -801,9 +812,9 @@ async def _connect_to_server(config):
         probes["name"] = "Probes"
         probes["config"] = {"visibility": "public"}
         probes["type"] = "probes"
-        probes["description"] = (
-            f"Probes Service, visit {server_url}/{workspace}services/probes for the available probes."
-        )
+        probes[
+            "description"
+        ] = f"Probes Service, visit {server_url}/{workspace}services/probes for the available probes."
         return await wm.register_service(probes, {"overwrite": True})
 
     wm.register_probes = schema_function(

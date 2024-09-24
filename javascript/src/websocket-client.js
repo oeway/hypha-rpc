@@ -24,7 +24,7 @@ class WebsocketRPCConnection {
     reconnection_token = null,
     timeout = 60,
     WebSocketClass = null,
-    token_refresh_interval = 2 * 60 * 60 * 1000,
+    token_refresh_interval = 2 * 60 * 60,
   ) {
     assert(server_url && client_id, "server_url and client_id are required");
     this._server_url = server_url;
@@ -134,6 +134,19 @@ class WebsocketRPCConnection {
           if (this.connection_info.reconnection_token) {
             this._reconnection_token = this.connection_info.reconnection_token;
           }
+          if (this.connection_info.reconnection_token_life_time) {
+            // make sure the token refresh interval is less than the token life time
+            if (
+              this.token_refresh_interval >
+              this.connection_info.reconnection_token_life_time / 1.5
+            ) {
+              console.warn(
+                `Token refresh interval is too long (${this.token_refresh_interval}), setting it to 1.5 times of the token life time(${this.connection_info.reconnection_token_life_time}).`,
+              );
+              this.token_refresh_interval =
+                this.connection_info.reconnection_token_life_time / 1.5;
+            }
+          }
           this.manager_id = this.connection_info.manager_id || null;
           console.log(
             `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
@@ -194,7 +207,7 @@ class WebsocketRPCConnection {
           this._send_refresh_token();
           this._refresh_token_task = setInterval(() => {
             this._send_refresh_token();
-          }, this._token_refresh_interval);
+          }, this._token_refresh_interval * 1000);
         }, 2000);
       }
       // Listen to messages from the server

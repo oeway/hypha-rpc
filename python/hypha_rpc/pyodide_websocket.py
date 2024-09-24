@@ -245,6 +245,18 @@ class PyodideWebsocketRPCConnection:
                         self._reconnection_token = self.connection_info[
                             "reconnection_token"
                         ]
+                    if "reconnection_token_life_time" in self.connection_info:
+                        if (
+                            self._token_refresh_interval
+                            > self.connection_info["reconnection_token_life_time"] / 1.5
+                        ):
+                            logger.warning(
+                                f"Token refresh interval is too long ({self._token_refresh_interval}), setting it to 1.5 times of the token life time({self.connection_info['reconnection_token_life_time']})."
+                            )
+                            self._token_refresh_interval = (
+                                self.connection_info["reconnection_token_life_time"]
+                                / 1.5
+                            )
                     self.manager_id = self.connection_info.get("manager_id", None)
                     logger.info(
                         f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
