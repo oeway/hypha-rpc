@@ -214,8 +214,8 @@ class WebsocketRPCConnection {
       this._enable_reconnect = true;
       this._closed = false;
       this._websocket.onmessage = (event) => {
-        if (typeof data === "string") {
-          const parsedData = JSON.parse(data);
+        if (typeof event.data === "string") {
+          const parsedData = JSON.parse(event.data);
           // Check if the message is a reconnection token
           if (parsedData.type === "reconnection_token") {
             this._reconnection_token = parsedData.reconnection_token;
