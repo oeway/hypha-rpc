@@ -191,8 +191,11 @@ def login(config):
     """Login to the Hypha server."""
     server_url = normalize_server_url(config.get("server_url"))
     service_id = config.get("login_service_id", "public/hypha-login")
+    workspace = config.get("workspace")
+    expires_in = config.get("expires_in")
     timeout = config.get("login_timeout", 60)
     callback = config.get("login_callback")
+    profile = config.get("profile", False)
     ssl = config.get("ssl")
 
     server = connect_to_server(
@@ -201,13 +204,16 @@ def login(config):
     try:
         svc = server.get_service(service_id)
         assert svc, f"Service {service_id} not found on the server."
-        context = svc.start()
+        if workspace:
+            context = svc.start(workspace=workspace, expires_in=expires_in)
+        else:
+            context = svc.start()
         if callback:
             callback(context)
         else:
             print(f"Please open your browser and login at {context['login_url']}")
 
-        return svc.check(context["key"], timeout)
+        return svc.check(context["key"], timeout=timeout, profile=profile)
     except Exception as error:
         raise error
     finally:

@@ -374,7 +374,10 @@ def normalize_server_url(server_url):
 
 async def login(config):
     """Login to the hypha server."""
+    server_url = config.get("server_url")
     service_id = config.get("login_service_id", "public/hypha-login")
+    workspace = config.get("workspace")
+    expires_in = config.get("expires_in")
     timeout = config.get("login_timeout", 60)
     callback = config.get("login_callback")
     profile = config.get("profile", False)
@@ -383,7 +386,7 @@ async def login(config):
     server = await connect_to_server(
         {
             "name": "initial login client",
-            "server_url": config.get("server_url"),
+            "server_url": server_url,
             "method_timeout": timeout,
             "ssl": ssl,
         }
@@ -391,13 +394,16 @@ async def login(config):
     try:
         svc = await server.get_service(service_id)
         assert svc, f"Failed to get the login service: {service_id}"
-        context = await svc.start()
+        if workspace:
+            context = await svc.start(workspace=workspace, expires_in=expires_in)
+        else:
+            context = await svc.start()
         if callback:
             await callback(context)
         else:
             print(f"Please open your browser and login at {context['login_url']}")
 
-        return await svc.check(context["key"], timeout, profile=profile)
+        return await svc.check(context["key"], timeout=timeout, profile=profile)
     except Exception as error:
         raise error
     finally:

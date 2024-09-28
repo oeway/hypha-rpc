@@ -361,6 +361,8 @@ function normalizeServerUrl(server_url) {
 
 export async function login(config) {
   const service_id = config.login_service_id || "public/hypha-login";
+  const workspace = config.workspace;
+  const expires_in = config.expires_in;
   const timeout = config.login_timeout || 60;
   const callback = config.login_callback;
   const profile = config.profile;
@@ -372,13 +374,18 @@ export async function login(config) {
   try {
     const svc = await server.getService(service_id);
     assert(svc, `Failed to get the login service: ${service_id}`);
-    const context = await svc.start();
+    let context;
+    if (workspace) {
+      context = await svc.start({ workspace, expires_in, _rkwargs: true });
+    } else {
+      context = await svc.start();
+    }
     if (callback) {
       await callback(context);
     } else {
       console.log(`Please open your browser and login at ${context.login_url}`);
     }
-    return await svc.check(context.key, timeout, profile);
+    return await svc.check(context.key, { timeout, profile, _rkwargs: true });
   } catch (error) {
     throw error;
   } finally {
