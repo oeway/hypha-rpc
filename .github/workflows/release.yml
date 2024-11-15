@@ -80,6 +80,7 @@ jobs:
 
       - name: Build package (for pyproject.toml)
         run: |
+          pip install build
           python -m build --sdist --wheel .
 
       - name: Publish package on PyPI
