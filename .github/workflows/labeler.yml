@@ -7,8 +7,8 @@ on:
       - master
 
 permissions:
-  contents: write
-
+  contents: read
+  issues: write
 jobs:
   labeler:
     runs-on: ubuntu-latest
