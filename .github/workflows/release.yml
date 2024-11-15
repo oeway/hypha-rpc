@@ -101,7 +101,6 @@ jobs:
 
   release-js:
     name: Release Javascript
-    needs: release-python
     runs-on: ubuntu-latest
     defaults:
       run:
