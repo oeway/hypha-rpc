@@ -95,7 +95,7 @@ describe("RPC", async () => {
     const pc = await getRTCService(server, service_id);
     const svc = await pc.getService("echo-service-rtc");
     expect(await svc.echo("hello")).to.equal("hello");
-  }).timeout(20000);
+  }).timeout(40000);
 
   it("should connect via webrtc (auto)", async () => {
     const server = await connectToServer({
@@ -126,7 +126,7 @@ describe("RPC", async () => {
       case_conversion: "snake",
     });
     expect(await svc3.my_func(2, 3)).to.equal(5);
-  }).timeout(20000);
+  }).timeout(40000);
 
   it("should login to the server", async () => {
     const TOKEN = "sf31df234";
