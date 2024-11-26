@@ -774,6 +774,7 @@ class RPC(MessageEmitter):
         clear_after_called=False,
         timer=None,
         local_workspace=None,
+        description=None,
     ):
         method_id = f"{session_id}.{name}"
         encoded = {
@@ -786,6 +787,7 @@ class RPC(MessageEmitter):
             ),
             "_rmethod": method_id,
             "_rpromise": False,
+            "_rdoc": f"callback: {method_id}, context: {description}",
         }
 
         def wrapped_callback(*args, **kwargs):
@@ -793,13 +795,27 @@ class RPC(MessageEmitter):
                 callback(*args, **kwargs)
             except asyncio.InvalidStateError:
                 # This probably means the task was cancelled
-                logger.debug("Invalid state error in callback: %s", method_id)
+                logger.debug(
+                    "Invalid state error in callback: %s (context: %s)",
+                    method_id,
+                    description,
+                )
+            except Exception as exp:
+                logger.error(
+                    "Error in callback: %s (context: %s), error: %s",
+                    method_id,
+                    description,
+                    exp,
+                )
             finally:
                 if timer and timer.started:
                     timer.clear()  # Clear the timer first before deleting the session
                 if clear_after_called and session_id in self._object_store:
                     logger.info(
-                        "Deleting session %s from %s", session_id, self._client_id
+                        "Deleting session %s from %s (context: %s)",
+                        session_id,
+                        self._client_id,
+                        description,
                     )
                     del self._object_store[session_id]
 
@@ -813,6 +829,7 @@ class RPC(MessageEmitter):
         clear_after_called=False,
         timer=None,
         local_workspace=None,
+        description=None,
     ):
         """Encode a group of callbacks without promise."""
         store = self._get_session_store(session_id, create=True)
@@ -822,13 +839,17 @@ class RPC(MessageEmitter):
         encoded = {}
 
         if timer and reject and self._method_timeout:
-            encoded["heartbeat"] = self._encode(
+            encoded["heartbeat"], store["heartbeat"] = self._encode_callback(
+                "heartbeat",
                 timer.reset,
                 session_id,
+                clear_after_called=False,
+                timer=None,
                 local_workspace=local_workspace,
+                # description=f"heartbeat ({description})",
             )
-            encoded["interval"] = self._method_timeout / 2
             store["timer"] = timer
+            encoded["interval"] = self._method_timeout / 2
         else:
             timer = None
 
@@ -839,6 +860,7 @@ class RPC(MessageEmitter):
             clear_after_called=clear_after_called,
             timer=timer,
             local_workspace=local_workspace,
+            description=f"resolve ({description})",
         )
         encoded["reject"], store["reject"] = self._encode_callback(
             "reject",
@@ -847,6 +869,7 @@ class RPC(MessageEmitter):
             clear_after_called=clear_after_called,
             timer=timer,
             local_workspace=local_workspace,
+            description=f"reject ({description})",
         )
         return encoded
 
@@ -910,6 +933,7 @@ class RPC(MessageEmitter):
             encoded_method["_rtarget"] = target_id
         method_id = encoded_method["_rmethod"]
         with_promise = encoded_method.get("_rpromise", False)
+        description = f"method: {method_id}, docs: {encoded_method.get('_rdoc')}"
 
         def remote_method(*arguments, **kwargs):
             """Run remote method."""
@@ -936,7 +960,11 @@ class RPC(MessageEmitter):
                 local_session_id = local_parent + "." + local_session_id
             store = self._get_session_store(local_session_id, create=True)
             if store is None:
-                reject(RuntimeError(f"Failed to get session store {local_session_id}"))
+                reject(
+                    RuntimeError(
+                        f"Failed to get session store {local_session_id} (context: {description})"
+                    )
+                )
                 return
             store["target_id"] = target_id
             args = self._encode(
@@ -982,7 +1010,7 @@ class RPC(MessageEmitter):
                 timer = Timer(
                     self._method_timeout,
                     reject,
-                    f"Method call time out: {method_name}",
+                    f"Method call time out: {method_name}, context: {description}",
                     label=method_name,
                 )
                 # By default, hypha will clear the session after the method is called
@@ -1002,6 +1030,7 @@ class RPC(MessageEmitter):
                     clear_after_called=clear_after_called,
                     timer=timer,
                     local_workspace=local_workspace,
+                    description=description,
                 )
             # The message consists of two segments, the main message and extra data
             message_package = msgpack.packb(main_message)
@@ -1251,7 +1280,7 @@ class RPC(MessageEmitter):
                 method in self._method_annotations
                 and self._method_annotations[method].get("run_in_executor")
             )
-            logger.debug("Executing method: %s", method_name)
+            logger.debug("Executing method: %s (%s)", method_name, data["method"])
             method_task = self._call_method(
                 method,
                 args,
