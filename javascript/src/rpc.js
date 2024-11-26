@@ -819,6 +819,7 @@ export class RPC extends MessageEmitter {
     clear_after_called,
     timer,
     local_workspace,
+    description,
   ) {
     let method_id = `${session_id}.${name}`;
     let encoded = {
@@ -829,6 +830,7 @@ export class RPC extends MessageEmitter {
         : this._client_id,
       _rmethod: method_id,
       _rpromise: false,
+      _rdoc: `callback: ${method_id}, context: (${description})`,
     };
 
     const self = this;
@@ -836,7 +838,9 @@ export class RPC extends MessageEmitter {
       try {
         callback.apply(null, Array.prototype.slice.call(arguments));
       } catch (error) {
-        console.error("Error in callback:", method_id, error);
+        console.error(
+          `Error in callback(${method_id}, ${description}): ${error}`,
+        );
       } finally {
         if (timer && timer.started) {
           timer.clear();
@@ -847,7 +851,7 @@ export class RPC extends MessageEmitter {
         }
       }
     };
-
+    wrapped_callback.__name__ = `callback(${method_id})`;
     return [encoded, wrapped_callback];
   }
 
@@ -858,6 +862,7 @@ export class RPC extends MessageEmitter {
     clear_after_called,
     timer,
     local_workspace,
+    description,
   ) {
     let store = this._get_session_store(session_id, true);
     assert(
@@ -867,13 +872,17 @@ export class RPC extends MessageEmitter {
     let encoded = {};
 
     if (timer && reject && this._method_timeout) {
-      encoded.heartbeat = await this._encode(
+      [encoded.heartbeat, store.heartbeat] = this._encode_callback(
+        "heartbeat",
         timer.reset.bind(timer),
         session_id,
+        false,
+        null,
         local_workspace,
+        // `heartbeat (${description})`,
       );
-      encoded.interval = this._method_timeout / 2;
       store.timer = timer;
+      encoded.interval = this._method_timeout / 2;
     } else {
       timer = null;
     }
@@ -885,6 +894,7 @@ export class RPC extends MessageEmitter {
       clear_after_called,
       timer,
       local_workspace,
+      `resolve (${description})`,
     );
     [encoded.reject, store.reject] = this._encode_callback(
       "reject",
@@ -893,6 +903,7 @@ export class RPC extends MessageEmitter {
       clear_after_called,
       timer,
       local_workspace,
+      `reject (${description})`,
     );
     return encoded;
   }
@@ -964,6 +975,7 @@ export class RPC extends MessageEmitter {
     }
     let method_id = encoded_method._rmethod;
     let with_promise = encoded_method._rpromise;
+    const description = `method: ${method_id}, docs: ${encoded_method._rdoc}`;
     const self = this;
 
     function remote_method() {
@@ -977,7 +989,7 @@ export class RPC extends MessageEmitter {
         if (!store) {
           reject(
             new Error(
-              `Runtime Error: Failed to get session store ${local_session_id}`,
+              `Runtime Error: Failed to get session store ${local_session_id} (context: ${description})`,
             ),
           );
           return;
@@ -1037,7 +1049,7 @@ export class RPC extends MessageEmitter {
           timer = new Timer(
             self._method_timeout,
             reject,
-            [`Method call time out: ${method_name}`],
+            [`Method call time out: ${method_name}, context: ${description}`],
             method_name,
           );
           // By default, hypha will clear the session after the method is called
@@ -1056,6 +1068,7 @@ export class RPC extends MessageEmitter {
             clear_after_called,
             timer,
             local_workspace,
+            description,
           );
         }
         // The message consists of two segments, the main message and extra data
@@ -1278,7 +1291,7 @@ export class RPC extends MessageEmitter {
           `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
         );
       }
-      // console.debug("Executing method: " + method_name);
+      // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
         const result = method.apply(null, args);
         if (result instanceof Promise) {
