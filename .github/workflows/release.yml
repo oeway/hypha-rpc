@@ -85,11 +85,10 @@ jobs:
 
       - name: Publish package on PyPI
         if: steps.tag-version.outputs.new_tag
-        uses: pypa/gh-action-pypi-publish@v1.6.4
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: "${{ secrets.PYPI_TOKEN }}"
-          packages_dir: dist/
 
       - name: Publish the release notes
         uses: release-drafter/release-drafter@v5.22.0
