@@ -10,6 +10,7 @@ import {
   assert,
   waitFor,
   convertCase,
+  expandKwargs,
 } from "./utils";
 import { schemaFunction } from "./utils/schema";
 
@@ -504,14 +505,10 @@ export class RPC extends MessageEmitter {
 
   async get_manager_service(config) {
     config = config || {};
-    let { timeout, case_conversion } = config;
     assert(this._connection.manager_id, "Manager id is not set");
     const svc = await this.get_remote_service(
       `*/${this._connection.manager_id}:default`,
-      {
-        timeout: timeout,
-        case_conversion: case_conversion,
-      },
+      config,
     );
     return svc;
   }
@@ -548,7 +545,7 @@ export class RPC extends MessageEmitter {
     );
   }
   async get_remote_service(service_uri, config) {
-    let { timeout, case_conversion } = config || {};
+    let { timeout, case_conversion, kwargs_expansion } = config || {};
     timeout = timeout === undefined ? this._method_timeout : timeout;
     if (!service_uri && this._connection.manager_id) {
       service_uri = "*/" + this._connection.manager_id;
@@ -576,12 +573,15 @@ export class RPC extends MessageEmitter {
         _rpromise: true,
         _rdoc: "Get a remote service",
       });
-      const svc = await waitFor(
+      let svc = await waitFor(
         method(service_id),
         timeout,
         "Timeout Error: Failed to get remote service: " + service_uri,
       );
       svc.id = `${provider}:${service_id}`;
+      if (kwargs_expansion) {
+        svc = expandKwargs(svc);
+      }
       if (case_conversion)
         return Object.assign(
           new RemoteService(),

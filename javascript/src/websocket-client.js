@@ -475,6 +475,7 @@ export async function connectToServer(config) {
   const wm = await rpc.get_manager_service({
     timeout: config.method_timeout,
     case_conversion: "camel",
+    kwargs_expansion: config.kwargs_expansion || false,
   });
   wm.rpc = rpc;
 

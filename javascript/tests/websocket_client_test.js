@@ -40,6 +40,18 @@ describe("RPC", async () => {
     await api.disconnect();
   }).timeout(20000);
 
+  it("should convert kwargs", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      kwargs_expansion: true,
+    });
+    const token = await api.generateToken({
+      config: { workspace: api.config.workspace },
+    });
+    expect(token).to.be.a("string");
+    await api.disconnect();
+  }).timeout(20000);
+
   it("should allow probes", async () => {
     const api = await connectToServer({
       server_url: SERVER_URL,

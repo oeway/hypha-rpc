@@ -93,12 +93,14 @@ def _encode_callables(obj, wrap, loop, executor):
 class SyncHyphaServer(ObjectProxy):
     """A class to interact with the Hypha server synchronously."""
 
-    def __init__(self, config, service_id=None):
+    def __init__(self, config=None, service_id=None, **kwargs):
         """Initialize the SyncHyphaServer."""
         self._loop = None
         self._thread = None
         self._server = None
         self._service_id = service_id
+        config = config or {}
+        config.update(kwargs)
         sync_max_workers = config.get("sync_max_workers", 2)
         # Note: we need at least 2 workers to avoid deadlock
         self._executor = ThreadPoolExecutor(max_workers=sync_max_workers)
@@ -165,25 +167,26 @@ class SyncHyphaServer(ObjectProxy):
         self._loop.run_forever()
 
 
-def connect_to_server(config):
+def connect_to_server(config=None, **kwargs):
     """Connect to the Hypha server synchronously."""
-    server = SyncHyphaServer(config)
+    server = SyncHyphaServer(config=config, **kwargs)
     return server
 
 
-def get_remote_service(service_uri, config=None):
+def get_remote_service(service_uri, config=None, **kwargs):
     """Get a remote service from the Hypha server."""
     server_url, workspace, client_id, service_id, app_id = parse_service_url(
         service_uri
     )
     full_service_id = f"{workspace}/{client_id}:{service_id}@{app_id}"
     config = config or {}
+    config.update(kwargs)
     if "server_url" in config:
         assert (
             config["server_url"] == server_url
         ), "server_url in config does not match the server_url in the url"
     config["server_url"] = server_url
-    service = SyncHyphaServer(config, service_id=full_service_id)
+    service = SyncHyphaServer(config=config, service_id=full_service_id)
     return service
 
 

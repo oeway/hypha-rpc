@@ -413,15 +413,19 @@ async def login(config):
 class ServerContextManager:
     """Server context manager."""
 
-    def __init__(self, config, service_id=None):
-        self.config = config
+    def __init__(self, config=None, service_id=None, **kwargs):
+        self.config = config or {}
+        self.config.update(kwargs)
         self._service_id = service_id
         self.wm = None
 
     async def __aenter__(self):
         self.wm = await _connect_to_server(self.config)
         if self._service_id:
-            return await self.wm.get_service(self._service_id)
+            return await self.wm.get_service(
+                self._service_id,
+                {"case_conversion": self.config.get("case_conversion")},
+            )
         return self.wm
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -431,18 +435,19 @@ class ServerContextManager:
         return self.__aenter__().__await__()
 
 
-def connect_to_server(config):
+def connect_to_server(config=None, **kwargs):
     """Connect to the server."""
-    return ServerContextManager(config)
+    return ServerContextManager(config=config, **kwargs)
 
 
-def get_remote_service(service_uri, config=None):
+def get_remote_service(service_uri, config=None, **kwargs):
     """Get a remote service."""
     server_url, workspace, client_id, service_id, app_id = parse_service_url(
         service_uri
     )
     full_service_id = f"{workspace}/{client_id}:{service_id}@{app_id}"
     config = config or {}
+    config.update(kwargs)
     if "server_url" in config:
         assert (
             config["server_url"] == server_url
@@ -451,8 +456,9 @@ def get_remote_service(service_uri, config=None):
     return ServerContextManager(config, service_id=full_service_id)
 
 
-async def webrtc_get_service(wm, rtc_service_id, query, config=None):
+async def webrtc_get_service(wm, rtc_service_id, query, config=None, **kwargs):
     config = config or {}
+    config.update(kwargs)
     webrtc = config.get("webrtc")
     webrtc_config = config.get("webrtc_config")
     if "webrtc" in config:
@@ -799,9 +805,10 @@ async def _connect_to_server(config):
     else:
         _get_service = wm.get_service
 
-        async def get_service(query, config=None):
+        async def get_service(query, config=None, **kwargs):
             config = config or {}
-            return await _get_service(query, config)
+            config.update(kwargs)
+            return await _get_service(query, config=config)
 
         get_service.__schema__ = wm.get_service.__schema__
         wm.get_service = get_service

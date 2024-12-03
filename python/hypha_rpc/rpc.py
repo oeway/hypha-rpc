@@ -518,9 +518,10 @@ class RPC(MessageEmitter):
             f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}"
         )
 
-    async def get_remote_service(self, service_uri=None, config=None):
+    async def get_remote_service(self, service_uri=None, config=None, **kwargs):
         """Get a remote service."""
         config = config or {}
+        config.update(kwargs)
         timeout = config.get("timeout", self._method_timeout)
         case_conversion = config.get("case_conversion")
         if service_uri is None and self._connection.manager_id:
@@ -701,9 +702,11 @@ class RPC(MessageEmitter):
         self,
         api: dict,
         config: dict = None,
+        **kwargs,
     ):
         """Register a service."""
         config = config or {}
+        config.update(kwargs)
         overwrite = config.get("overwrite", False)
         notify = config.get("notify", True)
         check_type = config.get("check_type", False)

@@ -175,13 +175,14 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
     }
 
 
-async def get_rtc_service(server, service_id, config=None):
+async def get_rtc_service(server, service_id, config=None, **kwargs):
     """Get RTC service."""
     assert AIORTC_AVAILABLE, (
         "aiortc is not installed, please install it via "
         "`pip install aiortc` to use webrtc services."
     )
     config = config or {}
+    config.update(kwargs)
     config["peer_id"] = config.get("peer_id", shortuuid.uuid())
     loop = asyncio.get_event_loop()
     fut = loop.create_future()
