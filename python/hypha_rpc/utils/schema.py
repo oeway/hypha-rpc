@@ -5,10 +5,11 @@ from typing import get_origin, get_args, Union, Dict, Any, List
 from hypha_rpc.utils import ObjectProxy
 
 try:
-    from pydantic import create_model, BaseModel
+    from pydantic import create_model, BaseModel, ConfigDict
     from pydantic import Field as PydanticField
     from pydantic.fields import FieldInfo
     from pydantic_core import PydanticUndefined, ValidationError
+    from pydantic.json_schema import GenerateJsonSchema
 
     PYDANTIC_AVAILABLE = True
 except ImportError:
@@ -31,17 +32,31 @@ def remove_a_key(d, remove_key):
                 remove_a_key(d[key], remove_key)
 
 
-def get_type_name(tp):
+def get_type_name(tp, arbitrary_types_allowed=False):
     """Get the JSON schema type name for a given type."""
     if tp in [int, float, str, bool, list, dict]:
         return tp.__name__
-    return {}  # Return an empty schema for non-primitive types
+    elif tp == type(None):
+        return "null"
+    # check if it's Optional[T] and T is a primitive type
+    elif (
+        get_origin(tp) == Union
+        and len(get_args(tp)) == 2
+        and type(None) in get_args(tp)
+    ):
+        return get_type_name(get_args(tp)[0], arbitrary_types_allowed)
+    elif arbitrary_types_allowed:
+        return {}  # Return an empty schema for non-primitive types
+    else:
+        raise ValueError(
+            f"Type {tp} is not supported, please use only primitive types or set arbitrary_types_allowed=True"
+        )
 
 
-def extract_parameter_schema(param, mode="strict"):
+def extract_parameter_schema(param, mode="strict", arbitrary_types_allowed=False):
     """Extract the schema for a given parameter."""
     if param.annotation != inspect._empty:
-        param_type = get_type_name(param.annotation)
+        param_type = get_type_name(param.annotation, arbitrary_types_allowed)
     else:
         param_type = {}
 
@@ -118,7 +133,13 @@ def extract_annotations(annotation: Any) -> List[Any]:
     return [annotation]
 
 
-def schema_function_native(original_func, name=None, mode="strict", skip_self=False):
+def schema_function_native(
+    original_func,
+    name=None,
+    mode="strict",
+    skip_self=False,
+    arbitrary_types_allowed=False,
+):
     """Decorator to add input/output schema to a function."""
     assert callable(original_func)
     if hasattr(original_func, "__schema__"):
@@ -160,7 +181,9 @@ def schema_function_native(original_func, name=None, mode="strict", skip_self=Fa
     func_schema = {
         "type": "object",
         "properties": {
-            name: extract_parameter_schema(param, mode=mode)
+            name: extract_parameter_schema(
+                param, mode=mode, arbitrary_types_allowed=arbitrary_types_allowed
+            )
             for name, param in parameters
         },
         "required": required,
@@ -194,7 +217,9 @@ def schema_function_native(original_func, name=None, mode="strict", skip_self=Fa
     return wrapper
 
 
-def dict_to_pydantic_model(name: str, dict_def: Dict[str, Any], doc: str = None):
+def dict_to_pydantic_model(
+    name: str, dict_def: Dict[str, Any], doc: str = None, arbitrary_types_allowed=False
+):
     fields = {}
 
     for field_name, value in dict_def.items():
@@ -202,14 +227,22 @@ def dict_to_pydantic_model(name: str, dict_def: Dict[str, Any], doc: str = None)
             fields[field_name] = value
         elif isinstance(value, dict):
             fields[field_name] = (
-                dict_to_pydantic_model(f"{name}_{field_name}", value),
+                dict_to_pydantic_model(
+                    f"{name}_{field_name}",
+                    value,
+                    arbitrary_types_allowed=arbitrary_types_allowed,
+                ),
                 ...,
             )
         else:
             raise ValueError(f"Field {field_name}:{value} has invalid syntax")
 
-    model = create_model(name, **fields)
-    model.__doc__ = doc
+    model = create_model(
+        name,
+        __config__=ConfigDict(arbitrary_types_allowed=arbitrary_types_allowed),
+        __doc__=doc,
+        **fields,
+    )
     return model
 
 
@@ -218,10 +251,12 @@ def extract_pydantic_schema(
     func_name=None,
     mode="strict",
     skip_self=False,
-    skip_args=set(),
+    skip_args=None,
+    arbitrary_types_allowed=False,
 ):
     assert PYDANTIC_AVAILABLE, "Pydantic is not available"
     assert callable(func), "Function must be callable functions"
+    skip_args = skip_args or set()
     sig = signature(func)
     func_name = func.__name__ if not isinstance(func, partial) else func.func.__name__
 
@@ -290,6 +325,7 @@ def extract_pydantic_schema(
             func_name,
             {names[i]: (types[i], defaults[i]) for i in range(len(names))},
             func.__doc__,
+            arbitrary_types_allowed=arbitrary_types_allowed,
         ),
         sig.return_annotation,
     )
@@ -301,6 +337,7 @@ def schema_function_pydantic(
     name=None,
     mode="strict",
     skip_self=False,
+    arbitrary_types_allowed=False,
 ):
     """Decorator to add input/output schema to a function."""
     assert PYDANTIC_AVAILABLE, "Pydantic is not available"
@@ -346,6 +383,7 @@ def schema_function_pydantic(
             mode=mode,
             skip_self=skip_self,
             skip_args=skip_args,
+            arbitrary_types_allowed=arbitrary_types_allowed,
         )
         func_sig = original_func_sig
 
@@ -409,7 +447,17 @@ def schema_function_pydantic(
             ret = original_func(*new_args, **new_kwargs)
             return ret
 
-    spec = input_model.model_json_schema()
+    if arbitrary_types_allowed:
+
+        class MyGenerateJsonSchema(GenerateJsonSchema):
+            def handle_invalid_for_json_schema(self, schema, error_info):
+                return dict(
+                    type="object",
+                )
+
+        spec = input_model.model_json_schema(schema_generator=MyGenerateJsonSchema)
+    else:
+        spec = input_model.model_json_schema()
     remove_a_key(spec, "title")
     description = spec.get("description", original_func.__doc__)
     if "description" in spec:
@@ -427,6 +475,7 @@ def schema_function(
     func=None,
     schema_type="auto",
     skip_self=False,
+    arbitrary_types_allowed=False,
     name=None,
     description=None,
     parameters=None,
@@ -482,12 +531,25 @@ def schema_function(
             name=name,
             schema_type=schema_type + ":" + mode,
             skip_self=skip_self,
+            arbitrary_types_allowed=arbitrary_types_allowed,
         )
 
     if schema_type == "pydantic":
-        return schema_function_pydantic(func, name=name, mode=mode, skip_self=skip_self)
+        return schema_function_pydantic(
+            func,
+            name=name,
+            mode=mode,
+            skip_self=skip_self,
+            arbitrary_types_allowed=arbitrary_types_allowed,
+        )
     elif schema_type == "native":
-        return schema_function_native(func, name=name, mode=mode, skip_self=skip_self)
+        return schema_function_native(
+            func,
+            name=name,
+            mode=mode,
+            skip_self=skip_self,
+            arbitrary_types_allowed=arbitrary_types_allowed,
+        )
     else:
         raise ValueError(f"Invalid schema type: {schema_type}")
 

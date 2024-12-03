@@ -425,3 +425,67 @@ async def test_schema_service_modes(websocket_server):
     assert "name" in test_service_native.place_order.__schema__
     assert "description" in test_service_native.place_order.__schema__
     assert "parameters" in test_service_native.place_order.__schema__
+
+
+@pytest.mark.asyncio
+async def test_schema_artibrary_types(websocket_server):
+    """Test creating schema service with arbitrary types."""
+
+    class MyUserInfo:
+        pass
+
+    with pytest.raises(Exception, match=r".*arbitrary_types_allowed=True.*"):
+
+        @schema_function(schema_type="pydantic:strict", arbitrary_types_allowed=False)
+        def register_user(
+            user_info: MyUserInfo = Field(
+                ..., description="Information of the user to register"
+            ),
+            receive_newsletter: bool = NativeField(
+                False, description="Whether the user wants to receive newsletters"
+            ),
+        ) -> str:
+            """Register a new user."""
+            pass
+
+    @schema_function(schema_type="pydantic:strict", arbitrary_types_allowed=True)
+    def register_user(
+        user_info: MyUserInfo = Field(
+            ..., description="Information of the user to register"
+        ),
+        receive_newsletter: bool = NativeField(
+            False, description="Whether the user wants to receive newsletters"
+        ),
+    ) -> str:
+        """Register a new user."""
+        pass
+
+    assert register_user.__schema__
+
+    with pytest.raises(Exception, match=r".*arbitrary_types_allowed=True.*"):
+
+        @schema_function(schema_type="native:strict", arbitrary_types_allowed=False)
+        def register_user(
+            user_info: MyUserInfo = Field(
+                ..., description="Information of the user to register"
+            ),
+            receive_newsletter: bool = NativeField(
+                False, description="Whether the user wants to receive newsletters"
+            ),
+        ) -> str:
+            """Register a new user."""
+            pass
+
+    @schema_function(schema_type="native:strict", arbitrary_types_allowed=True)
+    def register_user(
+        user_info: MyUserInfo = Field(
+            ..., description="Information of the user to register"
+        ),
+        receive_newsletter: bool = NativeField(
+            False, description="Whether the user wants to receive newsletters"
+        ),
+    ) -> str:
+        """Register a new user."""
+        pass
+
+    assert register_user.__schema__

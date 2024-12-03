@@ -16,6 +16,56 @@ export function toSnakeCase(str) {
   return str.replace(/([A-Z])/g, "_$1").toLowerCase();
 }
 
+export function expandKwargs(obj) {
+  if (typeof obj !== "object" || obj === null) {
+    return obj; // Return the value if obj is not an object
+  }
+
+  const newObj = Array.isArray(obj) ? [] : {};
+
+  for (const key in obj) {
+    if (obj.hasOwnProperty(key)) {
+      const value = obj[key];
+
+      if (typeof value === "function") {
+        newObj[key] = (...args) => {
+          if (args.length === 0) {
+            throw new Error(`Function "${key}" expects at least one argument.`);
+          }
+
+          // Check if the last argument is an object
+          const lastArg = args[args.length - 1];
+          let kwargs = {};
+
+          if (
+            typeof lastArg === "object" &&
+            lastArg !== null &&
+            !Array.isArray(lastArg)
+          ) {
+            // Extract kwargs from the last argument
+            kwargs = { ...lastArg, _rkwarg: true };
+            args = args.slice(0, -1); // Remove the last argument from args
+          }
+
+          // Call the original function with positional args followed by kwargs
+          return value(...args, kwargs);
+        };
+
+        // Preserve metadata like __name__ and __schema__
+        newObj[key].__name__ = key;
+        if (value.__schema__) {
+          newObj[key].__schema__ = { ...value.__schema__ };
+          newObj[key].__schema__.name = key;
+        }
+      } else {
+        newObj[key] = expandKwargs(value); // Recursively process nested objects
+      }
+    }
+  }
+
+  return newObj;
+}
+
 export function convertCase(obj, caseType) {
   if (typeof obj !== "object" || obj === null || !caseType) {
     return obj; // Return the value if obj is not an object

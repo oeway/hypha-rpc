@@ -287,7 +287,7 @@ async def test_connect_to_server(websocket_server):
 @pytest.mark.asyncio
 async def test_case_conversion(websocket_server):
     """Test case conversion."""
-    ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    ws = await connect_to_server(name="my plugin", server_url=WS_SERVER_URL)
     await ws.export(ImJoyPlugin(ws))
 
     def hello(name, key=12, context=None):
@@ -311,10 +311,10 @@ async def test_case_conversion(websocket_server):
     svc = await ws.get_service(info.id)
     assert await svc.HelloWorld("world") == "Hello world"
 
-    svc = await ws.get_service(info.id, {"case_conversion": "camel"})
+    svc = await ws.get_service(info.id, case_conversion="camel")
     assert await svc.helloWorld("world") == "Hello world"
 
-    svc = await ws.get_service(info.id, {"case_conversion": "snake"})
+    svc = await ws.get_service(info.id, case_conversion="snake")
     assert await svc.hello_world("world") == "Hello world"
 
 
