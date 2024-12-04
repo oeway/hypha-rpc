@@ -1305,9 +1305,7 @@ class RPC(MessageEmitter):
                 heartbeat_task.cancel()
             if callable(reject):
                 reject(err)
-                logger.debug("Error during calling method: %s", err)
-            else:
-                logger.exception("Error during calling method: %s", err)
+            logger.debug("Error during calling method: %s", err)
 
     def encode(self, a_object, session_id=None):
         """Encode object."""
