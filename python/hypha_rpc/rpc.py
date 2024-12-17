@@ -26,7 +26,7 @@ from .utils import (
 from .utils.schema import schema_function
 
 CHUNK_SIZE = 1024 * 500
-API_VERSION = "0.20.0"
+API_VERSION = 2
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_PROPS = [
     "name",  # file name
@@ -295,7 +295,11 @@ class RPC(MessageEmitter):
                     "id": "built-in",
                     "type": "built-in",
                     "name": f"Builtin services for {self._local_workspace}/{self._client_id}",
-                    "config": {"require_context": True, "visibility": "public"},
+                    "config": {
+                        "require_context": True,
+                        "visibility": "public",
+                        "api_version": API_VERSION,
+                    },
                     "ping": self._ping,
                     "get_service": self.get_local_service,
                     "message_cache": {
@@ -436,6 +440,7 @@ class RPC(MessageEmitter):
             {
                 "from": context["from"],
                 "to": context["to"],
+                "ws": context["ws"],
                 "user": context["user"],
             }
         )
@@ -782,7 +787,6 @@ class RPC(MessageEmitter):
         method_id = f"{session_id}.{name}"
         encoded = {
             "_rtype": "method",
-            "_rserver": self._server_base_url,
             "_rtarget": (
                 f"{local_workspace}/{self._client_id}"
                 if local_workspace
@@ -790,7 +794,6 @@ class RPC(MessageEmitter):
             ),
             "_rmethod": method_id,
             "_rpromise": False,
-            "_rdoc": f"callback: {method_id}, context: {description}",
         }
 
         def wrapped_callback(*args, **kwargs):
@@ -1026,7 +1029,7 @@ class RPC(MessageEmitter):
                         clear_after_called = False
                         break
 
-                extra_data["promise"] = self._encode_promise(
+                promise_data = self._encode_promise(
                     resolve=resolve,
                     reject=reject,
                     session_id=local_session_id,
@@ -1035,12 +1038,21 @@ class RPC(MessageEmitter):
                     local_workspace=local_workspace,
                     description=description,
                 )
+                # compressed promise
+                if with_promise == True:
+                    extra_data["promise"] = promise_data
+                elif with_promise == "*":
+                    extra_data["promise"] = "*"
+                    extra_data["t"] = self._method_timeout / 2
+                else:
+                    raise RuntimeError(f"Unsupported promise type: {with_promise}")
+
             # The message consists of two segments, the main message and extra data
             message_package = msgpack.packb(main_message)
             if extra_data:
                 message_package = message_package + msgpack.packb(extra_data)
             total_size = len(message_package)
-            if total_size <= CHUNK_SIZE + 1024:
+            if total_size <= CHUNK_SIZE + 1024 or remote_method.__no_chunk__:
                 emit_task = asyncio.ensure_future(self._emit_message(message_package))
             else:
                 # send chunk by chunk
@@ -1078,6 +1090,10 @@ class RPC(MessageEmitter):
             "_rdoc", f"Remote method: {method_id}"
         )
         remote_method.__schema__ = encoded_method.get("_rschema")
+        # Prevent circular chunk sending
+        remote_method.__no_chunk__ = (
+            encoded_method.get("_rmethod") == "services.built-in.message_cache.append"
+        )
         return remote_method
 
     def _log(self, info):
@@ -1170,7 +1186,9 @@ class RPC(MessageEmitter):
                 # such that the session id will be passed to the remote
                 # as a parent session id.
                 promise = self._decode(
-                    data["promise"],
+                    self._expand_promise(data)
+                    if data["promise"] == "*"
+                    else data["promise"],
                     remote_parent=data.get("session"),
                     local_parent=local_parent,
                     remote_workspace=remote_workspace,
@@ -1387,7 +1405,7 @@ class RPC(MessageEmitter):
                         else self._client_id
                     ),
                     "_rmethod": annotation["method_id"],
-                    "_rpromise": True,
+                    "_rpromise": "*",
                     "_rasync": inspect.iscoroutinefunction(a_object),
                 }
             else:
@@ -1405,7 +1423,7 @@ class RPC(MessageEmitter):
                         else self._client_id
                     ),
                     "_rmethod": f"{session_id}.{object_id}",
-                    "_rpromise": True,
+                    "_rpromise": "*",
                 }
                 store = self._get_session_store(session_id, create=True)
                 assert (
@@ -1687,3 +1705,26 @@ class RPC(MessageEmitter):
         else:
             b_object = a_object
         return b_object
+
+    def _expand_promise(self, data):
+        return {
+            "heartbeat": {
+                "_rtype": "method",
+                "_rtarget": data["from"].split("/")[1],
+                "_rmethod": data["session"] + ".heartbeat",
+                "_rdoc": f"heartbeat callback for method: {data['method']}",
+            },
+            "resolve": {
+                "_rtype": "method",
+                "_rtarget": data["from"].split("/")[1],
+                "_rmethod": data["session"] + ".resolve",
+                "_rdoc": f"resolve callback for method: {data['method']}",
+            },
+            "reject": {
+                "_rtype": "method",
+                "_rtarget": data["from"].split("/")[1],
+                "_rmethod": data["session"] + ".reject",
+                "_rdoc": f"reject callback for method: {data['method']}",
+            },
+            "interval": data["t"],
+        }

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hypha_rpc"
-version = "0.20.43"
+version = "0.20.44"
 description = "Hypha RPC client for connecting to Hypha server for data management and AI model serving"
 readme = "README.md"
 requires-python = ">=3.6"

@@ -219,7 +219,7 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
                 return await rpc.get_remote_service(
                     config["workspace"] + "/" + config["peer_id"] + ":" + name,
                     *args,
-                    **kwargs
+                    **kwargs,
                 )
 
             async def disconnect():
