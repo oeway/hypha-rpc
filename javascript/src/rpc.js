@@ -16,7 +16,7 @@ import { schemaFunction } from "./utils/schema";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
-export const API_VERSION = "0.20.0";
+export const API_VERSION = 2;
 const CHUNK_SIZE = 1024 * 500;
 
 const ArrayBufferView = Object.getPrototypeOf(
@@ -305,7 +305,11 @@ export class RPC extends MessageEmitter {
         id: "built-in",
         type: "built-in",
         name: `Built-in services for ${this._local_workspace}/${this._client_id}`,
-        config: { require_context: true, visibility: "public" },
+        config: {
+          require_context: true,
+          visibility: "public",
+          api_version: API_VERSION,
+        },
         ping: this._ping.bind(this),
         get_service: this.get_local_service.bind(this),
         message_cache: {
@@ -454,6 +458,7 @@ export class RPC extends MessageEmitter {
     Object.assign(main, {
       from: context.from,
       to: context.to,
+      ws: context.ws,
       user: context.user,
     });
     main["ctx"] = JSON.parse(JSON.stringify(main));
@@ -824,13 +829,11 @@ export class RPC extends MessageEmitter {
     let method_id = `${session_id}.${name}`;
     let encoded = {
       _rtype: "method",
-      _rserver: this._server_base_url,
       _rtarget: local_workspace
         ? `${local_workspace}/${this._client_id}`
         : this._client_id,
       _rmethod: method_id,
       _rpromise: false,
-      _rdoc: `callback: ${method_id}, context: (${description})`,
     };
 
     const self = this;
@@ -974,7 +977,7 @@ export class RPC extends MessageEmitter {
       encoded_method._rtarget = target_id;
     }
     let method_id = encoded_method._rmethod;
-    let with_promise = encoded_method._rpromise;
+    let with_promise = encoded_method._rpromise || false;
     const description = `method: ${method_id}, docs: ${encoded_method._rdoc}`;
     const self = this;
 
@@ -1061,7 +1064,7 @@ export class RPC extends MessageEmitter {
               break;
             }
           }
-          extra_data["promise"] = await self._encode_promise(
+          const promiseData = await self._encode_promise(
             resolve,
             reject,
             local_session_id,
@@ -1070,6 +1073,15 @@ export class RPC extends MessageEmitter {
             local_workspace,
             description,
           );
+
+          if (with_promise === true) {
+            extra_data["promise"] = promiseData;
+          } else if (with_promise === "*") {
+            extra_data["promise"] = "*";
+            extra_data["t"] = self._method_timeout / 2;
+          } else {
+            throw new Error(`Unsupported promise type: ${with_promise}`);
+          }
         }
         // The message consists of two segments, the main message and extra data
         let message_package = msgpack_packb(main_message);
@@ -1078,7 +1090,7 @@ export class RPC extends MessageEmitter {
           message_package = new Uint8Array([...message_package, ...extra]);
         }
         const total_size = message_package.length;
-        if (total_size <= CHUNK_SIZE + 1024) {
+        if (total_size <= CHUNK_SIZE + 1024 || remote_method.__no_chunk__) {
           self
             ._emit_message(message_package)
             .then(function () {
@@ -1125,6 +1137,9 @@ export class RPC extends MessageEmitter {
     remote_method.__doc__ =
       encoded_method._rdoc || `Remote method: ${method_id}`;
     remote_method.__schema__ = encoded_method._rschema;
+    // Prevent circular chunk sending
+    remote_method.__no_chunk__ =
+      encoded_method._rmethod === "services.built-in.message_cache.append";
     return remote_method;
   }
 
@@ -1175,7 +1190,7 @@ export class RPC extends MessageEmitter {
         // Decode the promise with the remote session id
         // Such that the session id will be passed to the remote as a parent session id
         const promise = await this._decode(
-          data.promise,
+          data.promise === "*" ? this._expand_promise(data) : data.promise,
           data.session,
           local_parent,
           remote_workspace,
@@ -1414,7 +1429,7 @@ export class RPC extends MessageEmitter {
           _rserver: this._server_base_url,
           _rtarget: this._client_id,
           _rmethod: annotation.method_id,
-          _rpromise: true,
+          _rpromise: "*",
         };
       } else {
         assert(typeof session_id === "string");
@@ -1429,7 +1444,7 @@ export class RPC extends MessageEmitter {
           _rserver: this._server_base_url,
           _rtarget: this._client_id,
           _rmethod: `${session_id}.${object_id}`,
-          _rpromise: true,
+          _rpromise: "*",
         };
         let store = this._get_session_store(session_id, true);
         assert(
@@ -1777,5 +1792,29 @@ export class RPC extends MessageEmitter {
       throw new Error("Failed to decode object");
     }
     return bObject;
+  }
+
+  _expand_promise(data) {
+    return {
+      heartbeat: {
+        _rtype: "method",
+        _rtarget: data.from.split("/")[1],
+        _rmethod: data.session + ".heartbeat",
+        _rdoc: `heartbeat callback for method: ${data.method}`,
+      },
+      resolve: {
+        _rtype: "method",
+        _rtarget: data.from.split("/")[1],
+        _rmethod: data.session + ".resolve",
+        _rdoc: `resolve callback for method: ${data.method}`,
+      },
+      reject: {
+        _rtype: "method",
+        _rtarget: data.from.split("/")[1],
+        _rmethod: data.session + ".reject",
+        _rdoc: `reject callback for method: ${data.method}`,
+      },
+      interval: data.t,
+    };
   }
 }

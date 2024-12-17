@@ -285,6 +285,18 @@ async def test_connect_to_server(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_numpy_transmission(websocket_server):
+    """Test numpy array transmission."""
+    api = await connect_to_server(
+        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+    )
+    image = np.random.rand(512, 512)
+    embedding = await api.echo(image)
+    assert isinstance(embedding, np.ndarray)
+    assert embedding.shape == (512, 512)
+
+
+@pytest.mark.asyncio
 async def test_case_conversion(websocket_server):
     """Test case conversion."""
     ws = await connect_to_server(name="my plugin", server_url=WS_SERVER_URL)
