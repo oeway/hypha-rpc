@@ -246,6 +246,7 @@ class Timer:
             self._task.cancel()
             self._task = asyncio.ensure_future(self._job())
 
+background_tasks = set()
 
 class RPC(MessageEmitter):
     """Represent the RPC."""
@@ -338,7 +339,9 @@ class RPC(MessageEmitter):
                     self._fire("connected", connection_info)
 
             connection.on_connected(on_connected)
-            self.loop.create_task(on_connected(None))
+            task = self.loop.create_task(on_connected(None))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
         else:
 
             async def _emit_message(_):
