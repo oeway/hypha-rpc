@@ -25,7 +25,7 @@ from .utils import (
 )
 from .utils.schema import schema_function
 
-CHUNK_SIZE = 1024 * 500
+CHUNK_SIZE = 1024 * 16
 API_VERSION = 2
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_PROPS = [
@@ -246,7 +246,9 @@ class Timer:
             self._task.cancel()
             self._task = asyncio.ensure_future(self._job())
 
+
 background_tasks = set()
+
 
 class RPC(MessageEmitter):
     """Represent the RPC."""
@@ -265,6 +267,7 @@ class RPC(MessageEmitter):
         silent=False,
         app_id=None,
         server_base_url=None,
+        long_message_chunk_size=None,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -283,6 +286,7 @@ class RPC(MessageEmitter):
         self._remote_logger = logger
         self._server_base_url = server_base_url
         self.loop = loop or asyncio.get_event_loop()
+        self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
         super().__init__(self._remote_logger)
 
         self._services = {}
@@ -464,7 +468,8 @@ class RPC(MessageEmitter):
             self._fire(main["type"], main)
         elif isinstance(message, bytes):
             unpacker = msgpack.Unpacker(
-                io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2
+                io.BytesIO(message),
+                max_buffer_size=max(512000, self._long_message_chunk_size * 2),
             )
             main = unpacker.unpack()
             # Add trusted context to the method call
@@ -891,12 +896,12 @@ class RPC(MessageEmitter):
         message_id = session_id or shortuuid.uuid()
         await message_cache.create(message_id, bool(session_id))
         total_size = len(package)
-        chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
+        chunk_num = int(math.ceil(float(total_size) / self._long_message_chunk_size))
         for idx in range(chunk_num):
-            start_byte = idx * CHUNK_SIZE
+            start_byte = idx * self._long_message_chunk_size
             await message_cache.append(
                 message_id,
-                package[start_byte : start_byte + CHUNK_SIZE],
+                package[start_byte : start_byte + self._long_message_chunk_size],
                 bool(session_id),
             )
             logger.debug(
@@ -920,7 +925,7 @@ class RPC(MessageEmitter):
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)
         total_size = len(message_package)
-        if total_size <= CHUNK_SIZE + 1024:
+        if total_size <= self._long_message_chunk_size + 1024:
             return self.loop.create_task(self._emit_message(message_package))
         else:
             raise Exception("Message is too large to send in one go.")
@@ -1055,7 +1060,10 @@ class RPC(MessageEmitter):
             if extra_data:
                 message_package = message_package + msgpack.packb(extra_data)
             total_size = len(message_package)
-            if total_size <= CHUNK_SIZE + 1024 or remote_method.__no_chunk__:
+            if (
+                total_size <= self._long_message_chunk_size + 1024
+                or remote_method.__no_chunk__
+            ):
                 emit_task = asyncio.ensure_future(self._emit_message(message_package))
             else:
                 # send chunk by chunk
@@ -1189,9 +1197,11 @@ class RPC(MessageEmitter):
                 # such that the session id will be passed to the remote
                 # as a parent session id.
                 promise = self._decode(
-                    self._expand_promise(data)
-                    if data["promise"] == "*"
-                    else data["promise"],
+                    (
+                        self._expand_promise(data)
+                        if data["promise"] == "*"
+                        else data["promise"]
+                    ),
                     remote_parent=data.get("session"),
                     local_parent=local_parent,
                     remote_workspace=remote_workspace,

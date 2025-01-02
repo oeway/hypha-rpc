@@ -543,6 +543,7 @@ async def _connect_to_server(config):
         loop=config.get("loop"),
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
+        long_message_chunk_size=config.get("long_message_chunk_size"),
     )
     wm = await rpc.get_manager_service(
         {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
@@ -825,9 +826,9 @@ async def _connect_to_server(config):
         probes["name"] = "Probes"
         probes["config"] = {"visibility": "public"}
         probes["type"] = "probes"
-        probes[
-            "description"
-        ] = f"Probes Service, visit {server_url}/{workspace}services/probes for the available probes."
+        probes["description"] = (
+            f"Probes Service, visit {server_url}/{workspace}services/probes for the available probes."
+        )
         return await wm.register_service(probes, {"overwrite": True})
 
     wm.register_probes = schema_function(

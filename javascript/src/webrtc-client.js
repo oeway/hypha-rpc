@@ -73,6 +73,8 @@ async function _setupRPC(config) {
     name: config.name,
     method_timeout: config.method_timeout || 10.0,
     workspace: config.workspace,
+    app_id: config.app_id,
+    long_message_chunk_size: config.long_message_chunk_size,
   });
   return rpc;
 }

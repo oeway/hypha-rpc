@@ -17,7 +17,7 @@ import { schemaFunction } from "./utils/schema";
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
 export const API_VERSION = 2;
-const CHUNK_SIZE = 1024 * 500;
+const CHUNK_SIZE = 1024 * 16;
 
 const ArrayBufferView = Object.getPrototypeOf(
   Object.getPrototypeOf(new Uint8Array()),
@@ -276,6 +276,7 @@ export class RPC extends MessageEmitter {
       silent = false,
       app_id = null,
       server_base_url = null,
+      long_message_chunk_size = null,
     },
   ) {
     super(debug);
@@ -293,6 +294,7 @@ export class RPC extends MessageEmitter {
     this._chunk_store = {};
     this._method_timeout = method_timeout || 30;
     this._server_base_url = server_base_url;
+    this._long_message_chunk_size = long_message_chunk_size || CHUNK_SIZE;
 
     // make sure there is an execute function
     this._services = {};
@@ -923,12 +925,12 @@ export class RPC extends MessageEmitter {
     let message_id = session_id || randId();
     await message_cache.create(message_id, !!session_id);
     let total_size = data.length;
-    let chunk_num = Math.ceil(total_size / CHUNK_SIZE);
+    let chunk_num = Math.ceil(total_size / this._long_message_chunk_size);
     for (let idx = 0; idx < chunk_num; idx++) {
-      let start_byte = idx * CHUNK_SIZE;
+      let start_byte = idx * this._long_message_chunk_size;
       await message_cache.append(
         message_id,
-        data.slice(start_byte, start_byte + CHUNK_SIZE),
+        data.slice(start_byte, start_byte + this._long_message_chunk_size),
         !!session_id,
       );
       // console.debug(
@@ -954,7 +956,7 @@ export class RPC extends MessageEmitter {
       message_package = new Uint8Array([...message_package, ...extra]);
     }
     const total_size = message_package.length;
-    if (total_size <= CHUNK_SIZE + 1024) {
+    if (total_size <= this._long_message_chunk_size + 1024) {
       return this._emit_message(message_package);
     } else {
       throw new Error("Message is too large to send in one go.");
@@ -1090,7 +1092,10 @@ export class RPC extends MessageEmitter {
           message_package = new Uint8Array([...message_package, ...extra]);
         }
         const total_size = message_package.length;
-        if (total_size <= CHUNK_SIZE + 1024 || remote_method.__no_chunk__) {
+        if (
+          total_size <= self._long_message_chunk_size + 1024 ||
+          remote_method.__no_chunk__
+        ) {
           self
             ._emit_message(message_package)
             .then(function () {
