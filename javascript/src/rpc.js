@@ -17,7 +17,7 @@ import { schemaFunction } from "./utils/schema";
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
 export const API_VERSION = 2;
-const CHUNK_SIZE = 1024 * 16;
+const CHUNK_SIZE = 1024 * 256;
 
 const ArrayBufferView = Object.getPrototypeOf(
   Object.getPrototypeOf(new Uint8Array()),
