@@ -133,6 +133,8 @@ class PyodideWebsocketRPCConnection:
         timeout=5,
         ssl=None,
         token_refresh_interval=2 * 60 * 60,
+        ping_interval=20,
+        ping_timeout=20,
     ):
         assert server_url and client_id, "server_url and client_id are required"
         self._server_url = server_url

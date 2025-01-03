@@ -55,6 +55,8 @@ class WebsocketRPCConnection:
         timeout=60,
         ssl=None,
         token_refresh_interval=2 * 60 * 60,
+        ping_interval=20,
+        ping_timeout=20,
     ):
         """Set up instance."""
         self._websocket = None
@@ -75,6 +77,8 @@ class WebsocketRPCConnection:
         self._refresh_token_task = None
         self._listen_task = None
         self._token_refresh_interval = token_refresh_interval
+        self._ping_interval = ping_interval
+        self._ping_timeout = ping_timeout
         if ssl == False:
             import ssl as ssl_module
 
@@ -110,11 +114,11 @@ class WebsocketRPCConnection:
             # Only pass ssl if it's not None
             if self._ssl is None:
                 websocket = await asyncio.wait_for(
-                    websockets.connect(server_url), self._timeout
+                    websockets.connect(server_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout), self._timeout
                 )
             else:
                 websocket = await asyncio.wait_for(
-                    websockets.connect(server_url, ssl=self._ssl), self._timeout
+                    websockets.connect(server_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout, ssl=self._ssl), self._timeout
                 )
             return websocket
         except websockets.exceptions.InvalidStatusCode as e:
@@ -152,10 +156,10 @@ class WebsocketRPCConnection:
         # Attempt to establish the WebSocket connection with the constructed URL
         # Only pass ssl if it's not None
         if self._ssl is None:
-            return await asyncio.wait_for(websockets.connect(full_url), self._timeout)
+            return await asyncio.wait_for(websockets.connect(full_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout), self._timeout)
         else:
             return await asyncio.wait_for(
-                websockets.connect(full_url, ssl=self._ssl), self._timeout
+                websockets.connect(full_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout, ssl=self._ssl), self._timeout
             )
 
     async def _send_refresh_token(self, token_refresh_interval):
@@ -522,6 +526,8 @@ async def _connect_to_server(config):
         timeout=config.get("method_timeout", 30),
         ssl=config.get("ssl"),
         token_refresh_interval=config.get("token_refresh_interval", 2 * 60 * 60),
+        ping_interval=config.get("ping_interval", 20.0),
+        ping_timeout=config.get("ping_timeout", 20.0),
     )
     connection_info = await connection.open()
     assert connection_info, (
