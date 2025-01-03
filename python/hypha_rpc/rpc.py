@@ -896,23 +896,39 @@ class RPC(MessageEmitter):
         ), "Remote client does not support message caching for long message."
         message_cache = remote_services.message_cache
         message_id = session_id or shortuuid.uuid()
+
+        # Create message slot on the remote side
         await message_cache.create(message_id, bool(session_id))
+
         total_size = len(package)
         chunk_num = int(math.ceil(float(total_size) / self._long_message_chunk_size))
+
+        # Adjust this number (e.g., 5, 10, 20) depending on your environment
+        concurrency_limit = 10
+        semaphore = asyncio.Semaphore(concurrency_limit)
+
+        async def append_chunk(idx, chunk):
+            # Acquire the semaphore
+            async with semaphore:
+                await message_cache.append(message_id, chunk, bool(session_id))
+                logger.debug(
+                    "Sending chunk %d/%d (total=%d bytes)",
+                    idx + 1,
+                    chunk_num,
+                    total_size
+                )
+
+        tasks = []
         for idx in range(chunk_num):
             start_byte = idx * self._long_message_chunk_size
-            await message_cache.append(
-                message_id,
-                package[start_byte : start_byte + self._long_message_chunk_size],
-                bool(session_id),
-            )
-            logger.debug(
-                "Sending chunk %d/%d (%d bytes)",
-                idx + 1,
-                chunk_num,
-                total_size,
-            )
+            chunk = package[start_byte : start_byte + self._long_message_chunk_size]
+            tasks.append(asyncio.create_task(append_chunk(idx, chunk)))
+
+        # Wait for all chunks to finish uploading
+        await asyncio.gather(*tasks)
         logger.debug("All chunks sent (%d)", chunk_num)
+
+        # Finally process on the remote side
         await message_cache.process(message_id, bool(session_id))
 
     def emit(self, main_message, extra_data=None):
@@ -1062,7 +1078,7 @@ class RPC(MessageEmitter):
                 message_package = message_package + msgpack.packb(extra_data)
             total_size = len(message_package)
             if (
-                total_size <= self._long_message_chunk_size * 4
+                total_size <= self._long_message_chunk_size + 1024
                 or remote_method.__no_chunk__
             ):
                 emit_task = asyncio.create_task(self._emit_message(message_package))
