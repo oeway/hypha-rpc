@@ -254,6 +254,9 @@ describe("RPC", async () => {
     expect((await api.echo(new Map([["1", 99]]))).get("1")).to.equal(99);
     expect((await api.echo(new Set([38, "88", 38]))).size).to.equal(2);
     expect((await api.echo(new ArrayBuffer(101))).byteLength).to.equal(101);
+    expect((await api.echo(new ArrayBuffer(10100000))).byteLength).to.equal(
+      10100000,
+    );
     expect(await api.echo(true)).to.equal(true);
     const date = new Date(2018, 11, 24, 10, 33, 30, 0);
     expect((await api.echo(date)).getTime()).to.equal(date.getTime());
