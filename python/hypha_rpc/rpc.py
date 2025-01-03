@@ -427,7 +427,7 @@ class RPC(MessageEmitter):
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         assert isinstance(data, bytes)
-        cache[key][len(cache[key])]= data
+        cache[key][len(cache[key])] = data
 
     def _set_message(
         self, key: str, index: int, data: bytes, heartbeat: bool = False, context=None
