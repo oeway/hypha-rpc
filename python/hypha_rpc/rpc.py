@@ -26,7 +26,7 @@ from .utils import (
 )
 from .utils.schema import schema_function
 
-CHUNK_SIZE = 1024 * 16
+CHUNK_SIZE = 1024 * 500
 API_VERSION = 2
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_PROPS = [
