@@ -1062,7 +1062,7 @@ class RPC(MessageEmitter):
                 message_package = message_package + msgpack.packb(extra_data)
             total_size = len(message_package)
             if (
-                total_size <= self._long_message_chunk_size + 1024
+                total_size <= self._long_message_chunk_size * 4
                 or remote_method.__no_chunk__
             ):
                 emit_task = asyncio.create_task(self._emit_message(message_package))
