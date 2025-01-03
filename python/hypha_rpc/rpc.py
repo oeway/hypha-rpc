@@ -397,7 +397,6 @@ class RPC(MessageEmitter):
         key: str,
         heartbeat: bool = False,
         overwrite: bool = False,
-        random: bool = False,
         context=None,
     ):
         """Create a message."""
@@ -414,10 +413,7 @@ class RPC(MessageEmitter):
                 "please use overwrite=True or remove it first.",
                 key,
             )
-        if random:
-            self._object_store["message_cache"][key] = {}
-        else:
-            self._object_store["message_cache"][key] = b""
+        self._object_store["message_cache"][key] = {}
 
     def _append_message(
         self, key: str, data: bytes, heartbeat: bool = False, context=None
@@ -431,7 +427,7 @@ class RPC(MessageEmitter):
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         assert isinstance(data, bytes)
-        cache[key] += data
+        cache[key][len(cache[key])]= data
 
     def _set_message(
         self, key: str, index: int, data: bytes, heartbeat: bool = False, context=None
@@ -466,12 +462,12 @@ class RPC(MessageEmitter):
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         data = cache[key]
-        if isinstance(data, dict):
-            total = len(data)
-            content = b""
-            for i in range(total):
-                content += data[i]
-            data = content
+        # concatenate all the chunks
+        total = len(data)
+        content = b""
+        for i in range(total):
+            content += data[i]
+        data = content
         logger.debug("Processing message %s (size=%d)", key, len(data))
         unpacker = msgpack.Unpacker(
             io.BytesIO(data), max_buffer_size=self._max_message_buffer_size
@@ -934,7 +930,7 @@ class RPC(MessageEmitter):
         chunk_num = int(math.ceil(float(total_size) / self._long_message_chunk_size))
         if remote_services.config.api_version >= 3:
             # use concurrent sending
-            await message_cache.create(message_id, bool(session_id), False, True)
+            await message_cache.create(message_id, bool(session_id))
             semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
             async def append_chunk(idx, chunk):
