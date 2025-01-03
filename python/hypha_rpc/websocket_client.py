@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import logging
 import sys
-import re
+import os
 
 import shortuuid
 import json
@@ -34,9 +34,10 @@ except ImportError:
 
     IS_PYODIDE = False
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("websocket-client")
-logger.setLevel(logging.WARNING)
+logger.setLevel(LOGLEVEL)
 
 MAX_RETRY = 1000000
 

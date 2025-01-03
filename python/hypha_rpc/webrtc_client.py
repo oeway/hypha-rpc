@@ -1,6 +1,7 @@
 """Provide a webrtc client."""
 
 import asyncio
+import os
 import sys
 import inspect
 import logging
@@ -10,9 +11,10 @@ import shortuuid
 from hypha_rpc import RPC
 from .utils.schema import schema_function
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("webrtc-client")
-logger.setLevel(logging.WARNING)
+logger.setLevel(LOGLEVEL)
 
 try:
     from aiortc import (

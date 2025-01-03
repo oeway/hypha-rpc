@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import io
+import os
 import logging
 import math
 import sys
@@ -58,9 +59,10 @@ IO_PROPS = [
     "writelines",
 ]
 
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("RPC")
-logger.setLevel(logging.WARNING)
+logger.setLevel(LOGLEVEL)
 
 
 def index_object(obj, ids):
@@ -1064,10 +1066,10 @@ class RPC(MessageEmitter):
                 total_size <= self._long_message_chunk_size + 1024
                 or remote_method.__no_chunk__
             ):
-                emit_task = asyncio.ensure_future(self._emit_message(message_package))
+                emit_task = asyncio.create_task(self._emit_message(message_package))
             else:
                 # send chunk by chunk
-                emit_task = asyncio.ensure_future(
+                emit_task = asyncio.create_task(
                     self._send_chunks(message_package, target_id, remote_parent)
                 )
 
