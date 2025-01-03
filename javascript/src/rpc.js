@@ -399,7 +399,7 @@ export class RPC extends MessageEmitter {
     assert((await method("ping", timeout)) == "pong");
   }
 
-  _create_message(key, heartbeat, overwrite, random, context) {
+  _create_message(key, heartbeat, overwrite, context) {
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -947,7 +947,7 @@ export class RPC extends MessageEmitter {
     const start_time = Date.now(); // measure time
     const chunk_num = Math.ceil(total_size / this._long_message_chunk_size);
     if (remote_services.config.api_version >= 3) {
-      await message_cache.create(message_id, !!session_id, false, true);
+      await message_cache.create(message_id, !!session_id);
       const semaphore = new Semaphore(CONCURRENCY_LIMIT);
 
       const tasks = [];
