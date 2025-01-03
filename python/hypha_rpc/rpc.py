@@ -4,8 +4,10 @@ import asyncio
 import inspect
 import json
 import io
+import os
 import logging
 import math
+import time
 import sys
 import traceback
 import weakref
@@ -25,8 +27,8 @@ from .utils import (
 )
 from .utils.schema import schema_function
 
-CHUNK_SIZE = 1024 * 500
-API_VERSION = 2
+CHUNK_SIZE = 1024 * 256
+API_VERSION = 3
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_PROPS = [
     "name",  # file name
@@ -58,9 +60,12 @@ IO_PROPS = [
     "writelines",
 ]
 
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("RPC")
-logger.setLevel(logging.WARNING)
+logger.setLevel(LOGLEVEL)
+
+CONCURRENCY_LIMIT = int(os.environ.get("HYPHA_CONCURRENCY_LIMIT", "30"))
 
 
 def index_object(obj, ids):
@@ -247,6 +252,9 @@ class Timer:
             self._task = asyncio.ensure_future(self._job())
 
 
+background_tasks = set()
+
+
 class RPC(MessageEmitter):
     """Represent the RPC."""
 
@@ -264,6 +272,7 @@ class RPC(MessageEmitter):
         silent=False,
         app_id=None,
         server_base_url=None,
+        long_message_chunk_size=None,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -282,6 +291,7 @@ class RPC(MessageEmitter):
         self._remote_logger = logger
         self._server_base_url = server_base_url
         self.loop = loop or asyncio.get_event_loop()
+        self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
         super().__init__(self._remote_logger)
 
         self._services = {}
@@ -305,6 +315,7 @@ class RPC(MessageEmitter):
                     "message_cache": {
                         "create": self._create_message,
                         "append": self._append_message,
+                        "set": self._set_message,
                         "process": self._process_message,
                         "remove": self._remove_message,
                     },
@@ -338,7 +349,9 @@ class RPC(MessageEmitter):
                     self._fire("connected", connection_info)
 
             connection.on_connected(on_connected)
-            self.loop.create_task(on_connected(None))
+            task = self.loop.create_task(on_connected(None))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
         else:
 
             async def _emit_message(_):
@@ -380,7 +393,12 @@ class RPC(MessageEmitter):
         assert (await asyncio.wait_for(method("ping"), timeout)) == "pong"
 
     def _create_message(
-        self, key: str, heartbeat: bool = False, overwrite: bool = False, context=None
+        self,
+        key: str,
+        heartbeat: bool = False,
+        overwrite: bool = False,
+        random: bool = False,
+        context=None,
     ):
         """Create a message."""
         if heartbeat:
@@ -396,8 +414,10 @@ class RPC(MessageEmitter):
                 "please use overwrite=True or remove it first.",
                 key,
             )
-
-        self._object_store["message_cache"][key] = b""
+        if random:
+            self._object_store["message_cache"][key] = {}
+        else:
+            self._object_store["message_cache"][key] = b""
 
     def _append_message(
         self, key: str, data: bytes, heartbeat: bool = False, context=None
@@ -412,6 +432,21 @@ class RPC(MessageEmitter):
             raise KeyError(f"Message with key {key} does not exists.")
         assert isinstance(data, bytes)
         cache[key] += data
+
+    def _set_message(
+        self, key: str, index: int, data: bytes, heartbeat: bool = False, context=None
+    ):
+        """Append a message."""
+        if heartbeat:
+            if key not in self._object_store:
+                raise Exception(f"session does not exist anymore: {key}")
+            self._object_store[key]["timer"].reset()
+        cache = self._object_store["message_cache"]
+        if key not in cache:
+            raise KeyError(f"Message with key {key} does not exists.")
+        assert isinstance(data, bytes)
+        assert isinstance(cache[key], dict)
+        cache[key][index] = data
 
     def _remove_message(self, key: str, context=None):
         """Remove a message."""
@@ -430,9 +465,16 @@ class RPC(MessageEmitter):
         assert context is not None, "Context is required"
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
-        logger.debug("Processing message %s (size=%d)", key, len(cache[key]))
+        data = cache[key]
+        if isinstance(data, dict):
+            total = len(data)
+            content = b""
+            for i in range(total):
+                content += data[i]
+            data = content
+        logger.debug("Processing message %s (size=%d)", key, len(data))
         unpacker = msgpack.Unpacker(
-            io.BytesIO(cache[key]), max_buffer_size=self._max_message_buffer_size
+            io.BytesIO(data), max_buffer_size=self._max_message_buffer_size
         )
         main = unpacker.unpack()
         # Make sure the fields are from trusted source
@@ -461,7 +503,8 @@ class RPC(MessageEmitter):
             self._fire(main["type"], main)
         elif isinstance(message, bytes):
             unpacker = msgpack.Unpacker(
-                io.BytesIO(message), max_buffer_size=CHUNK_SIZE * 2
+                io.BytesIO(message),
+                max_buffer_size=max(512000, self._long_message_chunk_size * 2),
             )
             main = unpacker.unpack()
             # Add trusted context to the method call
@@ -886,24 +929,52 @@ class RPC(MessageEmitter):
         ), "Remote client does not support message caching for long message."
         message_cache = remote_services.message_cache
         message_id = session_id or shortuuid.uuid()
-        await message_cache.create(message_id, bool(session_id))
         total_size = len(package)
-        chunk_num = int(math.ceil(float(total_size) / CHUNK_SIZE))
-        for idx in range(chunk_num):
-            start_byte = idx * CHUNK_SIZE
-            await message_cache.append(
-                message_id,
-                package[start_byte : start_byte + CHUNK_SIZE],
-                bool(session_id),
-            )
-            logger.debug(
-                "Sending chunk %d/%d (%d bytes)",
-                idx + 1,
-                chunk_num,
-                total_size,
-            )
-        logger.debug("All chunks sent (%d)", chunk_num)
+        start_time = time.time()
+        chunk_num = int(math.ceil(float(total_size) / self._long_message_chunk_size))
+        if remote_services.config.api_version >= 3:
+            # use concurrent sending
+            await message_cache.create(message_id, bool(session_id), False, True)
+            semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+            async def append_chunk(idx, chunk):
+                # Acquire the semaphore
+                async with semaphore:
+                    await message_cache.set(message_id, idx, chunk, bool(session_id))
+                    logger.debug(
+                        "Sending chunk %d/%d (total=%d bytes)",
+                        idx + 1,
+                        chunk_num,
+                        total_size,
+                    )
+
+            tasks = []
+            for idx in range(chunk_num):
+                start_byte = idx * self._long_message_chunk_size
+                chunk = package[start_byte : start_byte + self._long_message_chunk_size]
+                tasks.append(asyncio.create_task(append_chunk(idx, chunk)))
+
+            # Wait for all chunks to finish uploading
+            await asyncio.gather(*tasks)
+        else:
+            await message_cache.create(message_id, bool(session_id))
+            for idx in range(chunk_num):
+                start_byte = idx * self._long_message_chunk_size
+                await message_cache.append(
+                    message_id,
+                    package[start_byte : start_byte + self._long_message_chunk_size],
+                    bool(session_id),
+                )
+                logger.debug(
+                    "Sending chunk %d/%d (%d bytes)",
+                    idx + 1,
+                    chunk_num,
+                    total_size,
+                )
         await message_cache.process(message_id, bool(session_id))
+        logger.debug(
+            "All chunks (%d bytes) sent in %d s", total_size, time.time() - start_time
+        )
 
     def emit(self, main_message, extra_data=None):
         """Emit a message."""
@@ -917,10 +988,9 @@ class RPC(MessageEmitter):
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)
         total_size = len(message_package)
-        if total_size <= CHUNK_SIZE + 1024:
-            return self.loop.create_task(self._emit_message(message_package))
-        else:
-            raise Exception("Message is too large to send in one go.")
+        if total_size > self._long_message_chunk_size + 1024:
+            logger.warning(f"Sending large message (size={total_size})")
+        return self.loop.create_task(self._emit_message(message_package))
 
     def _generate_remote_method(
         self,
@@ -1052,15 +1122,20 @@ class RPC(MessageEmitter):
             if extra_data:
                 message_package = message_package + msgpack.packb(extra_data)
             total_size = len(message_package)
-            if total_size <= CHUNK_SIZE + 1024 or remote_method.__no_chunk__:
-                emit_task = asyncio.ensure_future(self._emit_message(message_package))
+            if (
+                total_size <= self._long_message_chunk_size + 1024
+                or remote_method.__no_chunk__
+            ):
+                emit_task = asyncio.create_task(self._emit_message(message_package))
             else:
                 # send chunk by chunk
-                emit_task = asyncio.ensure_future(
+                emit_task = asyncio.create_task(
                     self._send_chunks(message_package, target_id, remote_parent)
                 )
+            background_tasks.add(emit_task)
 
             def handle_result(fut):
+                background_tasks.discard(fut)
                 if fut.exception():
                     reject(
                         Exception(
@@ -1186,9 +1261,11 @@ class RPC(MessageEmitter):
                 # such that the session id will be passed to the remote
                 # as a parent session id.
                 promise = self._decode(
-                    self._expand_promise(data)
-                    if data["promise"] == "*"
-                    else data["promise"],
+                    (
+                        self._expand_promise(data)
+                        if data["promise"] == "*"
+                        else data["promise"]
+                    ),
                     remote_parent=data.get("session"),
                     local_parent=local_parent,
                     remote_workspace=remote_workspace,

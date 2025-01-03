@@ -11,13 +11,15 @@ import {
   waitFor,
   convertCase,
   expandKwargs,
+  Semaphore,
 } from "./utils";
 import { schemaFunction } from "./utils/schema";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
-export const API_VERSION = 2;
-const CHUNK_SIZE = 1024 * 500;
+export const API_VERSION = 3;
+const CHUNK_SIZE = 1024 * 256;
+const CONCURRENCY_LIMIT = 30;
 
 const ArrayBufferView = Object.getPrototypeOf(
   Object.getPrototypeOf(new Uint8Array()),
@@ -276,6 +278,7 @@ export class RPC extends MessageEmitter {
       silent = false,
       app_id = null,
       server_base_url = null,
+      long_message_chunk_size = null,
     },
   ) {
     super(debug);
@@ -293,6 +296,7 @@ export class RPC extends MessageEmitter {
     this._chunk_store = {};
     this._method_timeout = method_timeout || 30;
     this._server_base_url = server_base_url;
+    this._long_message_chunk_size = long_message_chunk_size || CHUNK_SIZE;
 
     // make sure there is an execute function
     this._services = {};
@@ -315,6 +319,7 @@ export class RPC extends MessageEmitter {
         message_cache: {
           create: this._create_message.bind(this),
           append: this._append_message.bind(this),
+          set: this._set_message.bind(this),
           process: this._process_message.bind(this),
           remove: this._remove_message.bind(this),
         },
@@ -394,7 +399,7 @@ export class RPC extends MessageEmitter {
     assert((await method("ping", timeout)) == "pong");
   }
 
-  _create_message(key, heartbeat, overwrite, context) {
+  _create_message(key, heartbeat, overwrite, random, context) {
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -410,7 +415,6 @@ export class RPC extends MessageEmitter {
         `Message with the same key (${key}) already exists in the cache store, please use overwrite=true or remove it first.`,
       );
     }
-
     this._object_store["message_cache"][key] = [];
   }
 
@@ -427,6 +431,21 @@ export class RPC extends MessageEmitter {
     }
     assert(data instanceof ArrayBufferView);
     cache[key].push(data);
+  }
+
+  _set_message(key, index, data, heartbeat, context) {
+    if (heartbeat) {
+      if (!this._object_store[key]) {
+        throw new Error(`session does not exist anymore: ${key}`);
+      }
+      this._object_store[key]["timer"].reset();
+    }
+    const cache = this._object_store["message_cache"];
+    if (!cache[key]) {
+      throw new Error(`Message with key ${key} does not exists.`);
+    }
+    assert(data instanceof ArrayBufferView);
+    cache[key][index] = data;
   }
 
   _remove_message(key, context) {
@@ -912,31 +931,64 @@ export class RPC extends MessageEmitter {
   }
 
   async _send_chunks(data, target_id, session_id) {
-    let remote_services = await this.get_remote_service(
+    // 1) Get the remote service
+    const remote_services = await this.get_remote_service(
       `${target_id}:built-in`,
     );
-    assert(
-      remote_services.message_cache,
-      "Remote client does not support message caching for long message.",
-    );
-    let message_cache = remote_services.message_cache;
-    let message_id = session_id || randId();
-    await message_cache.create(message_id, !!session_id);
-    let total_size = data.length;
-    let chunk_num = Math.ceil(total_size / CHUNK_SIZE);
-    for (let idx = 0; idx < chunk_num; idx++) {
-      let start_byte = idx * CHUNK_SIZE;
-      await message_cache.append(
-        message_id,
-        data.slice(start_byte, start_byte + CHUNK_SIZE),
-        !!session_id,
+    if (!remote_services.message_cache) {
+      throw new Error(
+        "Remote client does not support message caching for large messages.",
       );
-      // console.debug(
-      //   `Sending chunk ${idx + 1}/${chunk_num} (${total_size} bytes)`,
-      // );
     }
-    // console.log(`All chunks sent (${chunk_num})`);
+
+    const message_cache = remote_services.message_cache;
+    const message_id = session_id || randId();
+    const total_size = data.length;
+    const start_time = Date.now(); // measure time
+    const chunk_num = Math.ceil(total_size / this._long_message_chunk_size);
+    if (remote_services.config.api_version >= 3) {
+      await message_cache.create(message_id, !!session_id, false, true);
+      const semaphore = new Semaphore(CONCURRENCY_LIMIT);
+
+      const tasks = [];
+      for (let idx = 0; idx < chunk_num; idx++) {
+        const startByte = idx * this._long_message_chunk_size;
+        const chunk = data.slice(
+          startByte,
+          startByte + this._long_message_chunk_size,
+        );
+
+        const taskFn = async () => {
+          await message_cache.set(message_id, idx, chunk, !!session_id);
+          console.debug(
+            `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
+          );
+        };
+
+        // Push into an array, each one runs under the semaphore
+        tasks.push(semaphore.run(taskFn));
+      }
+
+      // Wait for all chunk uploads to finish
+      await Promise.all(tasks);
+    } else {
+      // 3) Legacy version (sequential appends):
+      await message_cache.create(message_id, !!session_id);
+      for (let idx = 0; idx < chunk_num; idx++) {
+        const startByte = idx * this._long_message_chunk_size;
+        const chunk = data.slice(
+          startByte,
+          startByte + this._long_message_chunk_size,
+        );
+        await message_cache.append(message_id, chunk, !!session_id);
+        console.debug(
+          `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
+        );
+      }
+    }
     await message_cache.process(message_id, !!session_id);
+    const durationSec = ((Date.now() - start_time) / 1000).toFixed(2);
+    console.debug(`All chunks (${total_size} bytes) sent in ${durationSec} s`);
   }
 
   emit(main_message, extra_data) {
@@ -954,11 +1006,10 @@ export class RPC extends MessageEmitter {
       message_package = new Uint8Array([...message_package, ...extra]);
     }
     const total_size = message_package.length;
-    if (total_size <= CHUNK_SIZE + 1024) {
-      return this._emit_message(message_package);
-    } else {
-      throw new Error("Message is too large to send in one go.");
+    if (total_size > this._long_message_chunk_size + 1024) {
+      console.warn(`Sending large message (size=${total_size})`);
     }
+    return this._emit_message(message_package);
   }
 
   _generate_remote_method(
@@ -1090,7 +1141,10 @@ export class RPC extends MessageEmitter {
           message_package = new Uint8Array([...message_package, ...extra]);
         }
         const total_size = message_package.length;
-        if (total_size <= CHUNK_SIZE + 1024 || remote_method.__no_chunk__) {
+        if (
+          total_size <= self._long_message_chunk_size + 1024 ||
+          remote_method.__no_chunk__
+        ) {
           self
             ._emit_message(message_package)
             .then(function () {

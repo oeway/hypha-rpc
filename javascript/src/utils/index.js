@@ -481,3 +481,27 @@ export class MessageEmitter {
     });
   }
 }
+
+export class Semaphore {
+  constructor(max) {
+    this.max = max;
+    this.queue = [];
+    this.current = 0;
+  }
+  async run(task) {
+    if (this.current >= this.max) {
+      // Wait until a slot is free
+      await new Promise((resolve) => this.queue.push(resolve));
+    }
+    this.current++;
+    try {
+      return await task();
+    } finally {
+      this.current--;
+      if (this.queue.length > 0) {
+        // release one waiter
+        this.queue.shift()();
+      }
+    }
+  }
+}

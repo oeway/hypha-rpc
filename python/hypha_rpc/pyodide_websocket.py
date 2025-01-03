@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import os
 import sys
 import js
 from js import WebSocket
@@ -15,9 +16,10 @@ except ImportError:
 
 MAX_RETRY = 1000000
 
-logging.basicConfig(stream=sys.stdout)
+LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL, stream=sys.stdout)
 logger = logging.getLogger("pyodide-websocket")
-logger.setLevel(logging.WARNING)
+logger.setLevel(LOGLEVEL)
 
 local_websocket_patch = """
 class LocalWebSocket {

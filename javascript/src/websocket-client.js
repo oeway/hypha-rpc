@@ -471,6 +471,7 @@ export async function connectToServer(config) {
     method_timeout: config.method_timeout,
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
+    long_message_chunk_size: config.long_message_chunk_size,
   });
   const wm = await rpc.get_manager_service({
     timeout: config.method_timeout,
