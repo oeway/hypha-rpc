@@ -26,7 +26,7 @@ from .utils import (
 )
 from .utils.schema import schema_function
 
-CHUNK_SIZE = 1024 * 500
+CHUNK_SIZE = 1024 * 16
 API_VERSION = 2
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
 IO_PROPS = [
@@ -927,10 +927,9 @@ class RPC(MessageEmitter):
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)
         total_size = len(message_package)
-        if total_size <= self._long_message_chunk_size + 1024:
-            return self.loop.create_task(self._emit_message(message_package))
-        else:
-            raise Exception("Message is too large to send in one go.")
+        if total_size > self._long_message_chunk_size + 1024:
+            logger.warning(f"Sending large message (size={total_size})")
+        return self.loop.create_task(self._emit_message(message_package))
 
     def _generate_remote_method(
         self,

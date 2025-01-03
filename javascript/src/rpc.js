@@ -956,11 +956,10 @@ export class RPC extends MessageEmitter {
       message_package = new Uint8Array([...message_package, ...extra]);
     }
     const total_size = message_package.length;
-    if (total_size <= this._long_message_chunk_size + 1024) {
-      return this._emit_message(message_package);
-    } else {
-      throw new Error("Message is too large to send in one go.");
+    if (total_size > this._long_message_chunk_size + 1024) {
+      console.warn(`Sending large message (size=${total_size})`)
     }
+    return this._emit_message(message_package);
   }
 
   _generate_remote_method(
