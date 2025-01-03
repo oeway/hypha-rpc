@@ -158,6 +158,14 @@ describe("RPC", async () => {
       login_timeout: 3,
     });
     expect(token).to.equal(TOKEN);
+
+    const userProfile = await login({
+      server_url: SERVER_URL,
+      login_callback: callback,
+      login_timeout: 3,
+      profile: true,
+    });
+    expect(userProfile.token).to.equal(TOKEN);
   }).timeout(20000);
 
   it("should connect to the server", async () => {
