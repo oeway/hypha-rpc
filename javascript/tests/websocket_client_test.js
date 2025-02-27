@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import { login, connectToServer } from "../src/websocket-client.js";
+import { login, connectToServer, schemaFunction } from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
 import { assert } from "../src/utils";
 

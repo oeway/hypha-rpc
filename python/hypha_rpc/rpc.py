@@ -336,7 +336,7 @@ class RPC(MessageEmitter):
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     manager = await self.get_manager_service(
-                        {"timeout": 10, "case_conversion": "snake"}
+                        {"timeout": 20, "case_conversion": "snake"}
                     )
                     for service in list(self._services.values()):
                         service_info = self._extract_service_info(service)
@@ -531,10 +531,25 @@ class RPC(MessageEmitter):
         """Get remote root service."""
         config = config or {}
         assert self._connection.manager_id, "Manager id is not set"
-        svc = await self.get_remote_service(
-            f"*/{self._connection.manager_id}:default", config
-        )
-        return svc
+        
+        max_retries = 20
+        retry_delay = 0.5
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                svc = await self.get_remote_service(
+                    f"*/{self._connection.manager_id}:default", config
+                )
+                return svc
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+        
+        # If we get here, all retries failed
+        raise last_error
 
     def get_all_local_services(self):
         """Get all the local services."""
@@ -624,6 +639,8 @@ class RPC(MessageEmitter):
                 "visibility": visibility,
             }
         elif isinstance(a_object, (dict, list, tuple)):
+            if isinstance(a_object, ObjectProxy):
+                a_object = ObjectProxy.toDict(a_object)
             items = (
                 a_object.items() if isinstance(a_object, dict) else enumerate(a_object)
             )
@@ -760,7 +777,7 @@ class RPC(MessageEmitter):
         if check_type and api.get("type"):
             try:
                 manager = await self.get_manager_service(
-                    {"timeout": 10, "case_conversion": "snake"}
+                    {"timeout": 20, "case_conversion": "snake"}
                 )
                 type_info = await manager.get_service_type(api["type"])
                 api = _annotate_service(api, type_info)
@@ -774,7 +791,7 @@ class RPC(MessageEmitter):
         if notify:
             try:
                 manager = manager or await self.get_manager_service(
-                    {"timeout": 10, "case_conversion": "snake"}
+                    {"timeout": 20, "case_conversion": "snake"}
                 )
                 await manager.register_service(service_info)
             except Exception as exp:
@@ -796,7 +813,7 @@ class RPC(MessageEmitter):
             raise Exception(f"Service not found: {service_id}")
         if notify:
             manager = await self.get_manager_service(
-                {"timeout": 10, "case_conversion": "snake"}
+                {"timeout": 20, "case_conversion": "snake"}
             )
             await manager.unregister_service(service_id)
         del self._services[service_id]
@@ -1441,6 +1458,9 @@ class RPC(MessageEmitter):
 
         if isinstance(a_object, dict):
             a_object = dict(a_object)
+
+        if isinstance(a_object, ObjectProxy):
+            a_object = ObjectProxy.toDict(a_object)
 
         # Reuse the remote object
         if hasattr(a_object, "__rpc_object__"):

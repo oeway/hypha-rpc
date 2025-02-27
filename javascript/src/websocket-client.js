@@ -457,11 +457,34 @@ export async function connectToServer(config) {
     connection_info,
     "Failed to connect to the server, no connection info obtained. This issue is most likely due to an outdated Hypha server version. Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version.",
   );
+  // wait for 0.5 seconds
+  await new Promise(resolve => setTimeout(resolve, 100));
+  // Ensure manager_id is set before proceeding
+  if (!connection.manager_id) {
+    console.warn("Manager ID not set immediately, waiting...");
+    
+    // Wait for manager_id to be set with timeout
+    const maxWaitTime = 5000; // 5 seconds
+    const checkInterval = 100; // 100ms
+    const startTime = Date.now();
+    
+    while (!connection.manager_id && (Date.now() - startTime) < maxWaitTime) {
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+    
+    if (!connection.manager_id) {
+      console.error("Manager ID still not set after waiting");
+      throw new Error("Failed to get manager ID from server");
+    } else {
+      console.info(`Manager ID set after waiting: ${connection.manager_id}`);
+    }
+  }
   if (config.workspace && connection_info.workspace !== config.workspace) {
     throw new Error(
       `Connected to the wrong workspace: ${connection_info.workspace}, expected: ${config.workspace}`,
     );
   }
+  
   const workspace = connection_info.workspace;
   const rpc = new RPC(connection, {
     client_id: clientId,

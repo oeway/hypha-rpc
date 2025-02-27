@@ -529,12 +529,37 @@ export class RPC extends MessageEmitter {
 
   async get_manager_service(config) {
     config = config || {};
-    assert(this._connection.manager_id, "Manager id is not set");
-    const svc = await this.get_remote_service(
-      `*/${this._connection.manager_id}:default`,
-      config,
-    );
-    return svc;
+    
+    // Add retry logic
+    const maxRetries = 20;
+    const retryDelay = 500; // 500ms
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      if (!this._connection.manager_id) {
+        if (attempt < maxRetries - 1) {
+          console.warn(`Manager ID not set, retrying in ${retryDelay}ms (attempt ${attempt+1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          continue;
+        } else {
+          throw new Error("Manager ID not set after maximum retries");
+        }
+      }
+      
+      try {
+        const svc = await this.get_remote_service(
+          `*/${this._connection.manager_id}:default`,
+          config,
+        );
+        return svc;
+      } catch (e) {
+        if (attempt < maxRetries - 1) {
+          console.warn(`Failed to get manager service, retrying in ${retryDelay}ms: ${e.message}`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        } else {
+          throw e;
+        }
+      }
+    }
   }
 
   get_all_local_services() {

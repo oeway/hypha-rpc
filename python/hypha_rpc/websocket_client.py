@@ -535,6 +535,18 @@ async def _connect_to_server(config):
         " This issue is most likely due to an outdated Hypha server version. "
         "Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version."
     )
+    await asyncio.sleep(0.1)
+    # Add explicit wait for manager_id to be set
+    if not connection.manager_id:
+        logger.warning("Manager ID not set immediately, waiting...")
+        for _ in range(10):  # Try for up to 1 second
+            await asyncio.sleep(0.1)
+            if connection.manager_id:
+                logger.info(f"Manager ID set after waiting: {connection.manager_id}")
+                break
+        else:
+            logger.error("Manager ID still not set after waiting")
+
     if config.get("workspace") and connection_info["workspace"] != config["workspace"]:
         raise Exception(
             f"Connected to the wrong workspace: {connection_info['workspace']}, expected: {config['workspace']}"
