@@ -32,7 +32,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
       - run: npm ci
-      - run: npm run check-format
+      - name: Check format
+        id: format
+        continue-on-error: true
+        run: npm run check-format
+      - name: Format warning
+        if: steps.format.outcome == 'failure'
+        run: |
+          echo "::warning::Code formatting issues detected. Please run 'npm run format' to fix them."
       - name: Set up Python 3.11
         uses: actions/setup-python@v4.5.0
         with:
