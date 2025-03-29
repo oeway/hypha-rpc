@@ -201,7 +201,7 @@ class PyodideWebsocketRPCConnection:
         try:
             assert self._websocket, "Websocket connection is not established"
             await asyncio.sleep(2)
-            while not self._closed and self._websocket and not self._websocket.closed:
+            while not self._closed and self._websocket and not self._websocket.readyState != WebSocket.CLOSED:
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
