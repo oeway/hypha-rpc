@@ -19,7 +19,25 @@ from hypha_rpc import (
     register_rtc_service_sync,
 )
 
+# Import Pydantic components for the test
+try:
+    from pydantic import BaseModel, Field
+    from hypha_rpc.utils.pydantic import register_pydantic_codec
+
+    HAS_PYDANTIC = True
+except ImportError:
+    HAS_PYDANTIC = False
+    BaseModel = object  # Define a dummy BaseModel if pydantic is not installed
+
 from . import WS_SERVER_URL
+
+
+# Define a simple Pydantic model for testing
+class TestModel(BaseModel):
+    name: str
+    value: int
+    is_active: bool = True
+    tags: list[str] = Field(default_factory=list)
 
 
 class ImJoyPlugin:
@@ -681,3 +699,61 @@ def test_generator_sync(websocket_server):
     for item in gen:
         results.append(item)
     assert results == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not HAS_PYDANTIC, reason="Pydantic is not installed")
+async def test_pydantic_codec(websocket_server):
+    """Test Pydantic model encoding and decoding via RPC."""
+    server = await connect_to_server(
+        {"client_id": "pydantic-provider", "server_url": WS_SERVER_URL}
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Register the Pydantic codec
+    register_pydantic_codec(server.rpc)
+
+    # Define a service that echoes Pydantic models
+    async def echo_model(model: TestModel) -> TestModel:
+        return model
+
+    await server.register_service(
+        {
+            "id": "pydantic-echo-service",
+            "config": {"visibility": "public"},
+            "echo_model": echo_model,
+        }
+    )
+
+    # Connect a client
+    client = await connect_to_server(
+        {
+            "client_id": "pydantic-consumer",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+    # Also register the codec on the client side for decoding the response
+    register_pydantic_codec(client.rpc)
+
+    # Get the service
+    echo_svc = await client.get_service("pydantic-echo-service")
+
+    # Create a model instance
+    original_model = TestModel(name="test", value=123, tags=["a", "b"])
+
+    # Call the service
+    returned_model = await echo_svc.echo_model(original_model)
+
+    # Assertions
+    assert issubclass(returned_model.__class__, BaseModel)
+    assert returned_model.name == "test"
+    assert returned_model.value == 123
+    assert returned_model.is_active is True
+    assert returned_model.tags == ["a", "b"]
+    # assert returned_model == original_model # This fails because the classes are technically different
+
+    await server.disconnect()
+    await client.disconnect()
