@@ -13,8 +13,8 @@ dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets<=13.
 name = "Wei Ouyang"
 email = "oeway007@gmail.com"
 
-[project.license]
-text = "MIT"
+[project]
+license = "MIT"
 
 [project.optional-dependencies]
 full = [ "aiortc; platform_system != 'Emscripten'", "zarr", "fastapi", "sse-starlette", "openai", "simpervisor",]
