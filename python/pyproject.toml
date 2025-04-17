@@ -9,7 +9,6 @@ description = "Hypha RPC client for connecting to Hypha server for data manageme
 readme = "README.md"
 requires-python = ">=3.6"
 dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets<=13.1; platform_system != 'Emscripten'", "munch",]
-license = "MIT"
 
 [[project.authors]]
 name = "Wei Ouyang"
