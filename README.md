@@ -220,6 +220,125 @@ Remote function call is almost the same as calling a local function. The argumen
  * For functions defined in Javascript, there is no difference when calling from Python
  * For functions defined in Python, when calling from Javascript, if the last argument is an object and its `_rkwargs` is set to true, then it will be converted into keyword arguments when calling the Python function. For example, if you have a Python function defined as `def foo(a, b, c=None):`, in Javascript, you should call it as `foo(9, 10, {c: 33, _rkwargs: true})`.
 
+### Generators Support
+
+Hypha RPC supports both synchronous and asynchronous generators across Python and JavaScript. This allows you to stream data between services efficiently.
+
+#### Python Generators
+
+You can define both regular and async generators in your Python services:
+
+```python
+# Regular generator
+def counter(start=0, end=5):
+    """Return a generator that counts from start to end."""
+    for i in range(start, end):
+        yield i
+
+# Async generator
+async def async_counter(start=0, end=5):
+    """Return an async generator that counts from start to end."""
+    for i in range(start, end):
+        yield i
+        await asyncio.sleep(0.01)  # Small delay to simulate async work
+
+# Register service with generators
+await server.register_service({
+    "id": "generator-service",
+    "config": {"visibility": "public"},
+    "get_counter": counter,
+    "get_async_counter": async_counter,
+})
+```
+
+##### Using Generators with Async API
+
+When using the async API, all generators (both regular and async) are consumed using async iteration:
+
+```python
+# Connect to the service
+gen_service = await client.get_service("generator-service")
+
+# Using regular generator (becomes async over RPC)
+gen = await gen_service.get_counter(0, 5)
+async for item in gen:
+    print(item)  # Prints: 0, 1, 2, 3, 4
+
+# Using async generator
+async_gen = await gen_service.get_async_counter(0, 5)
+async for item in async_gen:
+    print(item)  # Prints: 0, 1, 2, 3, 4
+```
+
+##### Using Generators with Sync API
+
+The synchronous API allows you to use generators with regular for loops:
+
+```python
+# Connect using sync API
+client = connect_to_server_sync({
+    "server_url": "https://hypha.aicell.io",
+})
+gen_service = client.get_service("generator-service")
+
+# Both regular and async generators can be used with for loops
+for item in gen_service.get_counter(0, 5):
+    print(item)  # Prints: 0, 1, 2, 3, 4
+
+for item in gen_service.get_async_counter(0, 5):
+    print(item)  # Prints: 0, 1, 2, 3, 4
+```
+
+#### JavaScript Generators
+
+In JavaScript, you can define and consume generators in a similar way:
+
+```javascript
+// Define a generator service
+const generatorService = {
+    *counter(start = 0, end = 5) {
+        for (let i = start; i < end; i++) {
+            yield i;
+        }
+    },
+    
+    async *asyncCounter(start = 0, end = 5) {
+        for (let i = start; i < end; i++) {
+            yield i;
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+    }
+};
+
+// Register the service
+await server.registerService({
+    id: "js-generator-service",
+    config: { visibility: "public" },
+    ...generatorService
+});
+
+// Consume generators
+const service = await client.getService("js-generator-service");
+
+// Using regular generator
+const gen = await service.counter(0, 5);
+for await (const item of gen) {
+    console.log(item); // Prints: 0, 1, 2, 3, 4
+}
+
+// Using async generator
+const asyncGen = await service.asyncCounter(0, 5);
+for await (const item of asyncGen) {
+    console.log(item); // Prints: 0, 1, 2, 3, 4
+}
+```
+
+Note: When using generators across RPC:
+ * All generators become async generators when accessed remotely
+ * The sync API in Python automatically handles the async-to-sync conversion
+ * Values are streamed one at a time, making it memory efficient for large datasets
+ * Generators are great for implementing progress updates or streaming data
+
 ## Peer-to-peer connection via WebRTC
 
 The current implementation requires all the traffic going through the websocket server. This is not ideal for large data transmission. Therefore, we implemented webRTC support in addition to the websocket connection. You can use the following two functions for enabling peer-to-peer communication between clients:
