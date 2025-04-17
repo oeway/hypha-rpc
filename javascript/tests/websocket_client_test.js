@@ -1,8 +1,17 @@
 import { expect } from "chai";
-import { login, connectToServer, schemaFunction } from "../src/websocket-client.js";
+import {
+  login,
+  connectToServer,
+  schemaFunction,
+} from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
 import { assert } from "../src/utils";
-
+import {
+  isAsyncGeneratorFunction,
+  isGeneratorFunction,
+  isAsyncGenerator,
+  isGenerator,
+} from "../src/utils";
 const SERVER_URL = "http://127.0.0.1:9394";
 
 class ImJoyPlugin {
@@ -334,4 +343,119 @@ describe("RPC", async () => {
 
     await api.disconnect();
   }).timeout(20000);
+
+  it("should handle generators", async () => {
+    // Create a server with a service that returns a generator
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "generator-provider",
+    });
+
+    // Get server workspace and token for client connection
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Define a sync generator function
+    function* counter(start = 0, end = 5) {
+      for (let i = start; i < end; i++) {
+        yield i;
+      }
+    }
+
+    // Define an async generator function
+    async function* asyncCounter(start = 0, end = 5) {
+      for (let i = start; i < end; i++) {
+        yield i;
+        await new Promise((resolve) => setTimeout(resolve, 10)); // Small delay
+      }
+    }
+
+    // Define a generator that throws an error
+    function* errorGenerator() {
+      yield 1;
+      throw new Error("Generator error");
+    }
+
+    // Define an empty generator
+    function* emptyGenerator() {
+      // yields nothing
+    }
+
+    // Define a generator that yields complex objects
+    function* objectGenerator() {
+      yield { value: 1, text: "one" };
+      yield { value: 2, text: "two" };
+    }
+
+    // Register service with all types of generators
+    await server.registerService({
+      id: "generator-service",
+      config: { visibility: "public" },
+      getCounter: counter,
+      getAsyncCounter: asyncCounter,
+      getErrorGenerator: errorGenerator,
+      getEmptyGenerator: emptyGenerator,
+      getObjectGenerator: objectGenerator,
+    });
+
+    // Connect with another client using the same workspace and token
+    const client = await connectToServer({
+      client_id: "generator-consumer",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    // Get the service
+    const genService = await client.getService("generator-service");
+    // Test normal generator - note that it becomes an async generator over RPC
+    const gen = await genService.getCounter(0, 5);
+    const results = [];
+    for await (const item of gen) {
+      results.push(item);
+    }
+    expect(results).to.deep.equal([0, 1, 2, 3, 4]);
+
+    // Test async generator
+    const asyncGen = await genService.getAsyncCounter(0, 5);
+    const asyncResults = [];
+    for await (const item of asyncGen) {
+      asyncResults.push(item);
+    }
+    expect(asyncResults).to.deep.equal([0, 1, 2, 3, 4]);
+
+    // Test error generator
+    const errorGen = await genService.getErrorGenerator();
+    try {
+      const errorResults = [];
+      for await (const item of errorGen) {
+        errorResults.push(item);
+      }
+      throw new Error("Should have thrown an error");
+    } catch (e) {
+      expect(e.message).to.include("Generator error");
+    }
+
+    // Test empty generator
+    const emptyGen = await genService.getEmptyGenerator();
+    const emptyResults = [];
+    for await (const item of emptyGen) {
+      emptyResults.push(item);
+    }
+    expect(emptyResults).to.deep.equal([]);
+
+    // Test object generator
+    const objGen = await genService.getObjectGenerator();
+    const objResults = [];
+    for await (const item of objGen) {
+      objResults.push(item);
+    }
+    expect(objResults).to.deep.equal([
+      { value: 1, text: "one" },
+      { value: 2, text: "two" },
+    ]);
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(40000);
 });

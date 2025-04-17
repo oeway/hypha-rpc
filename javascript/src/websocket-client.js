@@ -45,6 +45,7 @@ class WebsocketRPCConnection {
     this._token_refresh_interval = token_refresh_interval;
     this.manager_id = null;
     this._refresh_token_task = null;
+    this._last_message = null; // Store the last sent message
   }
 
   on_message(handler) {
@@ -283,6 +284,12 @@ class WebsocketRPCConnection {
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
             await this.open();
+            // Resend last message if there was one
+            if (this._last_message) {
+              console.info("Resending last message after reconnection");
+              this._websocket.send(this._last_message);
+              this._last_message = null;
+            }
             console.warn(
               `Successfully reconnected to server ${this._server_url}`,
             );
@@ -328,7 +335,9 @@ class WebsocketRPCConnection {
       await this.open();
     }
     try {
+      this._last_message = data; // Store the message before sending
       this._websocket.send(data);
+      this._last_message = null; // Clear after successful send
     } catch (exp) {
       console.error(`Failed to send data, error: ${exp}`);
       throw exp;
@@ -337,6 +346,7 @@ class WebsocketRPCConnection {
 
   disconnect(reason) {
     this._closed = true;
+    this._last_message = null; // Clear last message on disconnect
     if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
       this._websocket.close(1000, reason);
     }
@@ -458,20 +468,20 @@ export async function connectToServer(config) {
     "Failed to connect to the server, no connection info obtained. This issue is most likely due to an outdated Hypha server version. Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version.",
   );
   // wait for 0.5 seconds
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await new Promise((resolve) => setTimeout(resolve, 100));
   // Ensure manager_id is set before proceeding
   if (!connection.manager_id) {
     console.warn("Manager ID not set immediately, waiting...");
-    
+
     // Wait for manager_id to be set with timeout
     const maxWaitTime = 5000; // 5 seconds
     const checkInterval = 100; // 100ms
     const startTime = Date.now();
-    
-    while (!connection.manager_id && (Date.now() - startTime) < maxWaitTime) {
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
+
+    while (!connection.manager_id && Date.now() - startTime < maxWaitTime) {
+      await new Promise((resolve) => setTimeout(resolve, checkInterval));
     }
-    
+
     if (!connection.manager_id) {
       console.error("Manager ID still not set after waiting");
       throw new Error("Failed to get manager ID from server");
@@ -484,7 +494,7 @@ export async function connectToServer(config) {
       `Connected to the wrong workspace: ${connection_info.workspace}, expected: ${config.workspace}`,
     );
   }
-  
+
   const workspace = connection_info.workspace;
   const rpc = new RPC(connection, {
     client_id: clientId,

@@ -150,6 +150,7 @@ class PyodideWebsocketRPCConnection:
         self._is_async = False
         self._legacy_auth = None
         self._closed = False
+        self._last_message = None  # Store the last sent message
         self.connection_info = None
         self._enable_reconnect = False
         self.manager_id = None
@@ -201,7 +202,11 @@ class PyodideWebsocketRPCConnection:
         try:
             assert self._websocket, "Websocket connection is not established"
             await asyncio.sleep(2)
-            while not self._closed and self._websocket and not self._websocket.closed:
+            while (
+                not self._closed
+                and self._websocket
+                and not self._websocket.readyState != WebSocket.CLOSED
+            ):
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
@@ -397,6 +402,11 @@ class PyodideWebsocketRPCConnection:
                             f"Reconnecting to {self._server_url.split('?')[0]} (attempt #{retry})"
                         )
                         await self.open()
+                        # Resend last message if there was one
+                        if self._last_message:
+                            logger.info("Resending last message after reconnection")
+                            self._websocket.send(to_js(self._last_message))
+                            self._last_message = None
                         logger.warning(
                             f"Successfully reconnected to the server {self._server_url.split('?')[0]}"
                         )
@@ -441,7 +451,9 @@ class PyodideWebsocketRPCConnection:
             await self.open()
 
         try:
+            self._last_message = data  # Store the message before sending
             self._websocket.send(to_js(data))
+            self._last_message = None  # Clear after successful send
         except Exception as exp:
             logger.error("Failed to send data, error: %s", exp)
             raise exp
@@ -449,6 +461,7 @@ class PyodideWebsocketRPCConnection:
     async def disconnect(self, reason=None):
         """Disconnect the WebSocket."""
         self._closed = True
+        self._last_message = None
         if self._websocket and self._websocket.readyState == WebSocket.OPEN:
             self._websocket.close(1000, reason)
         if self._refresh_token_task:

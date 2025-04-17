@@ -555,3 +555,129 @@ def test_connect_to_server_sync_lock(websocket_server):
     # This will not work if the thread is locked
     svc = server.get_service("hello-world")
     svc.call_hello2()
+
+
+@pytest.mark.asyncio
+async def test_generator(websocket_server):
+    """Test using generators across RPC."""
+    # Create a server with a service that returns a generator
+    server = await connect_to_server(
+        {"client_id": "generator-provider", "server_url": WS_SERVER_URL}
+    )
+
+    # Get server workspace and token for client connection
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Define a generator function
+    def counter(start=0, end=5):
+        """Return a generator that counts from start to end."""
+        for i in range(start, end):
+            yield i
+
+    # Define an async generator function
+    async def async_counter(start=0, end=5):
+        """Return an async generator that counts from start to end."""
+        for i in range(start, end):
+            yield i
+            await asyncio.sleep(0.01)  # Small delay to simulate async work
+
+    # Register service with both types of generators
+    await server.register_service(
+        {
+            "id": "generator-service",
+            "config": {"visibility": "public"},
+            "get_counter": counter,
+            "get_async_counter": async_counter,
+        }
+    )
+
+    # Connect with another client using the same workspace and token
+    client = await connect_to_server(
+        {
+            "client_id": "generator-consumer",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    # Get the service
+    gen_service = await client.get_service("generator-service")
+
+    # Test normal generator - note that it becomes an async generator over RPC
+    gen = await gen_service.get_counter(0, 5)
+    results = []
+    # We need to use async for since all generators become async generators over RPC
+    async for item in gen:
+        results.append(item)
+    assert results == [0, 1, 2, 3, 4]
+
+    # Test async generator
+    async_gen = await gen_service.get_async_counter(0, 5)
+    async_results = []
+    async for item in async_gen:
+        async_results.append(item)
+    assert async_results == [0, 1, 2, 3, 4]
+
+
+def test_generator_sync(websocket_server):
+    """Test using generators with the synchronous API."""
+    # Create a server with a service that returns a generator
+    server = connect_to_server_sync(
+        {"client_id": "sync-generator-provider", "server_url": WS_SERVER_URL}
+    )
+
+    # Get server workspace and token for client connection
+    workspace = server.config.workspace
+    token = server.generate_token()
+
+    # Define a generator function
+    def counter(start=0, end=5):
+        """Return a generator that counts from start to end."""
+        for i in range(start, end):
+            yield i
+
+    # Define an async generator function
+    async def async_counter(start=0, end=5):
+        """Return an async generator that counts from start to end."""
+        for i in range(start, end):
+            yield i
+            await asyncio.sleep(0.01)  # Small delay to simulate async work
+
+    # Register service with both types of generators
+    svc_info = server.register_service(
+        {
+            "id": "sync-generator-service",
+            "config": {"visibility": "public"},
+            "get_counter": counter,
+            "get_async_counter": async_counter,
+        }
+    )
+
+    # Connect with another client using the same workspace and token
+    client = connect_to_server_sync(
+        {
+            "client_id": "sync-generator-consumer",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    # Get service with explicit timeout
+    gen_service = client.get_service(svc_info["id"], timeout=20)
+
+    # Test normal generator - verify it works as a synchronous generator
+    gen = gen_service.get_counter(0, 5)
+    results = []
+    for item in gen:
+        results.append(item)
+    assert results == [0, 1, 2, 3, 4]
+
+    # Test async generator - should also work with the sync API
+    gen = gen_service.get_async_counter(0, 3)
+    results = []
+    for item in gen:
+        results.append(item)
+    assert results == [0, 1, 2]

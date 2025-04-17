@@ -5,10 +5,12 @@ import inspect
 import logging
 import sys
 import os
+import io
 
 import shortuuid
 import json
 from functools import partial
+import msgpack
 
 from .rpc import RPC
 from .utils.schema import schema_function
@@ -63,6 +65,7 @@ class WebsocketRPCConnection:
         self._handle_message = None
         self._handle_disconnected = None  # Disconnection handler
         self._handle_connected = None  # Connection open handler
+        self._last_message = None  # Store the last sent message
         assert server_url and client_id
         self._server_url = server_url
         self._client_id = client_id
@@ -114,11 +117,22 @@ class WebsocketRPCConnection:
             # Only pass ssl if it's not None
             if self._ssl is None:
                 websocket = await asyncio.wait_for(
-                    websockets.connect(server_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout), self._timeout
+                    websockets.connect(
+                        server_url,
+                        ping_interval=self._ping_interval,
+                        ping_timeout=self._ping_timeout,
+                    ),
+                    self._timeout,
                 )
             else:
                 websocket = await asyncio.wait_for(
-                    websockets.connect(server_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout, ssl=self._ssl), self._timeout
+                    websockets.connect(
+                        server_url,
+                        ping_interval=self._ping_interval,
+                        ping_timeout=self._ping_timeout,
+                        ssl=self._ssl,
+                    ),
+                    self._timeout,
                 )
             return websocket
         except websockets.exceptions.InvalidStatusCode as e:
@@ -156,10 +170,23 @@ class WebsocketRPCConnection:
         # Attempt to establish the WebSocket connection with the constructed URL
         # Only pass ssl if it's not None
         if self._ssl is None:
-            return await asyncio.wait_for(websockets.connect(full_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout), self._timeout)
+            return await asyncio.wait_for(
+                websockets.connect(
+                    full_url,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                ),
+                self._timeout,
+            )
         else:
             return await asyncio.wait_for(
-                websockets.connect(full_url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout, ssl=self._ssl), self._timeout
+                websockets.connect(
+                    full_url,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    ssl=self._ssl,
+                ),
+                self._timeout,
             )
 
     async def _send_refresh_token(self, token_refresh_interval):
@@ -261,7 +288,9 @@ class WebsocketRPCConnection:
             await self.open()
 
         try:
+            self._last_message = data  # Store the message before sending
             await self._websocket.send(data)
+            self._last_message = None  # Clear after successful send
         except Exception as exp:
             logger.error(f"Failed to send message: {exp}")
             raise exp
@@ -323,6 +352,11 @@ class WebsocketRPCConnection:
                                 retry,
                             )
                             await self.open()
+                            # Resend last message if there was one
+                            if self._last_message:
+                                logger.info("Resending last message after reconnection")
+                                await self._websocket.send(self._last_message)
+                                self._last_message = None
                             logger.warning(
                                 "Successfully reconnected to %s",
                                 self._server_url.split("?")[0],
@@ -353,6 +387,7 @@ class WebsocketRPCConnection:
     async def disconnect(self, reason=None):
         """Disconnect."""
         self._closed = True
+        self._last_message = None
         if self._websocket and not self._websocket.closed:
             await self._websocket.close(code=1000)
         if self._listen_task:
@@ -362,6 +397,46 @@ class WebsocketRPCConnection:
             self._refresh_token_task.cancel()
             self._refresh_token_task = None
         logger.info("Websocket connection disconnected (%s)", reason)
+
+    async def _on_message(self, message):
+        """Handle message."""
+        try:
+            if isinstance(message, str):
+                main = json.loads(message)
+                self._fire(main["type"], main)
+            elif isinstance(message, bytes):
+                try:
+                    unpacker = msgpack.Unpacker(
+                        io.BytesIO(message),
+                        max_buffer_size=max(512000, self._long_message_chunk_size * 2),
+                    )
+                    main = unpacker.unpack()
+                    # Add trusted context to the method call
+                    main["ctx"] = main.copy()
+                    main["ctx"].update(self.default_context)
+                    try:
+                        extra = unpacker.unpack()
+                        main.update(extra)
+                    except msgpack.exceptions.OutOfData:
+                        pass
+                    self._fire(main["type"], main)
+                except msgpack.exceptions.UnpackException as e:
+                    logger.error(f"Failed to unpack binary message: {e}")
+                    # Try to decode as UTF-8 as fallback
+                    try:
+                        text = message.decode("utf-8")
+                        main = json.loads(text)
+                        self._fire(main["type"], main)
+                    except Exception as e2:
+                        logger.error(f"Failed to decode message as UTF-8: {e2}")
+                        raise
+            elif isinstance(message, dict):
+                self._fire(message["type"], message)
+            else:
+                raise Exception(f"Invalid message type: {type(message)}")
+        except Exception as e:
+            logger.error(f"Error handling message: {e}")
+            raise
 
 
 def normalize_server_url(server_url):

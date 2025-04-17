@@ -505,3 +505,37 @@ export class Semaphore {
     }
   }
 }
+
+/**
+ * Check if the object is a generator
+ * @param {Object} obj - Object to check
+ * @returns {boolean} - True if the object is a generator
+ */
+export function isGenerator(obj) {
+  if (!obj) return false;
+
+  return (
+    typeof obj === "object" &&
+    typeof obj.next === "function" &&
+    typeof obj.throw === "function" &&
+    typeof obj.return === "function"
+  );
+}
+
+/**
+ * Check if an object is an async generator object
+ * @param {any} obj - Object to check
+ * @returns {boolean} True if object is an async generator object
+ */
+export function isAsyncGenerator(obj) {
+  if (!obj) return false;
+  // Check if it's an async generator object
+  return (
+    typeof obj === "object" &&
+    typeof obj.next === "function" &&
+    typeof obj.throw === "function" &&
+    typeof obj.return === "function" &&
+    Symbol.asyncIterator in Object(obj) &&
+    obj[Symbol.toStringTag] === "AsyncGenerator"
+  );
+}
