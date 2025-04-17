@@ -27,6 +27,14 @@ from .utils import (
 )
 from .utils.schema import schema_function
 
+try:
+    from pydantic import BaseModel
+    from .utils.pydantic import pydantic_encoder, pydantic_decoder
+
+    HAS_PYDANTIC = True
+except ImportError:
+    HAS_PYDANTIC = False
+
 CHUNK_SIZE = 1024 * 256
 API_VERSION = 3
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
@@ -298,6 +306,16 @@ class RPC(MessageEmitter):
         self._object_store = {
             "services": self._services,
         }
+
+        if HAS_PYDANTIC:
+            self.register_codec(
+                {
+                    "name": "pydantic_model",
+                    "type": BaseModel,
+                    "encoder": pydantic_encoder,
+                    "decoder": pydantic_decoder,
+                }
+            )
 
         if connection:
             self.add_service(
@@ -1767,6 +1785,18 @@ class RPC(MessageEmitter):
                     }
                 )
                 b_object["__rpc_object__"] = a_object
+
+            # Pydantic model decoding is now handled by the registered codec
+            # elif a_object["_rtype"] == "pydantic_model":
+            #     # This block should technically not be reached if the codec is registered
+            #     # but left here as a fallback/for clarity during transition
+            #     if HAS_PYDANTIC:
+            #         model_type = create_model_from_schema(a_object["_rschema"])
+            #         b_object = model_type(**a_object["_rvalue"])
+            #     else:
+            #         logger.warning("Received Pydantic model but Pydantic is not installed.")
+            #         b_object = a_object
+
             elif a_object["_rtype"] == "typedarray":
                 if self.NUMPY_MODULE:
                     b_object = self.NUMPY_MODULE.frombuffer(
