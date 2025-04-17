@@ -12,8 +12,6 @@ dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets<=13.
 [[project.authors]]
 name = "Wei Ouyang"
 email = "oeway007@gmail.com"
-
-[project]
 license = "MIT"
 
 [project.optional-dependencies]
