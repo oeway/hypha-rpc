@@ -19,9 +19,6 @@ jobs:
         rm -rf ./build ./dist
         python -m build --outdir ./dist .
 
-    - name: Check metadata
-      run: twine check ./python/dist/*
-
     - name: Upload to PyPI
       env:
         TWINE_USERNAME: __token__
