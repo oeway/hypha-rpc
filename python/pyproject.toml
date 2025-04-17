@@ -21,6 +21,7 @@ full = [ "aiortc; platform_system != 'Emscripten'", "zarr", "fastapi", "sse-star
 
 [tool.setuptools]
 include-package-data = true
+metadata-version = "2.1"
 
 [tool.setuptools.packages.find]
 include = [ "hypha_rpc*",]
