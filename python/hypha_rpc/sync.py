@@ -66,11 +66,28 @@ def convert_async_to_sync(async_func, loop, executor):
         kwargs = _encode_callables(kwargs, convert_sync_to_async, loop, executor)
 
         async def async_wrapper():
-            obj = await async_func(*args, **kwargs)
-            return _encode_callables(obj, convert_async_to_sync, loop, executor)
+            result = await async_func(*args, **kwargs)
+            # Handle async generators
+            if inspect.isasyncgen(result):
 
-        result = asyncio.run_coroutine_threadsafe(async_wrapper(), loop).result()
-        return result
+                def sync_generator():
+                    while True:
+                        try:
+                            # Get next item from async generator
+                            next_future = asyncio.run_coroutine_threadsafe(
+                                result.__anext__(), loop
+                            )
+                            item = next_future.result()
+                            yield _encode_callables(
+                                item, convert_async_to_sync, loop, executor
+                            )
+                        except StopAsyncIteration:
+                            break
+
+                return sync_generator()
+            return _encode_callables(result, convert_async_to_sync, loop, executor)
+
+        return asyncio.run_coroutine_threadsafe(async_wrapper(), loop).result()
 
     wrapped_sync._async = async_func
     return wrapped_sync

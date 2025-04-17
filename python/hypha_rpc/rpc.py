@@ -531,11 +531,11 @@ class RPC(MessageEmitter):
         """Get remote root service."""
         config = config or {}
         assert self._connection.manager_id, "Manager id is not set"
-        
+
         max_retries = 20
         retry_delay = 0.5
         last_error = None
-        
+
         for attempt in range(max_retries):
             try:
                 svc = await self.get_remote_service(
@@ -544,10 +544,12 @@ class RPC(MessageEmitter):
                 return svc
             except Exception as e:
                 last_error = e
-                logger.warning(f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}")
+                logger.warning(
+                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
+                )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
-        
+
         # If we get here, all retries failed
         raise last_error
 
@@ -1610,6 +1612,54 @@ class RPC(MessageEmitter):
                     local_workspace=local_workspace,
                 ),
             }
+        elif inspect.isgenerator(a_object) or inspect.isasyncgen(a_object):
+            # Handle generator objects by storing them in the session and returning a generator method
+            assert isinstance(
+                session_id, str
+            ), "Session ID is required for generator encoding"
+            object_id = shortuuid.uuid()
+
+            # Store the generator in the session
+            store = self._get_session_store(session_id, create=True)
+            assert (
+                store is not None
+            ), f"Failed to create session store {session_id} due to invalid parent"
+
+            # Check if it's an async generator
+            is_async = inspect.isasyncgen(a_object)
+
+            # Define method to get next item from the generator
+            async def next_item_method():
+                if is_async:
+                    try:
+                        return await a_object.__anext__()
+                    except StopAsyncIteration:
+                        # Remove it from the session
+                        del store[object_id]
+                        return {"_rtype": "stop_iteration"}
+                else:
+                    try:
+                        return next(a_object)
+                    except StopIteration:
+                        del store[object_id]
+                        return {"_rtype": "stop_iteration"}
+
+            # Register the next_item method in the session
+            store[object_id] = next_item_method
+
+            # Create a method that will be used to fetch the next item from the generator
+            b_object = {
+                "_rtype": "generator",
+                "_rserver": self._server_base_url,
+                "_rtarget": (
+                    f"{local_workspace}/{self._client_id}"
+                    if local_workspace
+                    else self._client_id
+                ),
+                "_rmethod": f"{session_id}.{object_id}",
+                "_rpromise": "*",
+                "_rdoc": "Remote generator",
+            }
         elif isinstance(a_object, (list, dict)):
             keys = range(len(a_object)) if isarray else a_object.keys()
             b_object = [] if isarray else {}
@@ -1751,6 +1801,39 @@ class RPC(MessageEmitter):
                     + "\n"
                     + (a_object.get("_rtrace") if a_object.get("_rtrace") else "")
                 )
+            elif a_object["_rtype"] == "generator":
+                # Create an async generator function that will produce items from the remote generator
+                gen_method = self._generate_remote_method(
+                    a_object,
+                    remote_parent=remote_parent,
+                    local_parent=local_parent,
+                    remote_workspace=remote_workspace,
+                    local_workspace=local_workspace,
+                )
+
+                # Create an async generator proxy
+                async def async_generator_proxy():
+                    try:
+                        while True:
+                            try:
+                                next_item = await gen_method()
+                                # Check for StopIteration signal
+                                if (
+                                    isinstance(next_item, dict)
+                                    and next_item.get("_rtype") == "stop_iteration"
+                                ):
+                                    break
+                                yield next_item
+                            except StopAsyncIteration:
+                                break
+                            except StopIteration:
+                                break
+                    except Exception as e:
+                        # Properly propagate exceptions
+                        logger.error(f"Error in generator: {e}")
+                        raise
+
+                b_object = async_generator_proxy()
             else:
                 # make sure all the interface functions are decoded
                 temp = a_object["_rtype"]

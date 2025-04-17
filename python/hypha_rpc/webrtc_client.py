@@ -56,10 +56,21 @@ class WebRTCConnection:
         self._logger = logger
         self._handle_disconnected = None
         self._handle_connected = lambda x: None
-        self._data_channel.on("open", self._handle_connected)
+        self._last_message = None  # Store the last sent message
+        self._data_channel.on("open", self._on_channel_open)
         self._data_channel.on("message", self.handle_message)
         self._data_channel.on("close", self.closed)
         self.manager_id = None
+
+    async def _on_channel_open(self, event):
+        """Handle channel open event."""
+        await self._handle_connected(event)
+        # Resend last message if there was one
+        if self._last_message:
+            if self._logger:
+                self._logger.info("Resending last message after reconnection")
+            self._data_channel.send(self._last_message)
+            self._last_message = None
 
     def handle_message(self, data):
         """Register a message handler."""
@@ -96,7 +107,9 @@ class WebRTCConnection:
             raise Exception("No handler for message")
 
         try:
+            self._last_message = data  # Store the message before sending
             self._data_channel.send(data)
+            self._last_message = None  # Clear after successful send
         except Exception as exp:
             if self._logger:
                 self._logger.error("Failed to send data, error: %s", exp)
@@ -104,6 +117,7 @@ class WebRTCConnection:
 
     async def disconnect(self, reason=None):
         """Disconnect."""
+        self._last_message = None  # Clear last message on disconnect
         self._data_channel = None
         if self._logger:
             self._logger.info("Data channel connection disconnected (%s)", reason)

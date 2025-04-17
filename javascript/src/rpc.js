@@ -12,6 +12,8 @@ import {
   convertCase,
   expandKwargs,
   Semaphore,
+  isAsyncGenerator,
+  isGenerator,
 } from "./utils";
 import { schemaFunction } from "./utils/schema";
 
@@ -529,22 +531,24 @@ export class RPC extends MessageEmitter {
 
   async get_manager_service(config) {
     config = config || {};
-    
+
     // Add retry logic
     const maxRetries = 20;
     const retryDelay = 500; // 500ms
-    
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       if (!this._connection.manager_id) {
         if (attempt < maxRetries - 1) {
-          console.warn(`Manager ID not set, retrying in ${retryDelay}ms (attempt ${attempt+1}/${maxRetries})`);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          console.warn(
+            `Manager ID not set, retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
           continue;
         } else {
           throw new Error("Manager ID not set after maximum retries");
         }
       }
-      
+
       try {
         const svc = await this.get_remote_service(
           `*/${this._connection.manager_id}:default`,
@@ -553,8 +557,10 @@ export class RPC extends MessageEmitter {
         return svc;
       } catch (e) {
         if (attempt < maxRetries - 1) {
-          console.warn(`Failed to get manager service, retrying in ${retryDelay}ms: ${e.message}`);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          console.warn(
+            `Failed to get manager service, retrying in ${retryDelay}ms: ${e.message}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
         } else {
           throw e;
         }
@@ -1500,7 +1506,59 @@ export class RPC extends MessageEmitter {
       return bObject;
     }
 
-    if (typeof aObject === "function") {
+    if (isGenerator(aObject) || isAsyncGenerator(aObject)) {
+      // Handle generator functions and generator objects
+      assert(
+        session_id && typeof session_id === "string",
+        "Session ID is required for generator encoding",
+      );
+      const object_id = randId();
+
+      // Get the session store
+      const store = this._get_session_store(session_id, true);
+      assert(
+        store !== null,
+        `Failed to create session store ${session_id} due to invalid parent`,
+      );
+
+      // Check if it's an async generator
+      const isAsync = isAsyncGenerator(aObject);
+
+      // Define method to get next item from the generator
+      const nextItemMethod = async () => {
+        if (isAsync) {
+          const iterator = aObject;
+          const result = await iterator.next();
+          if (result.done) {
+            delete store[object_id];
+            return { _rtype: "stop_iteration" };
+          }
+          return result.value;
+        } else {
+          const iterator = aObject;
+          const result = iterator.next();
+          if (result.done) {
+            delete store[object_id];
+            return { _rtype: "stop_iteration" };
+          }
+          return result.value;
+        }
+      };
+
+      // Store the next_item method in the session
+      store[object_id] = nextItemMethod;
+
+      // Create a method that will be used to fetch the next item from the generator
+      bObject = {
+        _rtype: "generator",
+        _rserver: this._server_base_url,
+        _rtarget: this._client_id,
+        _rmethod: `${session_id}.${object_id}`,
+        _rpromise: "*",
+        _rdoc: "Remote generator",
+      };
+      return bObject;
+    } else if (typeof aObject === "function") {
       if (this._method_annotations.has(aObject)) {
         let annotation = this._method_annotations.get(aObject);
         bObject = {
@@ -1746,6 +1804,38 @@ export class RPC extends MessageEmitter {
           remote_workspace,
           local_workspace,
         );
+      } else if (aObject._rtype === "generator") {
+        // Create a method to fetch next items from the remote generator
+        const gen_method = this._generate_remote_method(
+          aObject,
+          remote_parent,
+          local_parent,
+          remote_workspace,
+          local_workspace,
+        );
+
+        // Create an async generator proxy
+        async function* asyncGeneratorProxy() {
+          try {
+            while (true) {
+              try {
+                const next_item = await gen_method();
+                // Check for StopIteration signal
+                if (next_item && next_item._rtype === "stop_iteration") {
+                  break;
+                }
+                yield next_item;
+              } catch (error) {
+                console.error("Error in generator:", error);
+                throw error;
+              }
+            }
+          } catch (error) {
+            console.error("Error in generator:", error);
+            throw error;
+          }
+        }
+        bObject = asyncGeneratorProxy();
       } else if (aObject._rtype === "ndarray") {
         /*global nj tf*/
         //create build array/tensor if used in the plugin
