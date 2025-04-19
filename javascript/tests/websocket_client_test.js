@@ -6,12 +6,6 @@ import {
 } from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
 import { assert } from "../src/utils";
-import {
-  isAsyncGeneratorFunction,
-  isGeneratorFunction,
-  isAsyncGenerator,
-  isGenerator,
-} from "../src/utils";
 const SERVER_URL = "http://127.0.0.1:9394";
 
 class ImJoyPlugin {
@@ -95,6 +89,83 @@ describe("RPC", async () => {
         expect(value.__schema__.name).to.be.equal(key);
       }
     }
+    await api.disconnect();
+  }).timeout(20000);
+
+  it("should correctly handle schemaFunction annotation", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "schema-test-client",
+    });
+
+    // Define a function with schema annotations
+    const annotatedMultiply = schemaFunction((a, b) => a * b, {
+      name: "annotatedMultiply",
+      description: "Multiplies two numbers with type annotations.",
+      parameters: {
+        type: "object",
+        properties: {
+          a: { type: "number", description: "First number" },
+          b: { type: "number", description: "Second number" },
+        },
+        required: ["a", "b"],
+      },
+    });
+
+    // Register the service
+    const serviceInfo = await api.registerService({
+      id: "schema-test-service",
+      config: { visibility: "public" },
+      annotatedMultiply: annotatedMultiply,
+    });
+    // serviceInfo.service_schema.annotatedMultiply should be something like {"type": "function", "function": {"name": "annotatedMultiply", "description": "Multiplies two numbers with type annotations.", "parameters": {"type": "object", "properties": {"a": {"type": "number", "description": "First number"}, "b": {"type": "number", "description": "Second number"}}, "required": ["a", "b"]}}}
+    expect(serviceInfo.service_schema.annotatedMultiply.type).to.equal(
+      "function",
+    );
+    expect(serviceInfo.service_schema.annotatedMultiply.function.name).to.equal(
+      "annotatedMultiply",
+    );
+    expect(
+      serviceInfo.service_schema.annotatedMultiply.function.description,
+    ).to.equal("Multiplies two numbers with type annotations.");
+    expect(
+      serviceInfo.service_schema.annotatedMultiply.function.parameters.type,
+    ).to.equal("object");
+    expect(
+      serviceInfo.service_schema.annotatedMultiply.function.parameters
+        .properties.a.type,
+    ).to.equal("number");
+    expect(
+      serviceInfo.service_schema.annotatedMultiply.function.parameters
+        .properties.b.type,
+    ).to.equal("number");
+    expect(
+      serviceInfo.service_schema.annotatedMultiply.function.parameters.required,
+    ).to.deep.equal(["a", "b"]);
+
+    // Get the service back
+    const svc = await api.getService("schema-test-service");
+
+    // Verify the schema property exists and is correct
+    expect(svc.annotatedMultiply).to.exist;
+    expect(svc.annotatedMultiply.__schema__).to.be.a("object");
+    expect(svc.annotatedMultiply.__schema__.name).to.equal("annotatedMultiply");
+    expect(svc.annotatedMultiply.__schema__.description).to.equal(
+      "Multiplies two numbers with type annotations.",
+    );
+    expect(svc.annotatedMultiply.__schema__.parameters).to.deep.equal({
+      type: "object",
+      properties: {
+        a: { type: "number", description: "First number" },
+        b: { type: "number", description: "Second number" },
+      },
+      required: ["a", "b"],
+    });
+
+    // Test the function call itself
+    expect(await svc.annotatedMultiply(3, 4)).to.equal(12);
+
+    await api.unregisterService(serviceInfo.id);
     await api.disconnect();
   }).timeout(20000);
 

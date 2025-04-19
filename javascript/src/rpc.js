@@ -42,17 +42,15 @@ function indexObject(obj, is) {
 }
 
 function _get_schema(obj, name = null, skipContext = false) {
-  if (obj instanceof Object) {
+  if (Array.isArray(obj)) {
+    return obj.map((v, i) => _get_schema(v, null, skipContext));
+  } else if (typeof obj === "object" && obj !== null) {
     let schema = {};
     for (let k in obj) {
       schema[k] = _get_schema(obj[k], k, skipContext);
     }
     return schema;
-  }
-  if (obj instanceof Array) {
-    return obj.map((v, i) => _get_schema(v, null, skipContext));
-  }
-  if (typeof obj === "function") {
+  } else if (typeof obj === "function") {
     if (obj.__schema__) {
       const schema = JSON.parse(JSON.stringify(obj.__schema__));
       if (name) {
