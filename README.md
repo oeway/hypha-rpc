@@ -339,6 +339,113 @@ Note: When using generators across RPC:
  * Values are streamed one at a time, making it memory efficient for large datasets
  * Generators are great for implementing progress updates or streaming data
 
+## Type Annotations for LLM Function Calling
+
+Hypha RPC supports generating standardized function schemas based on type annotations, which is particularly useful for integrating with Large Language Models (LLMs) that support function calling (like OpenAI's models).
+
+### Python
+
+In Python, you can use standard type hints, docstrings, and Pydantic models along with the `@schema_function` decorator (from `hypha_rpc.utils.schema`) to automatically generate a JSON schema compatible with LLM function calling standards.
+
+**Example with basic types:**
+
+```python
+from hypha_rpc.utils.schema import schema_function
+
+@schema_function
+def get_current_weather(location: str, unit: str = "fahrenheit") -> str:
+    """Get the current weather in a given location.
+
+    Args:
+        location: The city and state, e.g. San Francisco, CA.
+        unit: The temperature unit, either "celsius" or "fahrenheit".
+
+    Returns:
+        A JSON string with the weather information.
+    """
+    # (Implementation details omitted for brevity)
+    import json
+    if "tokyo" in location.lower():
+        return json.dumps({"location": "Tokyo", "temperature": "10", "unit": unit})
+    # ... other locations ...
+    else:
+        return json.dumps({"location": location, "temperature": "unknown"})
+```
+
+**Example with Pydantic:**
+
+```python
+from pydantic import BaseModel, Field
+from hypha_rpc.utils.schema import schema_function
+
+class UserInfo(BaseModel):
+    """User information."""
+    name: str = Field(..., description="Name of the user")
+    email: str = Field(..., description="Email of the user")
+    age: int = Field(..., description="Age of the user")
+    address: str = Field(..., description="Address of the user")
+
+@schema_function
+def register_user(user_info: UserInfo) -> str:
+    """Register a new user."""
+    return f"User {user_info.name} registered"
+```
+
+The decorator attaches the generated schema to the function's `__schema__` attribute. When you register a service containing these decorated functions, the schema information is included in the service registration details, making it available for clients (or LLMs) to understand how to call the functions.
+
+```python
+# Example service registration
+await server.register_service({
+    "name": "User Service",
+    "id": "user-service",
+    "description": "Service for registering users",
+    "register_user": register_user # Decorated function
+})
+```
+
+### JavaScript
+
+JavaScript utilizes the `schemaFunction` utility (imported from `hypha-rpc/utils/schema.js` or re-exported by `hypha-rpc`) to achieve similar results.
+
+You provide the function implementation and a separate schema object detailing the function's name, description, and parameters (following JSON Schema conventions).
+
+**Example:**
+
+```javascript
+import { schemaFunction } from "./hypha-rpc.js"; // Adjust import path as needed
+
+// Define the function implementation
+const multiply = (a, b) => a * b;
+
+// Define the schema
+const multiplySchema = {
+    name: "multiply",
+    description: "Multiplies two numbers.",
+    parameters: {
+        type: "object",
+        properties: {
+            a: { type: "number", description: "First number" },
+            b: { type: "number", description: "Second number" },
+        },
+        required: ["a", "b"],
+        // Note: Return value schema is not explicitly part of this standard schema,
+        // but can be included in the description or a custom field if needed.
+    },
+};
+
+// Create the annotated function
+const annotatedMultiply = schemaFunction(multiply, multiplySchema);
+
+// Register the service
+await server.registerService({
+    id: "calculator-service",
+    config: { visibility: "public" },
+    multiply: annotatedMultiply, // Use the annotated function
+});
+```
+
+The `schemaFunction` utility attaches the provided schema to the `__schema__` property of the returned function object (`annotatedMultiply` in the example). When the service is registered, this schema is included, similar to the Python version.
+
 ## Peer-to-peer connection via WebRTC
 
 The current implementation requires all the traffic going through the websocket server. This is not ideal for large data transmission. Therefore, we implemented webRTC support in addition to the websocket connection. You can use the following two functions for enabling peer-to-peer communication between clients:
