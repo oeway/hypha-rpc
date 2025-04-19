@@ -1,6 +1,7 @@
 """Test the hypha server."""
 
 import asyncio
+from typing import Optional
 
 import numpy as np
 import pytest
@@ -43,7 +44,7 @@ if HAS_PYDANTIC:
         item_id: int = Field(..., description="The ID of the item")
         name: str = Field(..., description="The name of the item")
         price: float
-        is_offer: bool | None = Field(None, description="Whether this is an offer")
+        is_offer: Optional[bool] = Field(None, description="Whether this is an offer")
 
     @schema_function
     def process_test_data(data: TestData) -> str:
