@@ -104,7 +104,11 @@ async def test_schema(websocket_server):
 async def test_service_with_builtin_key(websocket_server):
     """Test schema."""
     async with connect_to_server(
-        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+        {
+            "name": "my app",
+            "server_url": WS_SERVER_URL,
+            "client_id": "my-app",
+        }
     ) as api:
         data = {}
         info = await api.register_service(

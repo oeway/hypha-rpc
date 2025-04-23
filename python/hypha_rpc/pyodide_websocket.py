@@ -135,6 +135,7 @@ class PyodideWebsocketRPCConnection:
         token_refresh_interval=2 * 60 * 60,
         ping_interval=20,
         ping_timeout=20,
+        extra_headers=None,
     ):
         assert server_url and client_id, "server_url and client_id are required"
         self._server_url = server_url
@@ -156,6 +157,7 @@ class PyodideWebsocketRPCConnection:
         self.manager_id = None
         self._token_refresh_interval = token_refresh_interval
         self._refresh_token_task = None
+        self._extra_headers = extra_headers
         assert ssl is None, "SSL is not supported in Pyodide"
         if self._server_url.startswith("wss://local-hypha-server:"):
             self._WebSocketClass = js.eval(
