@@ -59,6 +59,7 @@ class WebsocketRPCConnection:
         token_refresh_interval=2 * 60 * 60,
         ping_interval=20,
         ping_timeout=20,
+        extra_headers=None,
     ):
         """Set up instance."""
         self._websocket = None
@@ -82,6 +83,7 @@ class WebsocketRPCConnection:
         self._token_refresh_interval = token_refresh_interval
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
+        self._extra_headers = extra_headers
         if ssl == False:
             import ssl as ssl_module
 
@@ -121,6 +123,7 @@ class WebsocketRPCConnection:
                         server_url,
                         ping_interval=self._ping_interval,
                         ping_timeout=self._ping_timeout,
+                        extra_headers=self._extra_headers,
                     ),
                     self._timeout,
                 )
@@ -131,6 +134,7 @@ class WebsocketRPCConnection:
                         ping_interval=self._ping_interval,
                         ping_timeout=self._ping_timeout,
                         ssl=self._ssl,
+                        extra_headers=self._extra_headers,
                     ),
                     self._timeout,
                 )
@@ -175,6 +179,7 @@ class WebsocketRPCConnection:
                     full_url,
                     ping_interval=self._ping_interval,
                     ping_timeout=self._ping_timeout,
+                    extra_headers=self._extra_headers,
                 ),
                 self._timeout,
             )
@@ -185,6 +190,7 @@ class WebsocketRPCConnection:
                     ping_interval=self._ping_interval,
                     ping_timeout=self._ping_timeout,
                     ssl=self._ssl,
+                    extra_headers=self._extra_headers,
                 ),
                 self._timeout,
             )
@@ -603,6 +609,7 @@ async def _connect_to_server(config):
         token_refresh_interval=config.get("token_refresh_interval", 2 * 60 * 60),
         ping_interval=config.get("ping_interval", 20.0),
         ping_timeout=config.get("ping_timeout", 20.0),
+        extra_headers=config.get("extra_headers"),
     )
     connection_info = await connection.open()
     assert connection_info, (
