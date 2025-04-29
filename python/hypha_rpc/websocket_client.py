@@ -357,14 +357,21 @@ class WebsocketRPCConnection:
                                 self._server_url.split("?")[0],
                                 retry,
                             )
-                            await self.open()
+                            # Open the connection, this will trigger the on_connected callback
+                            connection_info = await self.open()
+
+                            # Wait a short time for services to be registered
+                            # This gives time for the on_connected callback to complete
+                            # which includes re-registering all services to the server
+                            await asyncio.sleep(0.5)
+
                             # Resend last message if there was one
                             if self._last_message:
                                 logger.info("Resending last message after reconnection")
                                 await self._websocket.send(self._last_message)
                                 self._last_message = None
                             logger.warning(
-                                "Successfully reconnected to %s",
+                                "Successfully reconnected to %s (services re-registered)",
                                 self._server_url.split("?")[0],
                             )
                             break

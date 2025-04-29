@@ -338,13 +338,40 @@ export class RPC extends MessageEmitter {
       const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
           console.debug("Connection established, reporting services...");
-          const manager = await this.get_manager_service({
-            timeout: 10,
-            case_conversion: "camel",
-          });
-          for (let service of Object.values(this._services)) {
-            const serviceInfo = this._extract_service_info(service);
-            await manager.registerService(serviceInfo);
+          try {
+            const manager = await this.get_manager_service({
+              timeout: 10,
+              case_conversion: "camel",
+            });
+            const services = Object.values(this._services);
+            const servicesCount = services.length;
+            let registeredCount = 0;
+
+            for (let service of services) {
+              try {
+                const serviceInfo = this._extract_service_info(service);
+                await manager.registerService(serviceInfo);
+                registeredCount++;
+              } catch (serviceError) {
+                console.error(
+                  `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
+                );
+              }
+            }
+
+            if (registeredCount === servicesCount) {
+              console.info(
+                `Successfully registered all ${registeredCount} services with the server`,
+              );
+            } else {
+              console.warn(
+                `Only registered ${registeredCount} out of ${servicesCount} services with the server`,
+              );
+            }
+          } catch (managerError) {
+            console.error(
+              `Failed to get manager service for registering services: ${managerError}`,
+            );
           }
         } else {
           // console.debug("Connection established", connectionInfo);

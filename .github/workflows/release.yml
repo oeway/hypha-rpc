@@ -32,6 +32,7 @@ jobs:
 
   release-python:
     name: Release Python
+    if: github.event_name != 'pull_request'
     needs: check
     runs-on: ubuntu-latest
     defaults:
@@ -104,6 +105,7 @@ jobs:
 
   release-js:
     name: Release Javascript
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
