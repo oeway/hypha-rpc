@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import Optional
+import time  # Import time module for blocking sleep
 
 import numpy as np
 import pytest
@@ -929,3 +930,120 @@ async def test_schema_annotation_python(websocket_server):
 
     await server.disconnect()
     await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_service_recovery_after_disconnection(websocket_server):
+    """Test that services are properly re-registered after an unexpected disconnection."""
+    # Create a connection to the server
+    print("\n=== TEST SERVICE RECOVERY STARTING ===")
+    ws = await connect_to_server(
+        {"name": "reconnect-test", "server_url": WS_SERVER_URL}
+    )
+
+    # Register a service with a simple method
+    test_data = {"counter": 0}
+
+    print("Registering test service...")
+    service_info = await ws.register_service(
+        {
+            "name": "Recovery Test Service",
+            "id": "recovery-service",
+            "description": "Service to test recovery after disconnection",
+            "config": {
+                "visibility": "protected",
+                "run_in_executor": True,
+            },
+            "increment": lambda: test_data.update({"counter": test_data["counter"] + 1})
+            or test_data["counter"],
+            "get_counter": lambda: test_data["counter"],
+        }
+    )
+
+    # Verify the ID format to make sure it's properly registered
+    assert (
+        "/" in service_info["id"] and ":" in service_info["id"]
+    ), "Service ID should be absolute"
+    print(f"Service registered with ID: {service_info['id']}")
+
+    # Verify the service works initially
+    svc = await ws.get_service("recovery-service")
+    print("Testing service before disconnection:")
+    print(f"Counter value: {await svc.get_counter()}")
+    print(f"Incrementing: {await svc.increment()}")
+
+    # Create a second client to verify the service after reconnection
+    print("\nCreating second client connection...")
+    ws2 = await connect_to_server(
+        {
+            "name": "client-test",
+            "server_url": WS_SERVER_URL,
+            "workspace": ws.config.workspace,
+            "token": await ws.generate_token(),
+        }
+    )
+
+    svc2 = await ws2.get_service("recovery-service")
+    print("Second client service test:")
+    print(f"Counter value: {await svc2.get_counter()}")
+
+    # Test multiple disconnection methods (choose one by uncommenting)
+
+    # Method 1: Block the event loop with a synchronous sleep
+    # This is the most realistic way to simulate network disruption
+    print("\n=== SIMULATING NETWORK DISCONNECTION ===")
+    print("Blocking event loop with time.sleep() for 8 seconds...")
+    time.sleep(8)  # Sleep for 8 seconds to ensure ping timeout (usually 5-6 seconds)
+
+    # Method 2: Directly close the WebSocket connection with an error code
+    # Uncomment to use this method instead
+    """
+    print("\n===== SIMULATING NETWORK DISCONNECTION =====")
+    print("Closing WebSocket connection with error code...")
+    await ws.rpc._connection._websocket.close(1002)  # Protocol error will trigger reconnection
+    """
+
+    # Give time for reconnection to complete
+    print("Waiting for reconnection to complete...")
+    await asyncio.sleep(3)
+
+    # Now verify the service is available again after reconnection
+    # and maintains its state
+    print("\n=== VERIFYING SERVICE AFTER RECONNECTION ===")
+
+    # Test with the original client
+    try:
+        # This might fail initially as reconnection might still be in progress
+        print("Attempting to get service from first client...")
+        svc = await ws.get_service("recovery-service")
+        print("Successfully reconnected! Service accessible from first client.")
+    except Exception as e:
+        print(f"First attempt failed (expected during reconnection): {e}")
+        await asyncio.sleep(2)  # Give more time for reconnection
+        print("Retrying after delay...")
+        svc = await ws.get_service("recovery-service")
+        print("Successfully reconnected after retry!")
+
+    # Verify the service maintained its state and is functional
+    counter_value = await svc.get_counter()
+    print(f"Counter value after reconnection: {counter_value}")
+    assert counter_value == 1, f"Counter should be 1, got {counter_value}"
+
+    increment_value = await svc.increment()
+    print(f"Increment result after reconnection: {increment_value}")
+    assert increment_value == 2, f"Increment should return 2, got {increment_value}"
+
+    # Verify with the second client that the service is available
+    print("\nVerifying with second client...")
+    svc2 = await ws2.get_service("recovery-service")
+    counter_value = await svc2.get_counter()
+    print(f"Counter value from second client: {counter_value}")
+    assert (
+        counter_value == 2
+    ), f"Counter from second client should be 2, got {counter_value}"
+
+    print("\n=== RECONNECTION TEST COMPLETED SUCCESSFULLY! ===")
+
+    # Clean up
+    await ws.disconnect()
+    await ws2.disconnect()

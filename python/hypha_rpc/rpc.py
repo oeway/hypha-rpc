@@ -353,12 +353,34 @@ class RPC(MessageEmitter):
             async def on_connected(connection_info):
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
-                    manager = await self.get_manager_service(
-                        {"timeout": 20, "case_conversion": "snake"}
-                    )
-                    for service in list(self._services.values()):
-                        service_info = self._extract_service_info(service)
-                        await manager.register_service(service_info)
+                    try:
+                        manager = await self.get_manager_service(
+                            {"timeout": 20, "case_conversion": "snake"}
+                        )
+                        services_count = len(self._services)
+                        registered_count = 0
+                        for service in list(self._services.values()):
+                            try:
+                                service_info = self._extract_service_info(service)
+                                await manager.register_service(service_info)
+                                registered_count += 1
+                            except Exception as service_error:
+                                logger.error(
+                                    f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
+                                )
+
+                        if registered_count == services_count:
+                            logger.info(
+                                f"Successfully registered all {registered_count} services with the server"
+                            )
+                        else:
+                            logger.warning(
+                                f"Only registered {registered_count} out of {services_count} services with the server"
+                            )
+                    except Exception as manager_error:
+                        logger.error(
+                            f"Failed to get manager service for registering services: {manager_error}"
+                        )
                 else:
                     logger.info("Connection established: %s", connection_info)
                 if connection_info:

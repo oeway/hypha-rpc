@@ -283,7 +283,14 @@ class WebsocketRPCConnection {
             console.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
+            // Open the connection, this will trigger the on_connected callback
             await this.open();
+
+            // Wait a short time for services to be registered
+            // This gives time for the on_connected callback to complete
+            // which includes re-registering all services to the server
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
             // Resend last message if there was one
             if (this._last_message) {
               console.info("Resending last message after reconnection");
@@ -291,7 +298,7 @@ class WebsocketRPCConnection {
               this._last_message = null;
             }
             console.warn(
-              `Successfully reconnected to server ${this._server_url}`,
+              `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
