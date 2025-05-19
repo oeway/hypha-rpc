@@ -3,4 +3,3 @@ zarr==2.18.2
 msgpack==1.0.8
 websockets==14.0
 shortuuid==1.0.13
-fastmcp==2.3.4
