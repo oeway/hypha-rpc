@@ -33,7 +33,7 @@ try:
     IS_PYODIDE = True
 except ImportError:
     import websockets
-
+    from websockets.protocol import State
     IS_PYODIDE = False
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -59,7 +59,7 @@ class WebsocketRPCConnection:
         token_refresh_interval=2 * 60 * 60,
         ping_interval=20,
         ping_timeout=20,
-        extra_headers=None,
+        additional_headers=None,
     ):
         """Set up instance."""
         self._websocket = None
@@ -83,7 +83,7 @@ class WebsocketRPCConnection:
         self._token_refresh_interval = token_refresh_interval
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
-        self._extra_headers = extra_headers
+        self._additional_headers = additional_headers
         if ssl == False:
             import ssl as ssl_module
 
@@ -123,7 +123,7 @@ class WebsocketRPCConnection:
                         server_url,
                         ping_interval=self._ping_interval,
                         ping_timeout=self._ping_timeout,
-                        extra_headers=self._extra_headers,
+                        additional_headers=self._additional_headers,
                     ),
                     self._timeout,
                 )
@@ -134,7 +134,7 @@ class WebsocketRPCConnection:
                         ping_interval=self._ping_interval,
                         ping_timeout=self._ping_timeout,
                         ssl=self._ssl,
-                        extra_headers=self._extra_headers,
+                        additional_headers=self._additional_headers,
                     ),
                     self._timeout,
                 )
@@ -179,7 +179,7 @@ class WebsocketRPCConnection:
                     full_url,
                     ping_interval=self._ping_interval,
                     ping_timeout=self._ping_timeout,
-                    extra_headers=self._extra_headers,
+                    additional_headers=self._additional_headers,
                 ),
                 self._timeout,
             )
@@ -190,7 +190,7 @@ class WebsocketRPCConnection:
                     ping_interval=self._ping_interval,
                     ping_timeout=self._ping_timeout,
                     ssl=self._ssl,
-                    extra_headers=self._extra_headers,
+                    additional_headers=self._additional_headers,
                 ),
                 self._timeout,
             )
@@ -200,7 +200,7 @@ class WebsocketRPCConnection:
         try:
             assert self._websocket, "Websocket connection is not established"
             await asyncio.sleep(2)
-            while not self._closed and self._websocket and not self._websocket.closed:
+            while not self._closed and self._websocket and self._websocket.state != State.CLOSED:
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
@@ -290,7 +290,7 @@ class WebsocketRPCConnection:
         """Emit a message."""
         if self._closed:
             raise Exception("Connection is closed")
-        if not self._websocket or self._websocket.closed:
+        if not self._websocket or self._websocket.state == State.CLOSED:
             await self.open()
 
         try:
@@ -306,7 +306,7 @@ class WebsocketRPCConnection:
         self._enable_reconnect = True
         self._closed = False
         try:
-            while not self._closed and not self._websocket.closed:
+            while not self._closed and not self._websocket.state == State.CLOSED:
                 data = await self._websocket.recv()
                 if isinstance(data, str):
                     data = json.loads(data)
@@ -331,7 +331,7 @@ class WebsocketRPCConnection:
             logger.info("Websocket connection closed: %s", e)
         finally:
             # Handle unexpected disconnection or disconnection caused by the server
-            if not self._closed and self._websocket.closed:
+            if not self._closed and self._websocket.state == State.CLOSED:
                 # normal closure, means no need to recover
                 if self._websocket.close_code in [1000, 1001]:
                     logger.info(
@@ -357,14 +357,21 @@ class WebsocketRPCConnection:
                                 self._server_url.split("?")[0],
                                 retry,
                             )
-                            await self.open()
+                            # Open the connection, this will trigger the on_connected callback
+                            connection_info = await self.open()
+
+                            # Wait a short time for services to be registered
+                            # This gives time for the on_connected callback to complete
+                            # which includes re-registering all services to the server
+                            await asyncio.sleep(0.5)
+
                             # Resend last message if there was one
                             if self._last_message:
                                 logger.info("Resending last message after reconnection")
                                 await self._websocket.send(self._last_message)
                                 self._last_message = None
                             logger.warning(
-                                "Successfully reconnected to %s",
+                                "Successfully reconnected to %s (services re-registered)",
                                 self._server_url.split("?")[0],
                             )
                             break
@@ -394,7 +401,7 @@ class WebsocketRPCConnection:
         """Disconnect."""
         self._closed = True
         self._last_message = None
-        if self._websocket and not self._websocket.closed:
+        if self._websocket and not self._websocket.state == State.CLOSED:
             await self._websocket.close(code=1000)
         if self._listen_task:
             self._listen_task.cancel()
@@ -609,7 +616,7 @@ async def _connect_to_server(config):
         token_refresh_interval=config.get("token_refresh_interval", 2 * 60 * 60),
         ping_interval=config.get("ping_interval", 20.0),
         ping_timeout=config.get("ping_timeout", 20.0),
-        extra_headers=config.get("extra_headers"),
+        additional_headers=config.get("additional_headers"),
     )
     connection_info = await connection.open()
     assert connection_info, (

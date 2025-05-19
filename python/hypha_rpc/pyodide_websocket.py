@@ -135,7 +135,7 @@ class PyodideWebsocketRPCConnection:
         token_refresh_interval=2 * 60 * 60,
         ping_interval=20,
         ping_timeout=20,
-        extra_headers=None,
+        additional_headers=None,
     ):
         assert server_url and client_id, "server_url and client_id are required"
         self._server_url = server_url
@@ -157,7 +157,7 @@ class PyodideWebsocketRPCConnection:
         self.manager_id = None
         self._token_refresh_interval = token_refresh_interval
         self._refresh_token_task = None
-        self._extra_headers = extra_headers
+        self._additional_headers = additional_headers
         assert ssl is None, "SSL is not supported in Pyodide"
         if self._server_url.startswith("wss://local-hypha-server:"):
             self._WebSocketClass = js.eval(
@@ -403,14 +403,21 @@ class PyodideWebsocketRPCConnection:
                         logger.warning(
                             f"Reconnecting to {self._server_url.split('?')[0]} (attempt #{retry})"
                         )
-                        await self.open()
+                        # Open the connection, this will trigger the on_connected callback
+                        connection_info = await self.open()
+
+                        # Wait a short time for services to be registered
+                        # This gives time for the on_connected callback to complete
+                        # which includes re-registering all services to the server
+                        await asyncio.sleep(0.5)
+
                         # Resend last message if there was one
                         if self._last_message:
                             logger.info("Resending last message after reconnection")
                             self._websocket.send(to_js(self._last_message))
                             self._last_message = None
                         logger.warning(
-                            f"Successfully reconnected to the server {self._server_url.split('?')[0]}"
+                            f"Successfully reconnected to the server {self._server_url.split('?')[0]} (services re-registered)"
                         )
                     except ConnectionAbortedError as e:
                         logger.warning("Failed to reconnect, connection aborted: %s", e)

@@ -353,12 +353,34 @@ class RPC(MessageEmitter):
             async def on_connected(connection_info):
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
-                    manager = await self.get_manager_service(
-                        {"timeout": 20, "case_conversion": "snake"}
-                    )
-                    for service in list(self._services.values()):
-                        service_info = self._extract_service_info(service)
-                        await manager.register_service(service_info)
+                    try:
+                        manager = await self.get_manager_service(
+                            {"timeout": 20, "case_conversion": "snake"}
+                        )
+                        services_count = len(self._services)
+                        registered_count = 0
+                        for service in list(self._services.values()):
+                            try:
+                                service_info = self._extract_service_info(service)
+                                await manager.register_service(service_info)
+                                registered_count += 1
+                            except Exception as service_error:
+                                logger.error(
+                                    f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
+                                )
+
+                        if registered_count == services_count:
+                            logger.info(
+                                f"Successfully registered all {registered_count} services with the server"
+                            )
+                        else:
+                            logger.warning(
+                                f"Only registered {registered_count} out of {services_count} services with the server"
+                            )
+                    except Exception as manager_error:
+                        logger.error(
+                            f"Failed to get manager service for registering services: {manager_error}"
+                        )
                 else:
                     logger.info("Connection established: %s", connection_info)
                 if connection_info:
@@ -1190,7 +1212,9 @@ class RPC(MessageEmitter):
         remote_method.__rpc_object__ = (
             encoded_method.copy()
         )  # pylint: disable=protected-access
-        remote_method.__name__ = method_id.split(".")[-1]
+        remote_method.__name__ = (
+            encoded_method.get("_rname") or method_id.split(".")[-1]
+        )
         # remove the hash part in the method name
         if "#" in remote_method.__name__:
             remote_method.__name__ = remote_method.__name__.split("#")[-1]
@@ -1519,6 +1543,7 @@ class RPC(MessageEmitter):
                     ),
                     "_rmethod": annotation["method_id"],
                     "_rpromise": "*",
+                    "_rname": getattr(a_object, "__name__", None),
                     "_rasync": inspect.iscoroutinefunction(a_object),
                 }
             else:
@@ -1536,6 +1561,7 @@ class RPC(MessageEmitter):
                         else self._client_id
                     ),
                     "_rmethod": f"{session_id}.{object_id}",
+                    "_rname": getattr(a_object, "__name__", None),
                     "_rpromise": "*",
                 }
                 store = self._get_session_store(session_id, create=True)
