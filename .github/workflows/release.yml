@@ -136,7 +136,7 @@ jobs:
         uses: actions/setup-python@v4.5.0
         with:
           python-version: "3.11"
-      - run: pip install "hypha>=0.20.53"
+      - run: pip install "redis==5.2.0" "hypha>=0.20.53"
       - run: npm run test
       - run: npm run build
       - name: Publish package on NPM
