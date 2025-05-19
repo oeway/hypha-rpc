@@ -1245,7 +1245,6 @@ export class RPC extends MessageEmitter {
     if (remote_method.__name__.includes("#")) {
       remote_method.__name__ = remote_method.__name__.split("#")[1];
     }
-    remote_method.name = remote_method.__name__;
     remote_method.__doc__ =
       encoded_method._rdoc || `Remote method: ${method_id}`;
     remote_method.__schema__ = encoded_method._rschema;
