@@ -33,7 +33,7 @@ try:
     IS_PYODIDE = True
 except ImportError:
     import websockets
-
+    from websockets.protocol import State
     IS_PYODIDE = False
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -200,7 +200,7 @@ class WebsocketRPCConnection:
         try:
             assert self._websocket, "Websocket connection is not established"
             await asyncio.sleep(2)
-            while not self._closed and self._websocket and not self._websocket.closed:
+            while not self._closed and self._websocket and self._websocket.state != State.CLOSED:
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
@@ -290,7 +290,7 @@ class WebsocketRPCConnection:
         """Emit a message."""
         if self._closed:
             raise Exception("Connection is closed")
-        if not self._websocket or self._websocket.closed:
+        if not self._websocket or self._websocket.state == State.CLOSED:
             await self.open()
 
         try:
@@ -306,7 +306,7 @@ class WebsocketRPCConnection:
         self._enable_reconnect = True
         self._closed = False
         try:
-            while not self._closed and not self._websocket.closed:
+            while not self._closed and not self._websocket.state == State.CLOSED:
                 data = await self._websocket.recv()
                 if isinstance(data, str):
                     data = json.loads(data)
@@ -331,7 +331,7 @@ class WebsocketRPCConnection:
             logger.info("Websocket connection closed: %s", e)
         finally:
             # Handle unexpected disconnection or disconnection caused by the server
-            if not self._closed and self._websocket.closed:
+            if not self._closed and self._websocket.state == State.CLOSED:
                 # normal closure, means no need to recover
                 if self._websocket.close_code in [1000, 1001]:
                     logger.info(
@@ -401,7 +401,7 @@ class WebsocketRPCConnection:
         """Disconnect."""
         self._closed = True
         self._last_message = None
-        if self._websocket and not self._websocket.closed:
+        if self._websocket and not self._websocket.state == State.CLOSED:
             await self._websocket.close(code=1000)
         if self._listen_task:
             self._listen_task.cancel()
