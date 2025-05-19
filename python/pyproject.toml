@@ -14,7 +14,7 @@ name = "Wei Ouyang"
 email = "oeway007@gmail.com"
 
 [project.optional-dependencies]
-full = [ "aiortc; platform_system != 'Emscripten'", "zarr", "fastapi", "sse-starlette", "openai", "simpervisor",]
+full = [ "aiortc; platform_system != 'Emscripten'", "zarr", "fastapi", "sse-starlette", "openai", "simpervisor", "fastmcp>=2.3.4"]
 
 [tool.setuptools]
 include-package-data = true
