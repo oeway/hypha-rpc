@@ -10,14 +10,22 @@ from hypha_rpc.utils.serve import register_asgi_service
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from fastmcp.tools import Tool
-from fastmcp.prompts.prompt import Prompt, PromptArgument, compress_schema, validate_call
+import inspect
+from fastmcp.prompts.prompt import (
+    Prompt,
+    PromptArgument,
+    compress_schema,
+    validate_call,
+)
 
 
 logger = logging.getLogger("hypha_rpc.utils.mcp")
 
+
 def create_fn(read: Callable):
     async def fn():
         return await read()
+
     return fn
 
 
@@ -27,17 +35,18 @@ def create_prompt(prompt_data: dict):
 
     Args:
         prompt_data: Dictionary containing prompt information including read function
-    
+
     Returns:
         Prompt instance
     """
-    fn = prompt_data["read"]
-    schema = getattr(fn, "__schema__", {}) or {}
+    # extract the original read function and its schema
+    orig_fn = prompt_data.get("read")
+    schema = getattr(orig_fn, "__schema__", {}) or {}
     parameters = schema.get("parameters", {})
-    # convert arguments to PromptArgument
+    # convert to JSON schema for arguments
     parameters = compress_schema(parameters, prune_params=None)
 
-    # Convert parameters to PromptArguments
+    # build PromptArgument list
     arguments: list[PromptArgument] = []
     if "properties" in parameters:
         for param_name, param in parameters["properties"].items():
@@ -49,15 +58,24 @@ def create_prompt(prompt_data: dict):
                 )
             )
 
-    # ensure the arguments are properly cast
+    # wrap the read function to ensure it is awaited if needed
+    async def fn(**kwargs: Any):
+        result = orig_fn(**kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+        # ensure the arguments are properly cast
+
     fn = validate_call(fn)
+    # create the Prompt with wrapped function
     return Prompt(
         name=prompt_data.get("name", "unnamed_prompt"),
         description=prompt_data.get("description"),
         tags=prompt_data.get("tags", set()),
         arguments=arguments,
-        fn=fn
+        fn=fn,
     )
+
 
 async def create_mcp_from_service(service: dict) -> FastMCP:
     """
@@ -86,32 +104,24 @@ async def create_mcp_from_service(service: dict) -> FastMCP:
                         name=resource_data.get("name"),
                         description=resource_data.get("description"),
                         mime_type=resource_data.get("mime_type"),
-                        tags=resource_data.get("tags", set())
+                        tags=resource_data.get("tags", set()),
                     )
-                    resource_name = resource_data.get('name', resource_data['uri'])
-                    logger.debug(
-                        f"Added resource {resource_name} to service {name}"
-                    )
+                    resource_name = resource_data.get("name", resource_data["uri"])
+                    logger.debug(f"Added resource {resource_name} to service {name}")
                 except Exception as e:
-                    uri = resource_data.get('uri', 'unknown')
-                    logger.error(
-                        f"Failed to add resource {uri} to service {name}: {e}"
-                    )
+                    uri = resource_data.get("uri", "unknown")
+                    logger.error(f"Failed to add resource {uri} to service {name}: {e}")
                     raise e
         if "prompts" in service:
             prompts = service.get("prompts", [])
             for prompt_data in prompts:
                 try:
                     assert "read" in prompt_data and callable(prompt_data["read"])
-                    mcp._prompt_manager.add_prompt(
-                        create_prompt(prompt_data)
-                    )
-                    prompt_name = prompt_data.get('name', 'unnamed')
-                    logger.debug(
-                        f"Added prompt {prompt_name} to service {name}"
-                    )
+                    mcp._prompt_manager.add_prompt(create_prompt(prompt_data))
+                    prompt_name = prompt_data.get("name", "unnamed")
+                    logger.debug(f"Added prompt {prompt_name} to service {name}")
                 except Exception as e:
-                    prompt_name = prompt_data.get('name', 'unnamed')
+                    prompt_name = prompt_data.get("name", "unnamed")
                     logger.error(
                         f"Failed to add prompt {prompt_name} to service {name}: {e}"
                     )
@@ -127,9 +137,7 @@ async def create_mcp_from_service(service: dict) -> FastMCP:
             mcp._tool_manager.add_tool(tool)
             logger.debug(f"Added tool {tool.name} from service {name}")
         except Exception as e:
-            logger.error(
-                f"Failed to add tool {tool.name} from service {name}: {e}"
-            )
+            logger.error(f"Failed to add tool {tool.name} from service {name}: {e}")
             logger.exception(e)
     return mcp
 
@@ -157,9 +165,11 @@ def extract_tools(obj: Any, prefix: str = "") -> List[Tool]:
                 tool_list.extend(extract_tools(value, new_prefix))
     elif isinstance(obj, list):
         for i, value in enumerate(obj):
-            
+
             if callable(value):
-                new_prefix = f"{prefix}_{value.__name__}" if prefix else str(value.__name__)
+                new_prefix = (
+                    f"{prefix}_{value.__name__}" if prefix else str(value.__name__)
+                )
                 tool_list.append(create_tool(value, new_prefix))
             elif isinstance(value, (dict, list)):
                 new_prefix = f"{prefix}_{i}" if prefix else str(i)
@@ -198,10 +208,7 @@ def create_tool(fn: Callable, name: str) -> Tool:
         name=name,
         description=description.strip(),
         parameters=schema.get("parameters", {}),
-        annotations=ToolAnnotations(
-            title=name,
-            readOnlyHint=True
-        )
+        annotations=ToolAnnotations(title=name, readOnlyHint=True),
     )
 
 
@@ -264,14 +271,18 @@ class SetBasePathMiddleware:
             # patch the args so we use the absolute url for messages
             if len(args) > 0:
                 for d in args:
-                    if 'body' in d and b'event: endpoint\r\ndata: /messages/' in d['body']:
-                        path_replace = 'event: endpoint\r\ndata: /messages/'
-                        path_with = f'event: endpoint\r\ndata: {self.base_path}/messages/'
-                        d['body'] = d['body'].decode('utf-8').replace(
-                            path_replace,
-                            path_with
+                    if (
+                        "body" in d
+                        and b"event: endpoint\r\ndata: /messages/" in d["body"]
+                    ):
+                        path_replace = "event: endpoint\r\ndata: /messages/"
+                        path_with = (
+                            f"event: endpoint\r\ndata: {self.base_path}/messages/"
                         )
-                        d['body'] = d['body'].encode('utf-8')
+                        d["body"] = (
+                            d["body"].decode("utf-8").replace(path_replace, path_with)
+                        )
+                        d["body"] = d["body"].encode("utf-8")
             return await send(*args, **kwargs)
 
         await self.app(scope, receive, _send)
@@ -283,9 +294,9 @@ async def serve_mcp(server, service_id: str = None, mcp_service_id: str = None):
 
     Args:
         server: The Hypha server instance
-        service_id: Optional ID of the service to create MCP from. If None, 
+        service_id: Optional ID of the service to create MCP from. If None,
                    creates from workspace
-        mcp_service_id: Optional custom ID for the MCP service. 
+        mcp_service_id: Optional custom ID for the MCP service.
                        Defaults to "mcp-{service_id}"
 
     Returns:
@@ -303,29 +314,19 @@ async def serve_mcp(server, service_id: str = None, mcp_service_id: str = None):
 
     base_path = f"/{server.config.workspace}/apps/{mcp_service_id}"
     middleware = [Middleware(cls=SetBasePathMiddleware, base_path=base_path)]
-    
-    mcp_app = mcp.http_app(
-        path="/sse",
-        transport="sse",
-        middleware=middleware
-    )
+
+    mcp_app = mcp.http_app(path="/sse", transport="sse", middleware=middleware)
     await mcp_app.router.lifespan_context.__aenter__()
-    
+
     svc_info = await register_asgi_service(
         server, mcp_service_id, mcp_app, service_name=service_name
     )
-    svc_id = svc_info['id'].split('/')[1]
-    
+    svc_id = svc_info["id"].split("/")[1]
+
     mcp_url = (
         f"{server.config.public_base_url}/{server.config.workspace}/"
         f"apps/{svc_id}/sse"
     )
     logger.info(f"MCP server running at {mcp_url}")
-    
-    return {
-        "mcpServers": {
-            "url": mcp_url
-        }
-    }
 
-    
+    return {"mcpServers": {"url": mcp_url}}

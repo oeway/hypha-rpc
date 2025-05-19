@@ -167,7 +167,9 @@ async def serve_app(
 
     # Connect to the Hypha server
     server = await connect_to_server(connection_options)
-    svc_info = await register_asgi_service(server, service_id, app, service_name=service_name)
+    svc_info = await register_asgi_service(
+        server, service_id, app, service_name=service_name
+    )
     print(
         f"Access your app at: {server_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}"
     )

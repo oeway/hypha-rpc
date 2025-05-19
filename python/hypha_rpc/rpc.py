@@ -1212,7 +1212,9 @@ class RPC(MessageEmitter):
         remote_method.__rpc_object__ = (
             encoded_method.copy()
         )  # pylint: disable=protected-access
-        remote_method.__name__ = encoded_method.get("_rname") or method_id.split(".")[-1]
+        remote_method.__name__ = (
+            encoded_method.get("_rname") or method_id.split(".")[-1]
+        )
         # remove the hash part in the method name
         if "#" in remote_method.__name__:
             remote_method.__name__ = remote_method.__name__.split("#")[-1]
