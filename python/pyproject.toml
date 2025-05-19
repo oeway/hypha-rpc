@@ -8,7 +8,7 @@ version = "0.20.54"
 description = "Hypha RPC client for connecting to Hypha server for data management and AI model serving"
 readme = "README.md"
 requires-python = ">=3.6"
-dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets<=13.1; platform_system != 'Emscripten'", "munch",]
+dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets>=14.0; platform_system != 'Emscripten'", "munch",]
 [[project.authors]]
 name = "Wei Ouyang"
 email = "oeway007@gmail.com"

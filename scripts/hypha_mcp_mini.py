@@ -38,8 +38,6 @@ async def main(server_url):
     server = await connect_to_server(
         {"server_url": server_url, "token": user_info.token}
     )
-    server.on("connected", lambda info: print("Connected to server: ", info))
-
     # Register the Python interpreter service
     interpreter_info = await server.register_service(
         {
