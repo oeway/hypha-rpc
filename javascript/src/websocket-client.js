@@ -354,7 +354,12 @@ class WebsocketRPCConnection {
   disconnect(reason) {
     this._closed = true;
     this._last_message = null; // Clear last message on disconnect
-    if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
+    // Ensure websocket is closed if it exists and is not already closed or closing
+    if (
+      this._websocket &&
+      this._websocket.readyState !== WebSocket.CLOSED &&
+      this._websocket.readyState !== WebSocket.CLOSING
+    ) {
       this._websocket.close(1000, reason);
     }
     if (this._refresh_token_task) {

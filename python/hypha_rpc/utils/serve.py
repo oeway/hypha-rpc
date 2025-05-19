@@ -167,7 +167,9 @@ async def serve_app(
 
     # Connect to the Hypha server
     server = await connect_to_server(connection_options)
-    svc_info = await register_asgi_service(server, service_id, app)
+    svc_info = await register_asgi_service(
+        server, service_id, app, service_name=service_name
+    )
     print(
         f"Access your app at: {server_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}"
     )
@@ -181,10 +183,10 @@ async def register_asgi_service(server, service_id, app, **kwargs):
 
     svc = {
         "id": service_id,
-        "name": service_id,
+        "name": kwargs.get("service_name", service_id),
         "type": "asgi",
         "serve": serve_fastapi,
-        "config": {"visibility": "public"},
+        "config": {"visibility": kwargs.get("visibility", "public")},
     }
     svc.update(kwargs)
     svc_info = await server.register_service(svc)

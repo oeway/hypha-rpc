@@ -1212,7 +1212,9 @@ class RPC(MessageEmitter):
         remote_method.__rpc_object__ = (
             encoded_method.copy()
         )  # pylint: disable=protected-access
-        remote_method.__name__ = method_id.split(".")[-1]
+        remote_method.__name__ = (
+            encoded_method.get("_rname") or method_id.split(".")[-1]
+        )
         # remove the hash part in the method name
         if "#" in remote_method.__name__:
             remote_method.__name__ = remote_method.__name__.split("#")[-1]
@@ -1541,6 +1543,7 @@ class RPC(MessageEmitter):
                     ),
                     "_rmethod": annotation["method_id"],
                     "_rpromise": "*",
+                    "_rname": getattr(a_object, "__name__", None),
                     "_rasync": inspect.iscoroutinefunction(a_object),
                 }
             else:
@@ -1558,6 +1561,7 @@ class RPC(MessageEmitter):
                         else self._client_id
                     ),
                     "_rmethod": f"{session_id}.{object_id}",
+                    "_rname": getattr(a_object, "__name__", None),
                     "_rpromise": "*",
                 }
                 store = self._get_session_store(session_id, create=True)
