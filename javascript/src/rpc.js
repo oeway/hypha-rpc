@@ -1240,10 +1240,12 @@ export class RPC extends MessageEmitter {
     // Generate debugging information for the method
     remote_method.__rpc_object__ = encoded_method;
     const parts = method_id.split(".");
-    remote_method.__name__ = parts[parts.length - 1];
+
+    remote_method.__name__ = encoded_method._rname || parts[parts.length - 1];
     if (remote_method.__name__.includes("#")) {
       remote_method.__name__ = remote_method.__name__.split("#")[1];
     }
+    remote_method.name = remote_method.__name__;
     remote_method.__doc__ =
       encoded_method._rdoc || `Remote method: ${method_id}`;
     remote_method.__schema__ = encoded_method._rschema;
@@ -1592,6 +1594,7 @@ export class RPC extends MessageEmitter {
           _rtarget: this._client_id,
           _rmethod: annotation.method_id,
           _rpromise: "*",
+          _rname: aObject.name,
         };
       } else {
         assert(typeof session_id === "string");
@@ -1607,6 +1610,7 @@ export class RPC extends MessageEmitter {
           _rtarget: this._client_id,
           _rmethod: `${session_id}.${object_id}`,
           _rpromise: "*",
+          _rname: aObject.name,
         };
         let store = this._get_session_store(session_id, true);
         assert(
