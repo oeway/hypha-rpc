@@ -135,6 +135,7 @@ async def _setup_rpc(config):
     )
     config["context"] = config.get("context") or {}
     config["context"]["connection_type"] = "webrtc"
+    config["context"]["ws"] = config.get("workspace")
     rpc = RPC(
         connection,
         client_id=client_id,

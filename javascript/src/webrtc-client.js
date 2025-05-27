@@ -75,6 +75,7 @@ async function _setupRPC(config) {
   const connection = new WebRTCConnection(channel);
   config.context = config.context || {};
   config.context.connection_type = "webrtc";
+  config.context.ws = config.workspace;
   const rpc = new RPC(connection, {
     client_id: clientId,
     default_context: config.context,
