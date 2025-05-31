@@ -529,4 +529,89 @@ describe("RPC", async () => {
     await client.disconnect();
     await server.disconnect();
   }).timeout(40000);
+
+  it("should handle reconnection when connection is lost", async () => {
+    // Connect to the server
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "reconnection-test-client",
+    });
+
+    // Register a test service
+    await client.registerService({
+      id: "reconnection-test-service",
+      config: { visibility: "public" },
+      echo: (msg) => `Echo: ${msg}`,
+      ping: () => "pong",
+    });
+
+    // Test the service works initially
+    const svc = await client.getService("reconnection-test-service");
+    expect(await svc.echo("before disconnect")).to.equal(
+      "Echo: before disconnect",
+    );
+    expect(await svc.ping()).to.equal("pong");
+
+    // Track connection events
+    const connectionEvents = [];
+    const disconnectionEvents = [];
+
+    client.rpc._connection.on_connected((info) => {
+      console.log("Connected event:", info);
+      connectionEvents.push(info);
+    });
+
+    client.rpc._connection.on_disconnected((reason) => {
+      console.log("Disconnected event:", reason);
+      disconnectionEvents.push(reason);
+    });
+
+    // Simulate connection loss by closing the websocket
+    console.log("Simulating connection loss...");
+    const originalWebsocket = client.rpc._connection._websocket;
+
+    // Force close the connection with an unexpected code to trigger reconnection
+    // Use 3000 instead of 1006 since 1006 is not allowed by browsers
+    originalWebsocket.close(3000, "Simulated connection loss");
+
+    // Wait for reconnection to complete
+    console.log("Waiting for reconnection...");
+    let reconnected = false;
+    const maxWaitTime = 15000; // 15 seconds
+    const checkInterval = 500; // 500ms
+    const startTime = Date.now();
+
+    while (!reconnected && Date.now() - startTime < maxWaitTime) {
+      try {
+        // Try to use the service - this will succeed after reconnection
+        const result = await svc.ping();
+        if (result === "pong") {
+          console.log("Reconnection successful - service is working");
+          reconnected = true;
+        }
+      } catch (e) {
+        console.log("Still reconnecting...", e.message);
+        await new Promise((resolve) => setTimeout(resolve, checkInterval));
+      }
+    }
+
+    expect(reconnected).to.be.true;
+
+    // Test that the service still works after reconnection
+    expect(await svc.echo("after reconnect")).to.equal("Echo: after reconnect");
+    expect(await svc.ping()).to.equal("pong");
+
+    // Test stability after reconnection
+    for (let i = 0; i < 3; i++) {
+      expect(await svc.echo(`stability test ${i}`)).to.equal(
+        `Echo: stability test ${i}`,
+      );
+    }
+
+    // Verify that the websocket has changed (new connection)
+    expect(client.rpc._connection._websocket).to.not.equal(originalWebsocket);
+
+    console.log("Reconnection test completed successfully");
+    await client.disconnect();
+  }).timeout(40000);
 });

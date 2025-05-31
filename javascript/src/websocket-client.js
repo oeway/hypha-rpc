@@ -46,6 +46,7 @@ class WebsocketRPCConnection {
     this.manager_id = null;
     this._refresh_token_task = null;
     this._last_message = null; // Store the last sent message
+    this._connecting = false; // Flag to prevent multiple simultaneous connections
   }
 
   on_message(handler) {
@@ -177,12 +178,35 @@ class WebsocketRPCConnection {
     });
   }
 
+  async _cleanup_tasks() {
+    // Clean up existing background tasks.
+    if (this._refresh_token_task) {
+      clearInterval(this._refresh_token_task);
+      this._refresh_token_task = null;
+    }
+  }
+
   async open() {
-    console.log(
-      "Creating a new websocket connection to",
-      this._server_url.split("?")[0],
-    );
+    // Prevent multiple simultaneous connection attempts
+    if (this._connecting) {
+      console.info("Connection attempt already in progress, waiting...");
+      // Wait for the current connection attempt to complete
+      while (this._connecting && !this._closed) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return this.connection_info;
+    }
+
+    this._connecting = true;
     try {
+      console.log(
+        "Creating a new websocket connection to",
+        this._server_url.split("?")[0],
+      );
+
+      // Clean up existing tasks before creating new ones
+      await this._cleanup_tasks();
+
       this._websocket = await this._attempt_connection(this._server_url);
       if (this._legacy_auth) {
         throw new Error(
@@ -246,6 +270,8 @@ class WebsocketRPCConnection {
         error,
       );
       throw error;
+    } finally {
+      this._connecting = false;
     }
   }
 
@@ -280,6 +306,9 @@ class WebsocketRPCConnection {
         let retry = 0;
         const reconnect = async () => {
           try {
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(2 ** retry, 10) * 1000),
+            ); // Exponential backoff with max 10s
             console.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
@@ -310,10 +339,10 @@ class WebsocketRPCConnection {
               );
               return;
             }
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+            console.warn(`Reconnection attempt ${retry} failed: ${e}`);
             if (
               this._websocket &&
-              this._websocket.readyState === WebSocket.CONNECTED
+              this._websocket.readyState === WebSocket.OPEN
             ) {
               return;
             }
@@ -338,16 +367,31 @@ class WebsocketRPCConnection {
     if (this._closed) {
       throw new Error("Connection is closed");
     }
+
+    // Check if we need to reconnect
     if (!this._websocket || this._websocket.readyState !== WebSocket.OPEN) {
+      console.info("Connection is closed, attempting to reconnect...");
       await this.open();
     }
+
     try {
       this._last_message = data; // Store the message before sending
       this._websocket.send(data);
       this._last_message = null; // Clear after successful send
     } catch (exp) {
-      console.error(`Failed to send data, error: ${exp}`);
-      throw exp;
+      console.warn(`Connection lost while sending message: ${exp}`);
+      // Try to reconnect and resend once
+      try {
+        await this.open();
+        this._websocket.send(data);
+        this._last_message = null;
+      } catch (retryExp) {
+        console.error(
+          `Failed to resend message after reconnection: ${retryExp}`,
+        );
+        this._last_message = null;
+        throw retryExp;
+      }
     }
   }
 
@@ -362,9 +406,7 @@ class WebsocketRPCConnection {
     ) {
       this._websocket.close(1000, reason);
     }
-    if (this._refresh_token_task) {
-      clearInterval(this._refresh_token_task);
-    }
+    this._cleanup_tasks();
     console.info(`WebSocket connection disconnected (${reason})`);
   }
 }
