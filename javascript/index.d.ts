@@ -87,7 +87,7 @@ declare module "hypha-rpc" {
       getRemoteService: (serviceUri: string, config?: any) => Promise<any>;
       registerRTCService: (server: any, service_id: string, config?: any) => Promise<any>;
       getRTCService: (server: any, service_id: string, config?: any) => Promise<any>;
-      setupLocalClient: (enable_execution: boolean, on_ready?: Function) => Promise<any>;
+      setupLocalClient: ({enable_execution, on_ready}: {enable_execution: boolean, on_ready?: Function}) => Promise<any>;
     };
   };
 
