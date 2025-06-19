@@ -84,6 +84,7 @@ class WebsocketRPCConnection:
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
         self._additional_headers = additional_headers
+        self._reconnect_tasks = set()  # Track reconnection tasks
         if ssl == False:
             import ssl as ssl_module
 
@@ -283,6 +284,8 @@ class WebsocketRPCConnection:
                 await self._handle_connected(self.connection_info)
             return self.connection_info
         except Exception as exp:
+            # Clean up any tasks that might have been created before the error
+            await self._cleanup()
             logger.error("Failed to connect to %s", self._server_url.split("?")[0])
             raise exp
 
@@ -349,50 +352,67 @@ class WebsocketRPCConnection:
                         self._websocket.close_code,
                         self._websocket.close_reason,
                     )
-                    retry = 0
-                    while retry < MAX_RETRY:
-                        try:
-                            logger.warning(
-                                "Reconnecting to %s (attempt #%s)",
-                                self._server_url.split("?")[0],
-                                retry,
-                            )
-                            # Open the connection, this will trigger the on_connected callback
-                            connection_info = await self.open()
+                    
+                    async def reconnect_with_retry():
+                        retry = 0
+                        while retry < MAX_RETRY:
+                            try:
+                                logger.warning(
+                                    "Reconnecting to %s (attempt #%s)",
+                                    self._server_url.split("?")[0],
+                                    retry,
+                                )
+                                # Open the connection, this will trigger the on_connected callback
+                                connection_info = await self.open()
 
-                            # Wait a short time for services to be registered
-                            # This gives time for the on_connected callback to complete
-                            # which includes re-registering all services to the server
-                            await asyncio.sleep(0.5)
+                                # Wait a short time for services to be registered
+                                # This gives time for the on_connected callback to complete
+                                # which includes re-registering all services to the server
+                                await asyncio.sleep(0.5)
 
-                            # Resend last message if there was one
-                            if self._last_message:
-                                logger.info("Resending last message after reconnection")
-                                await self._websocket.send(self._last_message)
-                                self._last_message = None
-                            logger.warning(
-                                "Successfully reconnected to %s (services re-registered)",
-                                self._server_url.split("?")[0],
-                            )
-                            break
-                        except NotImplementedError as e:
-                            logger.error(
-                                f"{e}"
-                                "It appears that you are trying to connect "
-                                "to a hypha server that is older than 0.20.0, "
-                                "please upgrade the hypha server or "
-                                "use imjoy-rpc(https://pypi.org/project/imjoy-rpc/) "
-                                "with `from imjoy_rpc.hypha import connect_to_sever` instead"
-                            )
-                            break
-                        except ConnectionAbortedError as e:
-                            logger.warning("Server refuse to reconnect: %s", e)
-                            break
-                        except Exception as e:
-                            await asyncio.sleep(1)
-                            if self._websocket and self._websocket.open:
+                                # Resend last message if there was one
+                                if self._last_message:
+                                    logger.info("Resending last message after reconnection")
+                                    await self._websocket.send(self._last_message)
+                                    self._last_message = None
+                                logger.warning(
+                                    "Successfully reconnected to %s (services re-registered)",
+                                    self._server_url.split("?")[0],
+                                )
                                 break
-                        retry += 1
+                            except NotImplementedError as e:
+                                logger.error(
+                                    f"{e}"
+                                    "It appears that you are trying to connect "
+                                    "to a hypha server that is older than 0.20.0, "
+                                    "please upgrade the hypha server or "
+                                    "use imjoy-rpc(https://pypi.org/project/imjoy-rpc/) "
+                                    "with `from imjoy_rpc.hypha import connect_to_sever` instead"
+                                )
+                                break
+                            except ConnectionAbortedError as e:
+                                logger.warning("Server refuse to reconnect: %s", e)
+                                break
+                            except Exception as e:
+                                # Use tracked sleep task for cancellation
+                                sleep_task = asyncio.create_task(asyncio.sleep(1))
+                                self._reconnect_tasks.add(sleep_task)
+                                try:
+                                    await sleep_task
+                                except asyncio.CancelledError:
+                                    break
+                                finally:
+                                    self._reconnect_tasks.discard(sleep_task)
+                                    
+                                if self._websocket and self._websocket.open:
+                                    break
+                            retry += 1
+                    
+                    # Create and track the reconnection task
+                    reconnect_task = asyncio.create_task(reconnect_with_retry())
+                    self._reconnect_tasks.add(reconnect_task)
+                    # Remove task from tracking when it completes
+                    reconnect_task.add_done_callback(lambda t: self._reconnect_tasks.discard(t))
             else:
                 if self._handle_disconnected:
                     self._handle_disconnected(str(e))
@@ -403,12 +423,12 @@ class WebsocketRPCConnection:
         self._last_message = None
         if self._websocket and not self._websocket.state == State.CLOSED:
             await self._websocket.close(code=1000)
-        if self._listen_task:
-            self._listen_task.cancel()
-            self._listen_task = None
-        if self._refresh_token_task:
-            self._refresh_token_task.cancel()
-            self._refresh_token_task = None
+        # Use centralized cleanup to cancel all tasks
+        try:
+            await self._cleanup()
+        except RuntimeError:
+            # Event loop might be closed during shutdown
+            pass
         logger.info("Websocket connection disconnected (%s)", reason)
 
     async def _on_message(self, message):
@@ -450,6 +470,45 @@ class WebsocketRPCConnection:
         except Exception as e:
             logger.error(f"Error handling message: {e}")
             raise
+
+    async def _cleanup(self):
+        """Centralized cleanup method to cancel all tasks and prevent resource leaks."""
+        try:
+            # Cancel token refresh task
+            if self._refresh_token_task and not self._refresh_token_task.done():
+                self._refresh_token_task.cancel()
+                try:
+                    await self._refresh_token_task
+                except (asyncio.CancelledError, RuntimeError):
+                    # RuntimeError occurs when event loop is closed
+                    pass
+                self._refresh_token_task = None
+            
+            # Cancel listen task
+            if self._listen_task and not self._listen_task.done():
+                self._listen_task.cancel()
+                try:
+                    await self._listen_task
+                except (asyncio.CancelledError, RuntimeError):
+                    # RuntimeError occurs when event loop is closed
+                    pass
+                self._listen_task = None
+            
+            # Cancel all reconnection tasks
+            for task in list(self._reconnect_tasks):
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, RuntimeError):
+                        # RuntimeError occurs when event loop is closed
+                        pass
+                self._reconnect_tasks.discard(task)
+        except RuntimeError:
+            # If event loop is closed, just clear the references
+            self._refresh_token_task = None
+            self._listen_task = None
+            self._reconnect_tasks.clear()
 
 
 def normalize_server_url(server_url):

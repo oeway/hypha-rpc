@@ -46,6 +46,24 @@ class WebsocketRPCConnection {
     this.manager_id = null;
     this._refresh_token_task = null;
     this._last_message = null; // Store the last sent message
+    this._reconnect_timeouts = new Set(); // Track reconnection timeouts
+  }
+
+  /**
+   * Centralized cleanup method to clear all timers and prevent resource leaks
+   */
+  _cleanup() {
+    // Clear token refresh interval
+    if (this._refresh_token_task) {
+      clearInterval(this._refresh_token_task);
+      this._refresh_token_task = null;
+    }
+    
+    // Clear all reconnection timeouts
+    for (const timeoutId of this._reconnect_timeouts) {
+      clearTimeout(timeoutId);
+    }
+    this._reconnect_timeouts.clear();
   }
 
   on_message(handler) {
@@ -231,6 +249,8 @@ class WebsocketRPCConnection {
 
       this._websocket.onerror = (event) => {
         console.error("WebSocket connection error:", event);
+        // Clean up timers on error
+        this._cleanup();
       };
 
       this._websocket.onclose = this._handle_close.bind(this);
@@ -240,6 +260,8 @@ class WebsocketRPCConnection {
       }
       return this.connection_info;
     } catch (error) {
+      // Clean up any timers that might have been set up before the error
+      this._cleanup();
       console.error(
         "Failed to connect to",
         this._server_url.split("?")[0],
@@ -263,6 +285,9 @@ class WebsocketRPCConnection {
       this._websocket &&
       this._websocket.readyState === WebSocket.CLOSED
     ) {
+      // Clean up timers when connection closes
+      this._cleanup();
+      
       if ([1000, 1001].includes(event.code)) {
         console.info(
           `Websocket connection closed (code: ${event.code}): ${event.reason}`,
@@ -310,24 +335,30 @@ class WebsocketRPCConnection {
               );
               return;
             }
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            if (
-              this._websocket &&
-              this._websocket.readyState === WebSocket.CONNECTED
-            ) {
-              return;
-            }
-            retry += 1;
-            if (retry < MAX_RETRY) {
-              await reconnect();
-            } else {
-              console.error("Failed to reconnect after", MAX_RETRY, "attempts");
-            }
+            // Track the reconnection timeout to prevent leaks
+            const timeoutId = setTimeout(async () => {
+              this._reconnect_timeouts.delete(timeoutId);
+              if (
+                this._websocket &&
+                this._websocket.readyState === WebSocket.CONNECTED
+              ) {
+                return;
+              }
+              retry += 1;
+              if (retry < MAX_RETRY) {
+                await reconnect();
+              } else {
+                console.error("Failed to reconnect after", MAX_RETRY, "attempts");
+              }
+            }, 1000);
+            this._reconnect_timeouts.add(timeoutId);
           }
         };
         reconnect();
       }
     } else {
+      // Clean up timers in all cases
+      this._cleanup();
       if (this._handle_disconnected) {
         this._handle_disconnected(event.reason);
       }
@@ -362,9 +393,8 @@ class WebsocketRPCConnection {
     ) {
       this._websocket.close(1000, reason);
     }
-    if (this._refresh_token_task) {
-      clearInterval(this._refresh_token_task);
-    }
+    // Use centralized cleanup to clear all timers
+    this._cleanup();
     console.info(`WebSocket connection disconnected (${reason})`);
   }
 }
