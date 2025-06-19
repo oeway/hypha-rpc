@@ -58,7 +58,7 @@ class WebsocketRPCConnection {
       clearInterval(this._refresh_token_task);
       this._refresh_token_task = null;
     }
-    
+
     // Clear all reconnection timeouts
     for (const timeoutId of this._reconnect_timeouts) {
       clearTimeout(timeoutId);
@@ -287,7 +287,7 @@ class WebsocketRPCConnection {
     ) {
       // Clean up timers when connection closes
       this._cleanup();
-      
+
       if ([1000, 1001].includes(event.code)) {
         console.info(
           `Websocket connection closed (code: ${event.code}): ${event.reason}`,
@@ -348,7 +348,11 @@ class WebsocketRPCConnection {
               if (retry < MAX_RETRY) {
                 await reconnect();
               } else {
-                console.error("Failed to reconnect after", MAX_RETRY, "attempts");
+                console.error(
+                  "Failed to reconnect after",
+                  MAX_RETRY,
+                  "attempts",
+                );
               }
             }, 1000);
             this._reconnect_timeouts.add(timeoutId);
