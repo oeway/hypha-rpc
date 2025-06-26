@@ -105,14 +105,14 @@ def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
 
         # Streaming mode
         if request.stream:
-            generate = text_generator(request.dict())
+            generate = text_generator(request.model_dump(mode="json"))
             return EventSourceResponse(
                 stream_chunks(generate, model_id), media_type="text/event-stream"
             )
 
         # Non-streaming mode
         response_text = ""
-        async for chunk in text_generator(request.dict()):
+        async for chunk in text_generator(request.model_dump(mode="json")):
             response_text += chunk
             if len(response_text) >= request.max_tokens:
                 break
@@ -128,7 +128,7 @@ def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
 
 
 # Streaming helper to package text chunks in the response structure
-async def stream_chunks(generator: Callable, model_id: str) -> dict:
+async def stream_chunks(generator: Callable, model_id: str):
     async for chunk in generator:
         if isinstance(chunk, str):
             delta = DeltaMessage(content=chunk, role="assistant")
