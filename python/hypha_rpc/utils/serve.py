@@ -3,7 +3,6 @@ import importlib
 import asyncio
 from hypha_rpc import connect_to_server, login
 import time
-import random
 from typing import List, Literal, Union, Optional, Callable, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -108,7 +107,7 @@ def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
         if request.stream:
             generate = text_generator(request.dict())
             return EventSourceResponse(
-                stream_chunks(generate), media_type="text/event-stream"
+                stream_chunks(generate, model_id), media_type="text/event-stream"
             )
 
         # Non-streaming mode
@@ -129,13 +128,13 @@ def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
 
 
 # Streaming helper to package text chunks in the response structure
-async def stream_chunks(generator: Callable) -> dict:
+async def stream_chunks(generator: Callable, model_id: str) -> dict:
     async for chunk in generator:
         if isinstance(chunk, str):
             delta = DeltaMessage(content=chunk, role="assistant")
             choice_data = ChatCompletionResponseStreamChoice(index=0, delta=delta)
             chunk_response = ChatCompletionResponse(
-                model="test-chat-model",
+                model=model_id,
                 choices=[choice_data],
                 object="chat.completion.chunk",
             )
@@ -155,6 +154,7 @@ async def serve_app(
     token: str = None,
     disable_ssl: bool = False,
     service_name: str = None,
+    check_context: Callable = None,
 ):
     # Connection options
     connection_options = {
@@ -168,7 +168,7 @@ async def serve_app(
     # Connect to the Hypha server
     server = await connect_to_server(connection_options)
     svc_info = await register_asgi_service(
-        server, service_id, app, service_name=service_name
+        server, service_id, app, service_name=service_name, check_context=check_context
     )
     print(
         f"Access your app at: {server_url}/{server.config.workspace}/apps/{svc_info['id'].split(':')[1]}"
@@ -177,8 +177,10 @@ async def serve_app(
     await server.serve()
 
 
-async def register_asgi_service(server, service_id, app, **kwargs):
+async def register_asgi_service(server, service_id, app, check_context=None, **kwargs):
     async def serve_fastapi(args, context=None):
+        if check_context:
+            await check_context(context=context, **args)
         await app(args["scope"], args["receive"], args["send"])
 
     svc = {
