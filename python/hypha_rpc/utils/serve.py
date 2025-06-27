@@ -3,7 +3,7 @@ import importlib
 import asyncio
 from hypha_rpc import connect_to_server, login
 import time
-from typing import List, Literal, Union, Optional, Callable, Dict
+from typing import List, Literal, Union, Optional, Callable, Dict, AsyncGenerator
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -102,33 +102,62 @@ def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
 
         # Get the model's text generator function
         text_generator = model_registry[model_id]
-
-        # Streaming mode
-        if request.stream:
-            generate = text_generator(request.model_dump(mode="json"))
-            return EventSourceResponse(
-                stream_chunks(generate, model_id), media_type="text/event-stream"
+        assert callable(text_generator), "The model registry must contain callable functions"
+        resp = text_generator(request.model_dump(mode="json"))
+        # if it's a generator
+        if isinstance(resp, str):
+            assert request.stream is False, "streaming is not supported"
+            message = ChatMessageResponse(role="assistant", content=resp)
+            choice_data = ChatCompletionResponseChoice(index=0, message=message)
+            return ChatCompletionResponse(
+                model=request.model, choices=[choice_data], object="chat.completion"
             )
+        elif isinstance(resp, dict):
+            assert request.stream is False, "streaming is not supported"
+            return ChatCompletionResponse.model_validate(resp)
+        elif isinstance(resp, AsyncGenerator):
+            # Streaming mode
+            if request.stream:
+                return EventSourceResponse(
+                    stream_chunks(resp, model_id), media_type="text/event-stream"
+                )
+            # Non-streaming mode
+            response_text = ""
+            max_tokens = request.max_tokens or float('inf')  # Handle None case
+            async for chunk in resp:
+                assert isinstance(chunk, str), "In non-streaming mode, the generator must return a string"
+                response_text += chunk
+                if len(response_text) >= max_tokens:
+                    break
+            
+            # Only truncate if max_tokens was actually specified
+            if request.max_tokens is not None:
+                response_text = response_text[: request.max_tokens]
 
-        # Non-streaming mode
-        response_text = ""
-        async for chunk in text_generator(request.model_dump(mode="json")):
-            response_text += chunk
-            if len(response_text) >= request.max_tokens:
-                break
-        response_text = response_text[: request.max_tokens]
-
-        message = ChatMessageResponse(role="assistant", content=response_text)
-        choice_data = ChatCompletionResponseChoice(index=0, message=message)
-        return ChatCompletionResponse(
-            model=request.model, choices=[choice_data], object="chat.completion"
-        )
+            message = ChatMessageResponse(role="assistant", content=response_text)
+            choice_data = ChatCompletionResponseChoice(index=0, message=message)
+            return ChatCompletionResponse(
+                model=request.model, choices=[choice_data], object="chat.completion"
+            )
+        else:
+            assert request.stream is False, "streaming is not supported"
+            response = await resp
+            if isinstance(response, dict):
+                return ChatCompletionResponse.model_validate(response)
+            elif isinstance(response, str):
+                message = ChatMessageResponse(role="assistant", content=response)
+                choice_data = ChatCompletionResponseChoice(index=0, message=message)
+                return ChatCompletionResponse(
+                    model=request.model, choices=[choice_data], object="chat.completion"
+                )
+            else:
+                raise ValueError("The awaitable response must return a dictionary or a string")
 
     return app
 
 
 # Streaming helper to package text chunks in the response structure
-async def stream_chunks(generator: Callable, model_id: str):
+async def stream_chunks(generator: AsyncGenerator, model_id: str):
     async for chunk in generator:
         if isinstance(chunk, str):
             delta = DeltaMessage(content=chunk, role="assistant")
