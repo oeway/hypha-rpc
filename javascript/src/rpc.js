@@ -945,7 +945,9 @@ export class RPC extends MessageEmitter {
     let store = this._get_session_store(session_id, true);
     if (!store) {
       // Handle the case where session store creation failed gracefully
-      console.warn(`Failed to create session store ${session_id}, session management may be impaired`);
+      console.warn(
+        `Failed to create session store ${session_id}, session management may be impaired`,
+      );
       // Create a minimal fallback store
       store = {};
     }
@@ -1035,7 +1037,9 @@ export class RPC extends MessageEmitter {
         try {
           await message_cache.remove(message_id);
         } catch (cleanupError) {
-          console.error(`Failed to clean up message cache after error: ${cleanupError}`);
+          console.error(
+            `Failed to clean up message cache after error: ${cleanupError}`,
+          );
         }
         throw error;
       }
@@ -1176,22 +1180,24 @@ export class RPC extends MessageEmitter {
           );
           // By default, hypha will clear the session after the method is called
           // However, if the args contains _rintf === true, we will not clear the session
-          
+
           // Helper function to recursively check for _rintf objects
           function hasInterfaceObject(obj) {
             if (!obj || typeof obj !== "object") return false;
             if (obj._rintf === true) return true;
             if (Array.isArray(obj)) {
-              return obj.some(item => hasInterfaceObject(item));
+              return obj.some((item) => hasInterfaceObject(item));
             }
             if (obj.constructor === Object) {
-              return Object.values(obj).some(value => hasInterfaceObject(value));
+              return Object.values(obj).some((value) =>
+                hasInterfaceObject(value),
+              );
             }
             return false;
           }
-          
+
           let clear_after_called = !hasInterfaceObject(args);
-          
+
           const promiseData = await self._encode_promise(
             resolve,
             reject,
@@ -1792,9 +1798,7 @@ export class RPC extends MessageEmitter {
           local_workspace,
         ),
       };
-    } else if (
-      aObject.constructor === Object || Array.isArray(aObject)
-    ) {
+    } else if (aObject.constructor === Object || Array.isArray(aObject)) {
       bObject = isarray ? [] : {};
       const keys = Object.keys(aObject);
       for (let k of keys) {

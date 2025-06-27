@@ -34,6 +34,7 @@ try:
 except ImportError:
     import websockets
     from websockets.protocol import State
+
     IS_PYODIDE = False
 
 LOGLEVEL = os.environ.get("HYPHA_LOGLEVEL", "WARNING").upper()
@@ -201,7 +202,11 @@ class WebsocketRPCConnection:
         try:
             assert self._websocket, "Websocket connection is not established"
             await asyncio.sleep(2)
-            while not self._closed and self._websocket and self._websocket.state != State.CLOSED:
+            while (
+                not self._closed
+                and self._websocket
+                and self._websocket.state != State.CLOSED
+            ):
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
@@ -352,7 +357,7 @@ class WebsocketRPCConnection:
                         self._websocket.close_code,
                         self._websocket.close_reason,
                     )
-                    
+
                     async def reconnect_with_retry():
                         retry = 0
                         while retry < MAX_RETRY:
@@ -372,7 +377,9 @@ class WebsocketRPCConnection:
 
                                 # Resend last message if there was one
                                 if self._last_message:
-                                    logger.info("Resending last message after reconnection")
+                                    logger.info(
+                                        "Resending last message after reconnection"
+                                    )
                                     await self._websocket.send(self._last_message)
                                     self._last_message = None
                                 logger.warning(
@@ -403,16 +410,18 @@ class WebsocketRPCConnection:
                                     break
                                 finally:
                                     self._reconnect_tasks.discard(sleep_task)
-                                    
+
                                 if self._websocket and self._websocket.open:
                                     break
                             retry += 1
-                    
+
                     # Create and track the reconnection task
                     reconnect_task = asyncio.create_task(reconnect_with_retry())
                     self._reconnect_tasks.add(reconnect_task)
                     # Remove task from tracking when it completes
-                    reconnect_task.add_done_callback(lambda t: self._reconnect_tasks.discard(t))
+                    reconnect_task.add_done_callback(
+                        lambda t: self._reconnect_tasks.discard(t)
+                    )
             else:
                 if self._handle_disconnected:
                     self._handle_disconnected(str(e))
@@ -483,7 +492,7 @@ class WebsocketRPCConnection:
                     # RuntimeError occurs when event loop is closed
                     pass
                 self._refresh_token_task = None
-            
+
             # Cancel listen task
             if self._listen_task and not self._listen_task.done():
                 self._listen_task.cancel()
@@ -493,7 +502,7 @@ class WebsocketRPCConnection:
                     # RuntimeError occurs when event loop is closed
                     pass
                 self._listen_task = None
-            
+
             # Cancel all reconnection tasks
             for task in list(self._reconnect_tasks):
                 if not task.done():

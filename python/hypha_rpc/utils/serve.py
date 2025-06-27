@@ -73,22 +73,29 @@ class ChatCompletionResponse(BaseModel):
     ]
     created: Optional[int] = Field(default_factory=lambda: int(time.time()))
 
+
 # Function to create FastAPI app based on the model registry
 def create_openai_chat_server(
     model_registry: ModelRegistry,
     allow_origins: Union[List[str], str] = "*",
     allow_credentials: bool = True,
-    allow_methods: Union[List[str], str] = "*", 
-    allow_headers: Union[List[str], str] = "*"
+    allow_methods: Union[List[str], str] = "*",
+    allow_headers: Union[List[str], str] = "*",
 ) -> FastAPI:
     app = FastAPI()
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins if isinstance(allow_origins, list) else [allow_origins],
+        allow_origins=(
+            allow_origins if isinstance(allow_origins, list) else [allow_origins]
+        ),
         allow_credentials=allow_credentials,
-        allow_methods=allow_methods if isinstance(allow_methods, list) else [allow_methods],
-        allow_headers=allow_headers if isinstance(allow_headers, list) else [allow_headers],
+        allow_methods=(
+            allow_methods if isinstance(allow_methods, list) else [allow_methods]
+        ),
+        allow_headers=(
+            allow_headers if isinstance(allow_headers, list) else [allow_headers]
+        ),
     )
 
     @app.get("/v1/models", response_model=ModelList)
@@ -107,7 +114,9 @@ def create_openai_chat_server(
 
         # Get the model's text generator function
         text_generator = model_registry[model_id]
-        assert callable(text_generator), "The model registry must contain callable functions"
+        assert callable(
+            text_generator
+        ), "The model registry must contain callable functions"
         resp = text_generator(request.model_dump(mode="json"))
         # if it's a generator
         if isinstance(resp, str):
@@ -124,23 +133,25 @@ def create_openai_chat_server(
             # Streaming mode
             if request.stream:
                 return StreamingResponse(
-                    stream_chunks(resp, model_id), 
+                    stream_chunks(resp, model_id),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
                         "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no"  # Disable nginx buffering
-                    }
+                        "X-Accel-Buffering": "no",  # Disable nginx buffering
+                    },
                 )
             # Non-streaming mode
             response_text = ""
-            max_tokens = request.max_tokens or float('inf')  # Handle None case
+            max_tokens = request.max_tokens or float("inf")  # Handle None case
             async for chunk in resp:
-                assert isinstance(chunk, str), "In non-streaming mode, the generator must return a string"
+                assert isinstance(
+                    chunk, str
+                ), "In non-streaming mode, the generator must return a string"
                 response_text += chunk
                 if len(response_text) >= max_tokens:
                     break
-            
+
             # Only truncate if max_tokens was actually specified
             if request.max_tokens is not None:
                 response_text = response_text[: request.max_tokens]
@@ -162,7 +173,9 @@ def create_openai_chat_server(
                     model=request.model, choices=[choice_data], object="chat.completion"
                 )
             else:
-                raise ValueError("The awaitable response must return a dictionary or a string")
+                raise ValueError(
+                    "The awaitable response must return a dictionary or a string"
+                )
 
     return app
 
@@ -189,12 +202,7 @@ async def stream_chunks(generator: AsyncGenerator, model_id: str):
         yield "data: [DONE]\n\n"
     except Exception as e:
         # Send error chunk if streaming fails
-        error_chunk = {
-            "error": {
-                "message": str(e),
-                "type": "stream_error"
-            }
-        }
+        error_chunk = {"error": {"message": str(e), "type": "stream_error"}}
         yield f"data: {error_chunk}\n\n"
 
 
@@ -234,18 +242,19 @@ async def register_asgi_service(server, service_id, app, check_context=None, **k
         try:
             if check_context:
                 await check_context(context=context, **args)
-            
+
             # Ensure we're using the correct event loop
             loop = asyncio.get_event_loop()
             if loop.is_closed():
                 # If the current loop is closed, get a new one
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-            
+
             await app(args["scope"], args["receive"], args["send"])
         except Exception as e:
             # Log the error and re-raise
             import logging
+
             logging.error(f"Error in ASGI service: {e}")
             raise
 

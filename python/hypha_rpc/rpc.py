@@ -939,7 +939,9 @@ class RPC(MessageEmitter):
         store = self._get_session_store(session_id, create=True)
         if store is None:
             # Handle the case where session store creation failed gracefully
-            logger.warning(f"Failed to create session store {session_id}, session management may be impaired")
+            logger.warning(
+                f"Failed to create session store {session_id}, session management may be impaired"
+            )
             # Create a minimal fallback store
             store = {}
         encoded = {}
@@ -1019,7 +1021,9 @@ class RPC(MessageEmitter):
                 try:
                     await message_cache.remove(message_id)
                 except Exception as cleanup_error:
-                    logger.error(f"Failed to clean up message cache after error: {cleanup_error}")
+                    logger.error(
+                        f"Failed to clean up message cache after error: {cleanup_error}"
+                    )
                 raise error
         else:
             await message_cache.create(message_id, bool(session_id))
@@ -1149,7 +1153,7 @@ class RPC(MessageEmitter):
                 )
                 # By default, hypha will clear the session after the method is called
                 # However, if the args contains _rintf === true, we will not clear the session
-                
+
                 # Helper function to recursively check for _rintf objects
                 def has_interface_object(obj):
                     if not obj or not isinstance(obj, (dict, list, tuple)):
@@ -1157,11 +1161,13 @@ class RPC(MessageEmitter):
                     if isinstance(obj, dict):
                         if obj.get("_rintf") == True:
                             return True
-                        return any(has_interface_object(value) for value in obj.values())
+                        return any(
+                            has_interface_object(value) for value in obj.values()
+                        )
                     elif isinstance(obj, (list, tuple)):
                         return any(has_interface_object(item) for item in obj)
                     return False
-                
+
                 clear_after_called = not has_interface_object(args)
 
                 promise_data = self._encode_promise(
