@@ -127,6 +127,21 @@ async function _createOffer(params, server, config, onInit, context) {
   let answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
 
+  // Wait for ICE candidates to be gathered (important for Firefox)
+  await new Promise((resolveIce) => {
+    if (pc.iceGatheringState === "complete") {
+      resolveIce();
+    } else {
+      pc.addEventListener("icegatheringstatechange", () => {
+        if (pc.iceGatheringState === "complete") {
+          resolveIce();
+        }
+      });
+      // Don't wait forever for ICE gathering
+      setTimeout(resolveIce, 5000);
+    }
+  });
+
   return {
     sdp: pc.localDescription.sdp,
     type: pc.localDescription.type,
@@ -146,30 +161,80 @@ async function getRTCService(server, service_id, config) {
   });
 
   return new Promise(async (resolve, reject) => {
+    let resolved = false;
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        pc.close();
+        reject(new Error("WebRTC Connection timeout"));
+      }
+    }, 30000); // Increase timeout to 30 seconds
+
     try {
       pc.addEventListener(
         "connectionstatechange",
         () => {
+          console.log("WebRTC Connection state: ", pc.connectionState);
           if (pc.connectionState === "failed") {
-            pc.close();
-            reject(new Error("WebRTC Connection failed"));
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              pc.close();
+              reject(new Error("WebRTC Connection failed"));
+            }
           } else if (pc.connectionState === "closed") {
-            reject(new Error("WebRTC Connection closed"));
-          } else {
-            console.log("WebRTC Connection state: ", pc.connectionState);
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              reject(new Error("WebRTC Connection closed"));
+            }
+          } else if (pc.connectionState === "connected") {
+            console.log("WebRTC Connection established successfully");
           }
         },
         false,
       );
 
+      // Add ICE connection state change handler for better debugging
+      pc.addEventListener("iceconnectionstatechange", () => {
+        console.log("ICE Connection state: ", pc.iceConnectionState);
+        if (pc.iceConnectionState === "failed") {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            pc.close();
+            reject(new Error("ICE Connection failed"));
+          }
+        }
+      });
+
       if (config.on_init) {
         await config.on_init(pc);
         delete config.on_init;
       }
+
       let channel = pc.createDataChannel(config.peer_id, { ordered: true });
       channel.binaryType = "arraybuffer";
+
+      // Wait for ICE gathering to complete before creating offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+
+      // Wait for ICE candidates to be gathered (important for Firefox)
+      await new Promise((resolveIce) => {
+        if (pc.iceGatheringState === "complete") {
+          resolveIce();
+        } else {
+          pc.addEventListener("icegatheringstatechange", () => {
+            if (pc.iceGatheringState === "complete") {
+              resolveIce();
+            }
+          });
+          // Don't wait forever for ICE gathering
+          setTimeout(resolveIce, 5000);
+        }
+      });
+
       const svc = await server.getService(service_id);
       const answer = await svc.offer({
         sdp: pc.localDescription.sdp,
@@ -179,77 +244,102 @@ async function getRTCService(server, service_id, config) {
       channel.onopen = () => {
         config.channel = channel;
         config.workspace = answer.workspace;
-        // Wait for the channel to be open before returning the rpc
-        // This is needed for safari to work
+        // Increase timeout for Firefox compatibility
         setTimeout(async () => {
-          const rpc = await _setupRPC(config);
-          pc.rpc = rpc;
-          async function get_service(name, ...args) {
-            assert(
-              !name.includes(":"),
-              "WebRTC service name should not contain ':'",
-            );
-            assert(
-              !name.includes("/"),
-              "WebRTC service name should not contain '/'",
-            );
-            return await rpc.get_remote_service(
-              config.workspace + "/" + config.peer_id + ":" + name,
-              ...args,
-            );
-          }
-          async function disconnect() {
-            await rpc.disconnect();
-            pc.close();
-          }
-          pc.getService = schemaFunction(get_service, {
-            name: "getService",
-            description: "Get a remote service via webrtc",
-            parameters: {
-              type: "object",
-              properties: {
-                service_id: {
-                  type: "string",
-                  description:
-                    "Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
-                },
-                config: {
+          if (!resolved) {
+            try {
+              const rpc = await _setupRPC(config);
+              pc.rpc = rpc;
+              async function get_service(name, ...args) {
+                assert(
+                  !name.includes(":"),
+                  "WebRTC service name should not contain ':'",
+                );
+                assert(
+                  !name.includes("/"),
+                  "WebRTC service name should not contain '/'",
+                );
+                return await rpc.get_remote_service(
+                  config.workspace + "/" + config.peer_id + ":" + name,
+                  ...args,
+                );
+              }
+              async function disconnect() {
+                await rpc.disconnect();
+                pc.close();
+              }
+              pc.getService = schemaFunction(get_service, {
+                name: "getService",
+                description: "Get a remote service via webrtc",
+                parameters: {
                   type: "object",
-                  description: "Options for the service",
-                },
-              },
-              required: ["id"],
-            },
-          });
-          pc.disconnect = schemaFunction(disconnect, {
-            name: "disconnect",
-            description: "Disconnect from the webrtc connection via webrtc",
-            parameters: { type: "object", properties: {} },
-          });
-          pc.registerCodec = schemaFunction(rpc.register_codec, {
-            name: "registerCodec",
-            description: "Register a codec for the webrtc connection",
-            parameters: {
-              type: "object",
-              properties: {
-                codec: {
-                  type: "object",
-                  description: "Codec to register",
                   properties: {
-                    name: { type: "string" },
-                    type: {},
-                    encoder: { type: "function" },
-                    decoder: { type: "function" },
+                    service_id: {
+                      type: "string",
+                      description:
+                        "Service ID. This should be a service id in the format: 'workspace/service_id', 'workspace/client_id:service_id' or 'workspace/client_id:service_id@app_id'",
+                    },
+                    config: {
+                      type: "object",
+                      description: "Options for the service",
+                    },
+                  },
+                  required: ["id"],
+                },
+              });
+              pc.disconnect = schemaFunction(disconnect, {
+                name: "disconnect",
+                description: "Disconnect from the webrtc connection via webrtc",
+                parameters: { type: "object", properties: {} },
+              });
+              pc.registerCodec = schemaFunction(rpc.register_codec, {
+                name: "registerCodec",
+                description: "Register a codec for the webrtc connection",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    codec: {
+                      type: "object",
+                      description: "Codec to register",
+                      properties: {
+                        name: { type: "string" },
+                        type: {},
+                        encoder: { type: "function" },
+                        decoder: { type: "function" },
+                      },
+                    },
                   },
                 },
-              },
-            },
-          });
-          resolve(pc);
-        }, 500);
+              });
+              resolved = true;
+              clearTimeout(timeout);
+              resolve(pc);
+            } catch (e) {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                reject(e);
+              }
+            }
+          }
+        }, 1000); // Increase timeout to 1 second for Firefox
       };
 
-      channel.onclose = () => reject(new Error("Data channel closed"));
+      channel.onclose = () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          reject(new Error("Data channel closed"));
+        }
+      };
+
+      channel.onerror = (error) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          reject(new Error(`Data channel error: ${error}`));
+        }
+      };
 
       await pc.setRemoteDescription(
         new RTCSessionDescription({
@@ -258,7 +348,11 @@ async function getRTCService(server, service_id, config) {
         }),
       );
     } catch (e) {
-      reject(e);
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        reject(e);
+      }
     }
   });
 }
