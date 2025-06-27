@@ -365,6 +365,53 @@ async def test_openai_server_comprehensive(websocket_server):
         )
         assert response.status_code == 400
 
+    # Test with AsyncOpenAI client for real OpenAI client compatibility
+    token = await server.generate_token()
+    openai_client = AsyncOpenAI(
+        base_url=f"{base_url}/v1", 
+        api_key=token
+    )
+    
+    # Test non-streaming with AsyncOpenAI
+    response = await openai_client.chat.completions.create(
+        model="string-model",
+        messages=[{"role": "user", "content": "Hello from OpenAI client"}],
+        max_tokens=50,
+        stream=False
+    )
+    assert response.model == "string-model"
+    assert response.choices[0].message.role == "assistant"
+    assert "String response to: Hello from OpenAI client" in response.choices[0].message.content
+    
+    # Test streaming with AsyncOpenAI
+    response = await openai_client.chat.completions.create(
+        model="streaming-model",
+        messages=[{"role": "user", "content": "Stream test"}],
+        max_tokens=3,
+        stream=True
+    )
+    
+    chunks_received = 0
+    async for chunk in response:
+        chunks_received += 1
+        assert chunk.choices[0].delta.role in ["assistant", None]
+        if chunk.choices[0].delta.content:
+            assert isinstance(chunk.choices[0].delta.content, str)
+        # Don't collect too many chunks for testing
+        if chunks_received >= 3:
+            break
+    
+    assert chunks_received > 0  # Ensure we received some chunks
+    
+    # Test dict model with AsyncOpenAI
+    response = await openai_client.chat.completions.create(
+        model="dict-model", 
+        messages=[{"role": "user", "content": "Test dict with OpenAI client"}],
+        stream=False
+    )
+    assert response.model == "dict-model"
+    assert response.choices[0].message.content == "Dict response from model"
+
 
 @pytest.mark.asyncio
 async def test_openai_server_edge_cases(websocket_server):

@@ -73,17 +73,22 @@ class ChatCompletionResponse(BaseModel):
     ]
     created: Optional[int] = Field(default_factory=lambda: int(time.time()))
 
-
 # Function to create FastAPI app based on the model registry
-def create_openai_chat_server(model_registry: ModelRegistry) -> FastAPI:
+def create_openai_chat_server(
+    model_registry: ModelRegistry,
+    allow_origins: Union[List[str], str] = "*",
+    allow_credentials: bool = True,
+    allow_methods: Union[List[str], str] = "*", 
+    allow_headers: Union[List[str], str] = "*"
+) -> FastAPI:
     app = FastAPI()
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=allow_origins if isinstance(allow_origins, list) else [allow_origins],
+        allow_credentials=allow_credentials,
+        allow_methods=allow_methods if isinstance(allow_methods, list) else [allow_methods],
+        allow_headers=allow_headers if isinstance(allow_headers, list) else [allow_headers],
     )
 
     @app.get("/v1/models", response_model=ModelList)
