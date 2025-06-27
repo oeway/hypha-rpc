@@ -167,80 +167,259 @@ async def test_serve_fastapi_app(websocket_server):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="OpenAI server proxy is not working, maybe due to the incompatible httpx version, it needs <=0.27.0")
-async def test_openai_server_proxy(websocket_server):
-    """Test the OpenAI server proxy."""
-
-    async def text_generator(request: dict):
+async def test_openai_server_comprehensive(websocket_server):
+    """Test comprehensive OpenAI server proxy with different model registry types."""
+    
+    # Test different types of model registry functions
+    
+    # 1. Simple string response
+    def string_model(request: dict):
+        messages = request.get("messages", [])
+        user_message = messages[-1]["content"] if messages else "No message"
+        return f"String response to: {user_message}"
+    
+    # 2. Dict response
+    def dict_model(request: dict):
+        return {
+            "model": request["model"],
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Dict response from model"
+                }
+            }],
+            "created": 1234567890
+        }
+    
+    # 3. AsyncGenerator for streaming
+    async def streaming_model(request: dict):
         max_tokens = request.get("max_tokens", 50)
-        words = [
-            "hello",
-            "world",
-            "foo",
-            "bar",
-            "chatbot",
-            "test",
-            "api",
-            "response",
-            "markdown",
-        ]
-        # Simulate streaming random markdown text
-        for _ in range(5):  # Stream 5 chunks of random text
-            delta_text = " ".join(random.choices(words, k=max_tokens // 5))
-            yield delta_text
-            await asyncio.sleep(0.1)  # Simulate delay between chunks
+        words = ["hello", "world", "test", "streaming"]
+        for i in range(min(5, max_tokens)):
+            yield f"{words[i % len(words)]} "
+            await asyncio.sleep(0.01)  # Small delay for testing
+    
+    # 4. Awaitable returning string
+    async def async_string_model(request: dict):
+        await asyncio.sleep(0.01)  # Simulate async work
+        return "Async string response"
+    
+    # 5. Awaitable returning dict
+    async def async_dict_model(request: dict):
+        await asyncio.sleep(0.01)  # Simulate async work
+        return {
+            "model": request["model"],
+            "object": "chat.completion", 
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Async dict response"
+                }
+            }]
+        }
 
-    model_registry = {"test-chat-model": text_generator}
+    model_registry = {
+        "string-model": string_model,
+        "dict-model": dict_model, 
+        "streaming-model": streaming_model,
+        "async-string-model": async_string_model,
+        "async-dict-model": async_dict_model
+    }
+    
     app = create_openai_chat_server(model_registry)
-
     server = await connect_to_server({"server_url": WS_SERVER_URL})
     workspace = server.config["workspace"]
-    token = await server.generate_token()
-
-    service_id = "openai-server"
-
+    service_id = "openai-comprehensive-test"
+    
     await register_asgi_service(server, service_id, app)
-
-    # Let's test it using httpx
+    
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/v1/models"
-        )
+        base_url = f"{WS_SERVER_URL}/{workspace}/apps/{service_id}"
+        
+        # Test models list endpoint
+        response = await client.get(f"{base_url}/v1/models")
         assert response.status_code == 200
         data = response.json()
         assert data["object"] == "list"
-        assert data["data"][0]["id"] == "test-chat-model"
-
+        assert len(data["data"]) == 5
+        model_ids = [model["id"] for model in data["data"]]
+        assert all(model_id in model_ids for model_id in model_registry.keys())
+        
+        # Test string model
         response = await client.post(
-            f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/v1/chat/completions",
+            f"{base_url}/v1/chat/completions",
             json={
-                "model": "test-chat-model",
-                "messages": [{"role": "user", "content": "Tell me a story."}],
-                "temperature": 0.8,
+                "model": "string-model",
+                "messages": [{"role": "user", "content": "Hello"}],
                 "max_tokens": 50,
-                "stream": False,
-            },
+                "stream": False
+            }
         )
         assert response.status_code == 200
-        assert response.headers["content-type"].startswith("application/json")
         data = response.json()
-        assert data["model"] == "test-chat-model"
-        assert data["choices"][0]["message"]["role"] == "assistant"
+        assert data["model"] == "string-model"
+        assert "String response to: Hello" in data["choices"][0]["message"]["content"]
+        
+        # Test dict model
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "dict-model",
+                "messages": [{"role": "user", "content": "Test dict"}],
+                "stream": False
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["model"] == "dict-model"
+        assert data["choices"][0]["message"]["content"] == "Dict response from model"
+        
+        # Test streaming model - non-streaming mode
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "streaming-model",
+                "messages": [{"role": "user", "content": "Test streaming"}],
+                "max_tokens": 3,
+                "stream": False
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["model"] == "streaming-model"
+        content = data["choices"][0]["message"]["content"]
+        assert len(content.split()) <= 3  # Should respect max_tokens
+        
+        # Test async string model
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "async-string-model",
+                "messages": [{"role": "user", "content": "Test async"}],
+                "stream": False
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["model"] == "async-string-model"
+        assert data["choices"][0]["message"]["content"] == "Async string response"
+        
+        # Test async dict model
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "async-dict-model", 
+                "messages": [{"role": "user", "content": "Test async dict"}],
+                "stream": False
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["model"] == "async-dict-model"
+        assert data["choices"][0]["message"]["content"] == "Async dict response"
+        
+        # Test streaming mode
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "streaming-model",
+                "messages": [{"role": "user", "content": "Test streaming mode"}],
+                "max_tokens": 3,
+                "stream": True
+            }
+        )
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        
+        # Test error cases
+        # Non-existent model
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "non-existent",
+                "messages": [{"role": "user", "content": "Test"}],
+            }
+        )
+        assert response.status_code == 404
+        
+        # Invalid request - no messages
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "string-model",
+                "messages": [],
+            }
+        )
+        assert response.status_code == 400
+        
+        # Invalid request - last message is assistant
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "string-model",
+                "messages": [{"role": "assistant", "content": "I am assistant"}],
+            }
+        )
+        assert response.status_code == 400
 
-    client = AsyncOpenAI(
-        base_url=f"{WS_SERVER_URL}/{workspace}/apps/{service_id}/v1", api_key=token
-    )
-    response = await client.chat.completions.create(
-        model="test-chat-model",
-        messages=[{"role": "user", "content": "Tell me a story."}],
-        temperature=0.8,
-        max_tokens=50,
-        stream=True,
-    )
 
-    async for chunk in response:
-        print("Chunk:", chunk.choices[0].delta.content)
-        assert chunk.choices[0].delta.role == "assistant"
+@pytest.mark.asyncio
+async def test_openai_server_edge_cases(websocket_server):
+    """Test edge cases for OpenAI server including null max_tokens."""
+    
+    # Model that generates long content to test max_tokens handling
+    async def long_content_model(request: dict):
+        # Generate content longer than typical max_tokens
+        for i in range(100):
+            yield f"word{i} "
+    
+    model_registry = {"long-model": long_content_model}
+    app = create_openai_chat_server(model_registry)
+    
+    server = await connect_to_server({"server_url": WS_SERVER_URL})
+    workspace = server.config["workspace"]
+    service_id = "openai-edge-test"
+    
+    await register_asgi_service(server, service_id, app)
+    
+    async with httpx.AsyncClient() as client:
+        base_url = f"{WS_SERVER_URL}/{workspace}/apps/{service_id}"
+        
+        # Test with null max_tokens (should not cause errors)
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "long-model",
+                "messages": [{"role": "user", "content": "Generate long text"}],
+                "max_tokens": None,  # This was causing bugs before the fix
+                "stream": False
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # Should not be truncated when max_tokens is None
+        content = data["choices"][0]["message"]["content"]
+        assert len(content.split()) >= 50  # Should be much longer
+        
+        # Test with specific max_tokens limit
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": "long-model",
+                "messages": [{"role": "user", "content": "Generate long text"}],
+                "max_tokens": 5,
+                "stream": False
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+        # Should be truncated to max_tokens
+        word_count = len([w for w in content.split() if w.strip()])
+        assert word_count <= 5
 
 
 @pytest.mark.asyncio
