@@ -943,10 +943,12 @@ export class RPC extends MessageEmitter {
     description,
   ) {
     let store = this._get_session_store(session_id, true);
-    assert(
-      store,
-      `Failed to create session store ${session_id} due to invalid parent`,
-    );
+    if (!store) {
+      // Handle the case where session store creation failed gracefully
+      console.warn(`Failed to create session store ${session_id}, session management may be impaired`);
+      // Create a minimal fallback store
+      store = {};
+    }
     let encoded = {};
 
     if (timer && reject && this._method_timeout) {
@@ -1026,7 +1028,17 @@ export class RPC extends MessageEmitter {
       }
 
       // Wait for all chunk uploads to finish
-      await Promise.all(tasks);
+      try {
+        await Promise.all(tasks);
+      } catch (error) {
+        // If any chunk fails, clean up the message cache
+        try {
+          await message_cache.remove(message_id);
+        } catch (cleanupError) {
+          console.error(`Failed to clean up message cache after error: ${cleanupError}`);
+        }
+        throw error;
+      }
     } else {
       // 3) Legacy version (sequential appends):
       await message_cache.create(message_id, !!session_id);
@@ -1164,13 +1176,22 @@ export class RPC extends MessageEmitter {
           );
           // By default, hypha will clear the session after the method is called
           // However, if the args contains _rintf === true, we will not clear the session
-          let clear_after_called = true;
-          for (let arg of args) {
-            if (typeof arg === "object" && arg._rintf === true) {
-              clear_after_called = false;
-              break;
+          
+          // Helper function to recursively check for _rintf objects
+          function hasInterfaceObject(obj) {
+            if (!obj || typeof obj !== "object") return false;
+            if (obj._rintf === true) return true;
+            if (Array.isArray(obj)) {
+              return obj.some(item => hasInterfaceObject(item));
             }
+            if (obj.constructor === Object) {
+              return Object.values(obj).some(value => hasInterfaceObject(value));
+            }
+            return false;
           }
+          
+          let clear_after_called = !hasInterfaceObject(args);
+          
           const promiseData = await self._encode_promise(
             resolve,
             reject,
@@ -1461,7 +1482,8 @@ export class RPC extends MessageEmitter {
       const last_index = levels.length - 1;
       for (let level of levels.slice(0, last_index)) {
         if (!store[level]) {
-          return null;
+          // Instead of returning null, create intermediate sessions as needed
+          store[level] = {};
         }
         store = store[level];
       }
@@ -1675,6 +1697,9 @@ export class RPC extends MessageEmitter {
       nj.NdArray &&
       aObject instanceof nj.NdArray
     ) {
+      if (!aObject.selection || !aObject.selection.data) {
+        throw new Error("Invalid NumJS array: missing selection or data");
+      }
       const dtype = typedArrayToDtype(aObject.selection.data);
       bObject = {
         _rtype: "ndarray",
@@ -1768,8 +1793,7 @@ export class RPC extends MessageEmitter {
         ),
       };
     } else if (
-      aObject.constructor instanceof Object ||
-      Array.isArray(aObject)
+      aObject.constructor === Object || Array.isArray(aObject)
     ) {
       bObject = isarray ? [] : {};
       const keys = Object.keys(aObject);
@@ -1844,23 +1868,18 @@ export class RPC extends MessageEmitter {
 
         // Create an async generator proxy
         async function* asyncGeneratorProxy() {
-          try {
-            while (true) {
-              try {
-                const next_item = await gen_method();
-                // Check for StopIteration signal
-                if (next_item && next_item._rtype === "stop_iteration") {
-                  break;
-                }
-                yield next_item;
-              } catch (error) {
-                console.error("Error in generator:", error);
-                throw error;
+          while (true) {
+            try {
+              const next_item = await gen_method();
+              // Check for StopIteration signal
+              if (next_item && next_item._rtype === "stop_iteration") {
+                break;
               }
+              yield next_item;
+            } catch (error) {
+              console.error("Error in generator:", error);
+              throw error;
             }
-          } catch (error) {
-            console.error("Error in generator:", error);
-            throw error;
           }
         }
         bObject = asyncGeneratorProxy();

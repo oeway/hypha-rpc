@@ -6,8 +6,8 @@ import time
 from typing import List, Literal, Union, Optional, Callable, Dict, AsyncGenerator
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sse_starlette.sse import EventSourceResponse
 
 # Define the model registry type for better type hints
 ModelRegistry = Dict[str, callable]
@@ -123,8 +123,14 @@ def create_openai_chat_server(
         elif isinstance(resp, AsyncGenerator):
             # Streaming mode
             if request.stream:
-                return EventSourceResponse(
-                    stream_chunks(resp, model_id), media_type="text/event-stream"
+                return StreamingResponse(
+                    stream_chunks(resp, model_id), 
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no"  # Disable nginx buffering
+                    }
                 )
             # Non-streaming mode
             response_text = ""
@@ -163,21 +169,33 @@ def create_openai_chat_server(
 
 # Streaming helper to package text chunks in the response structure
 async def stream_chunks(generator: AsyncGenerator, model_id: str):
-    async for chunk in generator:
-        if isinstance(chunk, str):
-            delta = DeltaMessage(content=chunk, role="assistant")
-            choice_data = ChatCompletionResponseStreamChoice(index=0, delta=delta)
-            chunk_response = ChatCompletionResponse(
-                model=model_id,
-                choices=[choice_data],
-                object="chat.completion.chunk",
-            )
-            yield chunk_response.model_dump_json(exclude_unset=True)
-        elif isinstance(chunk, dict):
-            chunk_response = ChatCompletionResponse.model_validate(chunk)
-            yield chunk_response.model_dump_json(exclude_unset=True)
-        else:
-            raise ValueError("Invalid chunk type")
+    try:
+        async for chunk in generator:
+            if isinstance(chunk, str):
+                delta = DeltaMessage(content=chunk, role="assistant")
+                choice_data = ChatCompletionResponseStreamChoice(index=0, delta=delta)
+                chunk_response = ChatCompletionResponse(
+                    model=model_id,
+                    choices=[choice_data],
+                    object="chat.completion.chunk",
+                )
+                yield f"data: {chunk_response.model_dump_json(exclude_unset=True)}\n\n"
+            elif isinstance(chunk, dict):
+                chunk_response = ChatCompletionResponse.model_validate(chunk)
+                yield f"data: {chunk_response.model_dump_json(exclude_unset=True)}\n\n"
+            else:
+                raise ValueError("Invalid chunk type")
+        # Send final chunk to indicate end of stream
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        # Send error chunk if streaming fails
+        error_chunk = {
+            "error": {
+                "message": str(e),
+                "type": "stream_error"
+            }
+        }
+        yield f"data: {error_chunk}\n\n"
 
 
 async def serve_app(
@@ -213,9 +231,23 @@ async def serve_app(
 
 async def register_asgi_service(server, service_id, app, check_context=None, **kwargs):
     async def serve_fastapi(args, context=None):
-        if check_context:
-            await check_context(context=context, **args)
-        await app(args["scope"], args["receive"], args["send"])
+        try:
+            if check_context:
+                await check_context(context=context, **args)
+            
+            # Ensure we're using the correct event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                # If the current loop is closed, get a new one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            await app(args["scope"], args["receive"], args["send"])
+        except Exception as e:
+            # Log the error and re-raise
+            import logging
+            logging.error(f"Error in ASGI service: {e}")
+            raise
 
     svc = {
         "id": service_id,

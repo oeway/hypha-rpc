@@ -937,9 +937,11 @@ class RPC(MessageEmitter):
     ):
         """Encode a group of callbacks without promise."""
         store = self._get_session_store(session_id, create=True)
-        assert (
-            store is not None
-        ), f"Failed to create session store {session_id} due to invalid parent"
+        if store is None:
+            # Handle the case where session store creation failed gracefully
+            logger.warning(f"Failed to create session store {session_id}, session management may be impaired")
+            # Create a minimal fallback store
+            store = {}
         encoded = {}
 
         if timer and reject and self._method_timeout:
@@ -1010,7 +1012,15 @@ class RPC(MessageEmitter):
                 tasks.append(asyncio.create_task(append_chunk(idx, chunk)))
 
             # Wait for all chunks to finish uploading
-            await asyncio.gather(*tasks)
+            try:
+                await asyncio.gather(*tasks)
+            except Exception as error:
+                # If any chunk fails, clean up the message cache
+                try:
+                    await message_cache.remove(message_id)
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to clean up message cache after error: {cleanup_error}")
+                raise error
         else:
             await message_cache.create(message_id, bool(session_id))
             for idx in range(chunk_num):
@@ -1090,13 +1100,6 @@ class RPC(MessageEmitter):
                 # Store the children session under the parent
                 local_session_id = local_parent + "." + local_session_id
             store = self._get_session_store(local_session_id, create=True)
-            if store is None:
-                reject(
-                    RuntimeError(
-                        f"Failed to get session store {local_session_id} (context: {description})"
-                    )
-                )
-                return
             store["target_id"] = target_id
             args = self._encode(
                 arguments,
@@ -1146,13 +1149,20 @@ class RPC(MessageEmitter):
                 )
                 # By default, hypha will clear the session after the method is called
                 # However, if the args contains _rintf === true, we will not clear the session
-                clear_after_called = True
-                for arg in args:
-                    if (isinstance(arg, dict) and arg.get("_rintf")) or (
-                        hasattr(arg, "_rintf") and arg._rintf == True
-                    ):
-                        clear_after_called = False
-                        break
+                
+                # Helper function to recursively check for _rintf objects
+                def has_interface_object(obj):
+                    if not obj or not isinstance(obj, (dict, list, tuple)):
+                        return False
+                    if isinstance(obj, dict):
+                        if obj.get("_rintf") == True:
+                            return True
+                        return any(has_interface_object(value) for value in obj.values())
+                    elif isinstance(obj, (list, tuple)):
+                        return any(has_interface_object(item) for item in obj)
+                    return False
+                
+                clear_after_called = not has_interface_object(args)
 
                 promise_data = self._encode_promise(
                     resolve=resolve,
@@ -1470,9 +1480,10 @@ class RPC(MessageEmitter):
         store = self._object_store
         levels = session_id.split(".")
         if create:
+            # Create intermediate sessions if they don't exist
             for level in levels[:-1]:
                 if level not in store:
-                    return None
+                    store[level] = {}
                 store = store[level]
 
             # Create the last level
@@ -1565,9 +1576,6 @@ class RPC(MessageEmitter):
                     "_rpromise": "*",
                 }
                 store = self._get_session_store(session_id, create=True)
-                assert (
-                    store is not None
-                ), f"Failed to create session store {session_id} due to invalid parent"
                 store[object_id] = a_object
 
             b_object["_rdoc"] = callable_doc(a_object)
@@ -1665,9 +1673,6 @@ class RPC(MessageEmitter):
 
             # Store the generator in the session
             store = self._get_session_store(session_id, create=True)
-            assert (
-                store is not None
-            ), f"Failed to create session store {session_id} due to invalid parent"
 
             # Check if it's an async generator
             is_async = inspect.isasyncgen(a_object)
@@ -1869,25 +1874,24 @@ class RPC(MessageEmitter):
 
                 # Create an async generator proxy
                 async def async_generator_proxy():
-                    try:
-                        while True:
-                            try:
-                                next_item = await gen_method()
-                                # Check for StopIteration signal
-                                if (
-                                    isinstance(next_item, dict)
-                                    and next_item.get("_rtype") == "stop_iteration"
-                                ):
-                                    break
-                                yield next_item
-                            except StopAsyncIteration:
+                    while True:
+                        try:
+                            next_item = await gen_method()
+                            # Check for StopIteration signal
+                            if (
+                                isinstance(next_item, dict)
+                                and next_item.get("_rtype") == "stop_iteration"
+                            ):
                                 break
-                            except StopIteration:
-                                break
-                    except Exception as e:
-                        # Properly propagate exceptions
-                        logger.error(f"Error in generator: {e}")
-                        raise
+                            yield next_item
+                        except StopAsyncIteration:
+                            break
+                        except StopIteration:
+                            break
+                        except Exception as e:
+                            # Properly propagate exceptions
+                            logger.error(f"Error in generator: {e}")
+                            raise
 
                 b_object = async_generator_proxy()
             else:
