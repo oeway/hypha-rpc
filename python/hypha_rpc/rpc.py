@@ -562,9 +562,25 @@ class RPC(MessageEmitter):
         self._event_handlers = {}
         self._services = {}
 
+    def _close_sessions(self, store):
+        for key, value in list(store.items()):
+            if key in ("services", "message_cache"):
+                continue
+            if isinstance(value, dict):
+                if value.get("heartbeat_task"):
+                    value["heartbeat_task"].cancel()
+                if value.get("timer"):
+                    value["timer"].clear()
+                self._close_sessions(value)
+
+    def close(self):
+        """Close the RPC connection and clean up resources."""
+        self._close_sessions(self._object_store)
+        self._fire("disconnected")
+
     async def disconnect(self):
         """Disconnect."""
-        self._fire("disconnected")
+        self.close()
         await self._connection.disconnect()
 
     async def get_manager_service(self, config=None):
@@ -1430,6 +1446,9 @@ class RPC(MessageEmitter):
                     heartbeat_task = asyncio.ensure_future(
                         heartbeat(promise["interval"])
                     )
+                    store = self._get_session_store(data["session"], create=False)
+                    if store:
+                        store["heartbeat_task"] = heartbeat_task
             else:
                 resolve, reject = None, None
 
@@ -1524,6 +1543,9 @@ class RPC(MessageEmitter):
                 method_name=method_name,
                 run_in_executor=run_in_executor,
             )
+            store = self._get_session_store(data.get("session"), create=False)
+            if store and "heartbeat_task" in store:
+                del store["heartbeat_task"]
 
         except Exception as err:
             # make sure we clear the heartbeat timer

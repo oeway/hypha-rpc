@@ -549,8 +549,24 @@ export class RPC extends MessageEmitter {
     this._services = {};
   }
 
-  async disconnect() {
+  close() {
+    // Clear all heartbeat intervals
+    for (const session_id in this._object_store) {
+      if (this._object_store.hasOwnProperty(session_id)) {
+        const session = this._object_store[session_id];
+        if (session && session.heartbeat_task) {
+          clearInterval(session.heartbeat_task);
+        }
+        if (session && session.timer) {
+          session.timer.clear();
+        }
+      }
+    }
     this._fire("disconnected");
+  }
+
+  async disconnect() {
+    this.close();
     await this._connection.disconnect();
   }
 
@@ -1385,6 +1401,13 @@ export class RPC extends MessageEmitter {
             }
           }
           heartbeat_task = setInterval(heartbeat, promise.interval * 1000);
+          // Store the heartbeat task in the session store for cleanup
+          if (data.session) {
+            const session_store = this._get_session_store(data.session, false);
+            if (session_store) {
+              session_store.heartbeat_task = heartbeat_task;
+            }
+          }
         }
       }
 
@@ -1510,6 +1533,12 @@ export class RPC extends MessageEmitter {
       } else {
         method.apply(null, args);
         clearInterval(heartbeat_task);
+      }
+      if (data.session) {
+        const session_store = this._get_session_store(data.session, false);
+        if (session_store) {
+          delete session_store.heartbeat_task;
+        }
       }
     } catch (err) {
       if (reject) {
