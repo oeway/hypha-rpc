@@ -924,13 +924,54 @@ export class RPC extends MessageEmitter {
           timer.clear();
         }
         if (clear_after_called && self._object_store[session_id]) {
-          // console.log("Deleting session", session_id, "from", self._client_id);
-          delete self._object_store[session_id];
+          // Simple cleanup - let the session manager handle the logic
+          self._cleanup_session_if_needed(session_id, name);
         }
       }
     };
     wrapped_callback.__name__ = `callback(${method_id})`;
     return [encoded, wrapped_callback];
+  }
+
+  // Clean session management - all logic in one place
+  _cleanup_session_if_needed(session_id, callback_name) {
+    const store = this._get_session_store(session_id, false);
+    if (!store) return;
+
+    // Promise sessions: let the promise manager decide cleanup
+    if (store._promise_manager) {
+      if (store._promise_manager.should_cleanup_on_callback(callback_name)) {
+        store._promise_manager.settle();
+        delete this._object_store[session_id];
+      }
+      return;
+    }
+
+    // Regular sessions: cleanup immediately
+    delete this._object_store[session_id];
+  }
+
+  // Clean helper to identify promise method calls by session type
+  _is_promise_method_call(method_path) {
+    const session_id = method_path.split(".")[0];
+    const session = this._get_session_store(session_id, false);
+    return session && session._promise_manager;
+  }
+
+  // Clean Promise Manager - encapsulates all promise lifecycle logic
+  _create_promise_manager() {
+    return {
+      settled: false,
+      settle() {
+        this.settled = true;
+      },
+      is_settled() {
+        return this.settled;
+      },
+      should_cleanup_on_callback(callback_name) {
+        return callback_name === "resolve" || callback_name === "reject";
+      },
+    };
   }
 
   async _encode_promise(
@@ -944,14 +985,15 @@ export class RPC extends MessageEmitter {
   ) {
     let store = this._get_session_store(session_id, true);
     if (!store) {
-      // Handle the case where session store creation failed gracefully
       console.warn(
         `Failed to create session store ${session_id}, session management may be impaired`,
       );
-      // Create a minimal fallback store
       store = {};
     }
     let encoded = {};
+
+    // Clean promise lifecycle management
+    store._promise_manager = this._create_promise_manager();
 
     if (timer && reject && this._method_timeout) {
       [encoded.heartbeat, store.heartbeat] = this._encode_callback(
@@ -961,12 +1003,9 @@ export class RPC extends MessageEmitter {
         false,
         null,
         local_workspace,
-        // `heartbeat (${description})`,
       );
       store.timer = timer;
       encoded.interval = this._method_timeout / 2;
-    } else {
-      timer = null;
     }
 
     [encoded.resolve, store.resolve] = this._encode_callback(
@@ -1354,7 +1393,14 @@ export class RPC extends MessageEmitter {
       try {
         method = indexObject(this._object_store, data["method"]);
       } catch (e) {
-        // console.debug("Failed to find method", method_name, this._client_id, e);
+        // Clean promise method error handling
+        if (this._is_promise_method_call(data["method"])) {
+          console.debug(
+            `Promise method ${data["method"]} not available (session settled or cleaned up), ignoring: ${method_name}`,
+          );
+          return;
+        }
+
         throw new Error(
           `Method not found: ${method_name} at ${this._client_id}`,
         );

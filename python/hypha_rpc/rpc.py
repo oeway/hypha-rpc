@@ -914,16 +914,64 @@ class RPC(MessageEmitter):
             finally:
                 if timer and timer.started:
                     timer.clear()  # Clear the timer first before deleting the session
-                if clear_after_called and session_id in self._object_store:
-                    logger.info(
-                        "Deleting session %s from %s (context: %s)",
-                        session_id,
-                        self._client_id,
-                        description,
-                    )
-                    del self._object_store[session_id]
+                if clear_after_called and self._get_session_store(
+                    session_id, create=False
+                ):
+                    # Clean delegation - no complex logic here
+                    self._cleanup_session_if_needed(session_id, name)
 
         return encoded, wrapped_callback
+
+    def _create_promise_manager(self):
+        """Create a Promise Manager - encapsulates all promise lifecycle logic."""
+
+        class PromiseManager:
+            def __init__(self):
+                self.settled = False
+
+            def settle(self):
+                self.settled = True
+
+            def is_settled(self):
+                return self.settled
+
+            def should_cleanup_on_callback(self, callback_name):
+                return callback_name in ("resolve", "reject")
+
+        return PromiseManager()
+
+    def _is_promise_method_call(self, method_path):
+        """Clean helper to identify promise method calls by session type."""
+        session_id = method_path.split(".")[0]
+        session = self._get_session_store(session_id, create=False)
+        return session and "_promise_manager" in session
+
+    def _cleanup_session_if_needed(self, session_id, callback_name):
+        """Clean session management - all logic in one place."""
+        store = self._get_session_store(session_id, create=False)
+        if not store:
+            return
+
+        # Promise sessions: let the promise manager decide cleanup
+        if "_promise_manager" in store:
+            if store["_promise_manager"].should_cleanup_on_callback(callback_name):
+                store["_promise_manager"].settle()
+                logger.debug(f"Promise session {session_id} settled and cleaned up")
+                # Clean up the entire session path
+                levels = session_id.split(".")
+                current_store = self._object_store
+                for level in levels[:-1]:
+                    current_store = current_store[level]
+                del current_store[levels[-1]]
+            return
+
+        # Regular sessions: cleanup immediately
+        logger.debug(f"Regular session {session_id} cleaned up")
+        levels = session_id.split(".")
+        current_store = self._object_store
+        for level in levels[:-1]:
+            current_store = current_store[level]
+        del current_store[levels[-1]]
 
     def _encode_promise(
         self,
@@ -944,6 +992,11 @@ class RPC(MessageEmitter):
             )
             # Create a minimal fallback store
             store = {}
+
+        # Clean promise lifecycle management - TYPE-BASED, not string-based
+        store["_promise_manager"] = self._create_promise_manager()
+        logger.debug(f"Created PROMISE session {session_id} (type-based detection)")
+
         encoded = {}
 
         if timer and reject and self._method_timeout:
@@ -1383,6 +1436,15 @@ class RPC(MessageEmitter):
             try:
                 method = index_object(self._object_store, data["method"])
             except Exception:
+                # Clean promise method detection - NO STRING MATCHING!
+                if self._is_promise_method_call(data["method"]):
+                    logger.debug(
+                        "Promise method %s not available (detected by session type), ignoring: %s",
+                        data["method"],
+                        method_name,
+                    )
+                    return
+
                 logger.debug(
                     "Failed to find method %s at %s", method_name, self._client_id
                 )
