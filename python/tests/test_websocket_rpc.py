@@ -1047,3 +1047,101 @@ async def test_service_recovery_after_disconnection(websocket_server):
     # Clean up
     await ws.disconnect()
     await ws2.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_memory_leak_prevention(websocket_server):
+    """Test that sessions are properly cleaned up and don't leak memory."""
+    from hypha_rpc import connect_to_server
+
+    # Connect to server
+    api = await connect_to_server(
+        {
+            "client_id": "memory-leak-test-client",
+            "server_url": WS_SERVER_URL,
+        }
+    )
+
+    # Helper to get session count (excluding permanent stores)
+    def get_session_count(rpc):
+        count = 0
+
+        def count_sessions(obj, path=""):
+            nonlocal count
+            for key in obj.__dict__ if hasattr(obj, "__dict__") else {}:
+                if key not in ["services", "message_cache"] and not key.startswith("_"):
+                    count += 1
+                    value = getattr(obj, key)
+                    if hasattr(value, "__dict__") and not isinstance(
+                        value, (str, int, float, bool)
+                    ):
+                        count_sessions(value, f"{path}.{key}")
+
+        if hasattr(rpc, "_object_store"):
+            store = rpc._object_store
+            for key in store:
+                if key not in ["services", "message_cache"]:
+                    count += 1
+                    if isinstance(store[key], dict):
+
+                        def count_nested(d, depth=0):
+                            nonlocal count
+                            if depth > 10:  # Prevent infinite recursion
+                                return
+                            for k, v in d.items():
+                                if k not in ["services", "message_cache"]:
+                                    count += 1
+                                    if isinstance(v, dict):
+                                        count_nested(v, depth + 1)
+
+                        count_nested(store[key])
+        return count
+
+    # Test 1: Verify baseline state
+    initial_count = get_session_count(api.rpc)
+    print(f"Initial session count: {initial_count}")
+
+    # Test 2: Simple echo call - should not create permanent sessions
+    result = await api.echo("test")
+    assert result == "test"
+    await asyncio.sleep(0.2)  # Give time for cleanup
+
+    after_echo_count = get_session_count(api.rpc)
+    print(f"After echo - count: {after_echo_count}")
+
+    # Echo should not create any new permanent sessions
+    assert after_echo_count <= initial_count
+
+    # Test 3: List services (which might create sessions)
+    services = await api.list_services()
+    assert isinstance(services, list)
+    await asyncio.sleep(0.2)
+
+    after_list_count = get_session_count(api.rpc)
+    print(f"After listServices - count: {after_list_count}")
+    assert after_list_count <= initial_count
+
+    # Test 4: Multiple operations
+    await asyncio.gather(api.echo("test1"), api.echo("test2"), api.echo("test3"))
+    await asyncio.sleep(0.2)
+
+    after_multiple_count = get_session_count(api.rpc)
+    print(f"After multiple ops - count: {after_multiple_count}")
+    assert after_multiple_count <= initial_count
+
+    # Test 5: Verify message cache is clean
+    if hasattr(api.rpc, "_object_store") and "message_cache" in api.rpc._object_store:
+        assert len(api.rpc._object_store["message_cache"]) == 0
+
+    # Test 6: Verify that session cleanup is working
+    print("Session cleanup verification:")
+    print(f"- Initial sessions (permanent): {initial_count}")
+    print(f"- After operations (should be <= initial): {after_multiple_count}")
+    print(
+        f"- Cleanup is working: {'✓' if after_multiple_count <= initial_count else '✗'}"
+    )
+
+    # Final cleanup
+    await api.disconnect()
+
+    print("Test completed successfully - no memory leaks detected")

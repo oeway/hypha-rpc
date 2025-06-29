@@ -936,12 +936,20 @@ export class RPC extends MessageEmitter {
           `Error in callback(${method_id}, ${description}): ${error}`,
         );
       } finally {
+        // Clear the timer first if it exists
         if (timer && timer.started) {
           timer.clear();
         }
+
+        // Clean up the entire session when resolve/reject is called
         if (clear_after_called && self._object_store[session_id]) {
-          // Simple cleanup - let the session manager handle the logic
-          self._cleanup_session_if_needed(session_id, name);
+          // For promise callbacks (resolve/reject), clean up the entire session
+          if (name === "resolve" || name === "reject") {
+            delete self._object_store[session_id];
+          } else {
+            // For other callbacks, just clean up this specific callback
+            self._cleanup_session_if_needed(session_id, name);
+          }
         }
       }
     };
@@ -951,31 +959,22 @@ export class RPC extends MessageEmitter {
 
   // Clean session management - all logic in one place
   _cleanup_session_if_needed(session_id, callback_name) {
-    const store = this._get_session_store(session_id, false);
-    if (!store) return;
-
-    // Promise sessions: let the promise manager decide cleanup
-    if (store._promise_manager) {
-      if (store._promise_manager.should_cleanup_on_callback(callback_name)) {
-        store._promise_manager.settle();
-        delete this._object_store[session_id];
-      }
-      return;
+    // Python-style immediate cleanup - no complex logic needed
+    if (this._object_store[session_id]) {
+      delete this._object_store[session_id];
     }
-
-    // Regular sessions: cleanup immediately
-    delete this._object_store[session_id];
   }
 
   // Clean helper to identify promise method calls by session type
   _is_promise_method_call(method_path) {
     const session_id = method_path.split(".")[0];
-    const session = this._get_session_store(session_id, false);
-    return session && session._promise_manager;
+    // Simply check if session exists - no complex promise manager needed
+    return this._object_store[session_id] !== undefined;
   }
 
-  // Clean Promise Manager - encapsulates all promise lifecycle logic
+  // Simplified Promise Manager - no complex lifecycle needed
   _create_promise_manager() {
+    // Return minimal manager - Python doesn't need complex promise tracking
     return {
       settled: false,
       settle() {
@@ -985,6 +984,7 @@ export class RPC extends MessageEmitter {
         return this.settled;
       },
       should_cleanup_on_callback(callback_name) {
+        // Always cleanup on resolve/reject like Python
         return callback_name === "resolve" || callback_name === "reject";
       },
     };
@@ -1008,9 +1008,8 @@ export class RPC extends MessageEmitter {
     }
     let encoded = {};
 
-    // Clean promise lifecycle management
-    store._promise_manager = this._create_promise_manager();
-
+    // Simplified promise lifecycle - no complex manager needed
+    // Just store the timer if needed
     if (timer && reject && this._method_timeout) {
       [encoded.heartbeat, store.heartbeat] = this._encode_callback(
         "heartbeat",
@@ -1024,11 +1023,12 @@ export class RPC extends MessageEmitter {
       encoded.interval = this._method_timeout / 2;
     }
 
+    // Always use immediate cleanup like Python
     [encoded.resolve, store.resolve] = this._encode_callback(
       "resolve",
       resolve,
       session_id,
-      clear_after_called,
+      true, // Always cleanup immediately
       timer,
       local_workspace,
       `resolve (${description})`,
@@ -1037,7 +1037,7 @@ export class RPC extends MessageEmitter {
       "reject",
       reject,
       session_id,
-      clear_after_called,
+      true, // Always cleanup immediately
       timer,
       local_workspace,
       `reject (${description})`,
@@ -1416,10 +1416,10 @@ export class RPC extends MessageEmitter {
       try {
         method = indexObject(this._object_store, data["method"]);
       } catch (e) {
-        // Clean promise method error handling
-        if (this._is_promise_method_call(data["method"])) {
+        // Simplified error handling like Python - just check if method exists
+        if (!this._object_store[data["method"].split(".")[0]]) {
           console.debug(
-            `Promise method ${data["method"]} not available (session settled or cleaned up), ignoring: ${method_name}`,
+            `Method ${data["method"]} not available (session cleaned up), ignoring: ${method_name}`,
           );
           return;
         }

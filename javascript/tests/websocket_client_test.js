@@ -529,4 +529,109 @@ describe("RPC", async () => {
     await client.disconnect();
     await server.disconnect();
   }).timeout(40000);
+
+  it("should properly clean up sessions and prevent memory leaks", async () => {
+    const client = await connectToServer({
+      client_id: "memory-leak-test-client",
+      server_url: SERVER_URL,
+    });
+
+    // Wait for service registration to complete - this ensures we get a clean baseline
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Helper to get all session keys (excluding permanent stores)
+    const getSessionKeys = (rpc) => {
+      return Object.keys(rpc._object_store).filter(
+        (k) => k !== "services" && k !== "message_cache",
+      );
+    };
+
+    // Helper to get total session count including nested sessions
+    const getTotalSessionCount = (rpc) => {
+      let count = 0;
+      const countSessions = (obj, path = "") => {
+        for (const key in obj) {
+          if (key !== "services" && key !== "message_cache") {
+            count++;
+            if (
+              typeof obj[key] === "object" &&
+              obj[key] !== null &&
+              !Array.isArray(obj[key])
+            ) {
+              countSessions(obj[key], path + "." + key);
+            }
+          }
+        }
+      };
+      countSessions(rpc._object_store);
+      return count;
+    };
+
+    // Test 1: Verify baseline state (should be 0 like Python after registration completes)
+    const initialKeys = getSessionKeys(client.rpc);
+    const initialCount = getTotalSessionCount(client.rpc);
+    console.log("Initial session keys (after registration):", initialKeys);
+    console.log("Initial session count (after registration):", initialCount);
+
+    // Now JavaScript should have 0 sessions like Python!
+    expect(initialCount).to.equal(0);
+
+    // Test 2: Simple echo call - should not create permanent sessions
+    const result = await client.echo("test");
+    expect(result).to.equal("test");
+    await new Promise((resolve) => setTimeout(resolve, 200)); // Give time for cleanup
+
+    const afterEchoKeys = getSessionKeys(client.rpc);
+    const afterEchoCount = getTotalSessionCount(client.rpc);
+    console.log("After echo - keys:", afterEchoKeys);
+    console.log("After echo - count:", afterEchoCount);
+
+    // Echo should not create any new permanent sessions
+    expect(afterEchoCount).to.equal(0);
+
+    // Test 3: List services (which might create sessions)
+    const services = await client.listServices();
+    expect(Array.isArray(services)).to.be.true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const afterListKeys = getSessionKeys(client.rpc);
+    const afterListCount = getTotalSessionCount(client.rpc);
+    console.log("After listServices - keys:", afterListKeys);
+    console.log("After listServices - count:", afterListCount);
+    expect(afterListCount).to.equal(0);
+
+    // Test 4: Multiple operations
+    await Promise.all([
+      client.echo("test1"),
+      client.echo("test2"),
+      client.echo("test3"),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const afterMultipleKeys = getSessionKeys(client.rpc);
+    const afterMultipleCount = getTotalSessionCount(client.rpc);
+    console.log("After multiple ops - keys:", afterMultipleKeys);
+    console.log("After multiple ops - count:", afterMultipleCount);
+    expect(afterMultipleCount).to.equal(0);
+
+    // Test 5: Verify message cache is clean
+    if (client.rpc._object_store.message_cache) {
+      expect(
+        Object.keys(client.rpc._object_store.message_cache),
+      ).to.have.lengthOf(0);
+    }
+
+    // Test 6: JavaScript now works exactly like Python!
+    console.log("🎉 JavaScript session management now matches Python:");
+    console.log("- Initial sessions (after registration): 0 ✓");
+    console.log("- After all operations: 0 ✓");
+    console.log("- Perfect session cleanup like Python! ✓");
+
+    // Final cleanup
+    await client.disconnect();
+
+    console.log(
+      "Test completed successfully - JavaScript now behaves like Python!",
+    );
+  }).timeout(15000);
 });
