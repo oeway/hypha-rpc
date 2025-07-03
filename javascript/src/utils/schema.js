@@ -1,4 +1,4 @@
-import { assert } from ".";
+import { assert } from "./index.js";
 
 export function schemaFunction(
   func,

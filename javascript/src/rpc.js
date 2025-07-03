@@ -14,8 +14,8 @@ import {
   Semaphore,
   isAsyncGenerator,
   isGenerator,
-} from "./utils";
-import { schemaFunction } from "./utils/schema";
+} from "./utils/index.js";
+import { schemaFunction } from "./utils/schema.js";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
@@ -1500,18 +1500,30 @@ export class RPC extends MessageEmitter {
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
       ) {
-        // if args.length + 1 is less than the required number of arguments we will pad with undefined
-        // so we make sure the last argument is the context
-        if (args.length + 1 < method.length) {
-          for (let i = args.length; i < method.length - 1; i++) {
-            args.push(undefined);
+        // Check if this is a remote service (from external clients)
+        // Remote services start with a session ID or client ID, not "services."
+        const isRemoteService = !data.method.startsWith("services.");
+
+        if (isRemoteService) {
+          // For remote services (external client services), the method.length reflects
+          // the original signature and cannot be modified. We inject context as the last argument
+          // and skip the strict argument validation that fails for external services.
+          args.push(data.ctx);
+        } else {
+          // For local services, use the existing logic with padding and validation
+          // if args.length + 1 is less than the required number of arguments we will pad with undefined
+          // so we make sure the last argument is the context
+          if (args.length + 1 < method.length) {
+            for (let i = args.length; i < method.length - 1; i++) {
+              args.push(undefined);
+            }
           }
+          args.push(data.ctx);
+          assert(
+            args.length === method.length,
+            `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
+          );
         }
-        args.push(data.ctx);
-        assert(
-          args.length === method.length,
-          `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
-        );
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {

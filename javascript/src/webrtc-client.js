@@ -1,5 +1,5 @@
 import { RPC } from "./rpc.js";
-import { assert, randId } from "./utils";
+import { assert, randId } from "./utils/index.js";
 import { schemaFunction } from "./utils/schema.js";
 
 class WebRTCConnection {

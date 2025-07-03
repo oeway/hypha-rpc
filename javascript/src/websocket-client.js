@@ -5,7 +5,7 @@ import {
   waitFor,
   loadRequirements,
   parseServiceUrl,
-} from "./utils";
+} from "./utils/index.js";
 import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 

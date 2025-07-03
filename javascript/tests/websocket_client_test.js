@@ -303,6 +303,113 @@ describe("RPC", async () => {
     await api.disconnect();
   }).timeout(20000);
 
+  it("should handle require_context for external client services", async () => {
+    console.log(
+      "Testing require_context bug fix for external client services...",
+    );
+
+    // Create server client
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-server-client",
+    });
+
+    // Get the workspace and token from the first client
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Create external client using the same workspace
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-external-client",
+      workspace: workspace,
+      token: token,
+    });
+
+    try {
+      // Register service with require_context from external client
+      console.log("Registering external service with require_context: true...");
+      await client.registerService({
+        id: "external-context-service",
+        name: "External Context Service",
+        config: {
+          require_context: true,
+          visibility: "public",
+        },
+        // Function with 0 parameters - should receive context as last argument
+        quickTest: function (context) {
+          console.log("quickTest called with context:", !!context);
+          return {
+            success: true,
+            hasContext: !!context,
+            workspace: context?.ws,
+          };
+        },
+        // Function with 1 parameter - should receive (userInput, context)
+        processInput: function (userInput, context) {
+          console.log("processInput called with:", {
+            hasContext: !!context,
+            userInput,
+          });
+          return {
+            success: true,
+            processed: userInput,
+            workspace: context?.ws,
+          };
+        },
+        // Function with 2 parameters - should receive (data, options, context)
+        complexMethod: function (data, options, context) {
+          console.log("complexMethod called with:", {
+            hasContext: !!context,
+            data,
+            options,
+          });
+          return { success: true, data, options, workspace: context?.ws };
+        },
+      });
+
+      console.log("✅ External service registered successfully");
+
+      // Get the service from server client
+      const service = await server.getService("external-context-service");
+
+      // Test 1: quickTest (0 user parameters)
+      console.log("Testing quickTest (0 parameters)...");
+      const result1 = await service.quickTest();
+      console.log("quickTest result:", result1);
+      expect(result1.success).to.be.true;
+      expect(result1.hasContext).to.be.true;
+
+      // Test 2: processInput (1 user parameter)
+      console.log("Testing processInput (1 parameter)...");
+      const result2 = await service.processInput("hello world");
+      console.log("processInput result:", result2);
+      expect(result2.success).to.be.true;
+      expect(result2.processed).to.equal("hello world");
+      expect(result2.workspace).to.be.a("string");
+
+      // Test 3: complexMethod (2 user parameters)
+      console.log("Testing complexMethod (2 parameters)...");
+      const result3 = await service.complexMethod("test data", { flag: true });
+      console.log("complexMethod result:", result3);
+      expect(result3.success).to.be.true;
+      expect(result3.data).to.equal("test data");
+      expect(result3.options.flag).to.be.true;
+      expect(result3.workspace).to.be.a("string");
+
+      console.log("🎉 All require_context tests passed! Bug is fixed!");
+    } catch (error) {
+      console.error("❌ require_context test failed:", error.message);
+      if (error.message.includes("Invalid number of arguments")) {
+        console.error("🐛 Bug still present - argument validation failing");
+      }
+      throw error;
+    } finally {
+      await server.disconnect();
+      await client.disconnect();
+    }
+  }).timeout(30000);
+
   it("should encode/decode data", async () => {
     const plugin_interface = {
       id: "default",
