@@ -14,7 +14,10 @@ try:
     PYDANTIC_AVAILABLE = True
 except ImportError:
     PYDANTIC_AVAILABLE = False
-
+    FieldInfo = type("FieldInfo", (), {})
+    PydanticField = Field  # fallback to your own Field class
+    PydanticUndefined = inspect._empty
+    ValidationError = Exception
 
 class Field:
     def __init__(self, default=inspect._empty, description=None):
