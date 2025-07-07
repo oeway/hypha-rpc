@@ -354,17 +354,22 @@ class RPC(MessageEmitter):
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     try:
-                        manager = await self.get_manager_service(
-                            {"timeout": 20, "case_conversion": "snake"}
-                        )
+                        # Retry getting manager service with exponential backoff
+                        manager = await self._get_manager_with_retry()
                         services_count = len(self._services)
                         registered_count = 0
+                        failed_services = []
+
                         for service in list(self._services.values()):
                             try:
                                 service_info = self._extract_service_info(service)
                                 await manager.register_service(service_info)
                                 registered_count += 1
+                                logger.debug(
+                                    f"Successfully registered service: {service.get('id', 'unknown')}"
+                                )
                             except Exception as service_error:
+                                failed_services.append(service.get("id", "unknown"))
                                 logger.error(
                                     f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
                                 )
@@ -375,11 +380,29 @@ class RPC(MessageEmitter):
                             )
                         else:
                             logger.warning(
-                                f"Only registered {registered_count} out of {services_count} services with the server"
+                                f"Only registered {registered_count} out of {services_count} services with the server. Failed services: {failed_services}"
                             )
+
+                        # Fire event with registration status
+                        self._fire(
+                            "services_registered",
+                            {
+                                "total": services_count,
+                                "registered": registered_count,
+                                "failed": failed_services,
+                            },
+                        )
                     except Exception as manager_error:
                         logger.error(
                             f"Failed to get manager service for registering services: {manager_error}"
+                        )
+                        # Fire event with error status
+                        self._fire(
+                            "services_registration_failed",
+                            {
+                                "error": str(manager_error),
+                                "total_services": len(self._services),
+                            },
                         )
                 else:
                     logger.info("Connection established: %s", connection_info)
@@ -582,6 +605,32 @@ class RPC(MessageEmitter):
         """Disconnect."""
         self.close()
         await self._connection.disconnect()
+
+    async def _get_manager_with_retry(self, max_retries=20):
+        """Get manager service with exponential backoff retry."""
+        base_delay = 0.5
+        max_delay = 10.0
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                svc = await self.get_remote_service(
+                    f"*/{self._connection.manager_id}:default",
+                    {"timeout": 20, "case_conversion": "snake"},
+                )
+                return svc
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
+                )
+                if attempt < max_retries - 1:
+                    # Exponential backoff with maximum delay
+                    delay = min(base_delay * (2**attempt), max_delay)
+                    await asyncio.sleep(delay)
+
+        # If we get here, all retries failed
+        raise last_error
 
     async def get_manager_service(self, config=None):
         """Get remote root service."""

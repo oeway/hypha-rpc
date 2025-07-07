@@ -92,6 +92,170 @@ describe("RPC", async () => {
     await api.disconnect();
   }).timeout(20000);
 
+  it("should test robust reconnection with service re-registration", async () => {
+    // Create connection with custom client ID for easier identification
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "reconnection-test-client",
+    });
+
+    // Keep track of reconnection events
+    const reconnectionEvents = [];
+    const serviceRegistrationEvents = [];
+
+    const onConnected = (info) => {
+      reconnectionEvents.push({ type: "connected", info });
+    };
+
+    const onServicesRegistered = (info) => {
+      serviceRegistrationEvents.push({ type: "services_registered", info });
+    };
+
+    const onServicesRegistrationFailed = (info) => {
+      serviceRegistrationEvents.push({
+        type: "services_registration_failed",
+        info,
+      });
+    };
+
+    // Register event handlers
+    api.rpc.on("connected", onConnected);
+    api.rpc.on("services_registered", onServicesRegistered);
+    api.rpc.on("services_registration_failed", onServicesRegistrationFailed);
+
+    // Register multiple services to test batch re-registration
+    const serviceData = { counter: 0, testData: "initial" };
+
+    await api.registerService({
+      id: "counter-service",
+      name: "Counter Service",
+      description: "Service with state for testing reconnection",
+      config: { visibility: "protected" },
+      increment: () => ++serviceData.counter,
+      getCounter: () => serviceData.counter,
+      setData: (data) => {
+        serviceData.testData = data;
+      },
+      getData: () => serviceData.testData,
+    });
+
+    await api.registerService({
+      id: "echo-service",
+      name: "Echo Service",
+      description: "Simple echo service for testing",
+      config: { visibility: "protected" },
+      echo: (x) => `echo: ${x}`,
+      reverse: (x) =>
+        typeof x === "string"
+          ? x.split("").reverse().join("")
+          : String(x).split("").reverse().join(""),
+    });
+
+    // Verify services work initially
+    let counterSvc = await api.getService("counter-service");
+    let echoSvc = await api.getService("echo-service");
+
+    // Test initial functionality
+    expect(await counterSvc.getCounter()).to.equal(0);
+    expect(await counterSvc.increment()).to.equal(1);
+    expect(await echoSvc.echo("test")).to.equal("echo: test");
+    expect(await echoSvc.reverse("hello")).to.equal("olleh");
+
+    // Clear events from initial connection
+    reconnectionEvents.length = 0;
+    serviceRegistrationEvents.length = 0;
+
+    // Simulate unexpected disconnection (code 3001 - custom application code)
+    console.log("Simulating unexpected disconnection...");
+    api.rpc._connection._websocket.close(3001);
+
+    // Wait a moment for reconnection to complete
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Verify services still work after reconnection
+    console.log("Testing services after reconnection...");
+    counterSvc = await api.getService("counter-service");
+    echoSvc = await api.getService("echo-service");
+
+    // Test that service state is preserved (since they were re-registered)
+    const currentCounter = await counterSvc.getCounter();
+    expect(currentCounter).to.equal(1);
+
+    // Test incrementing works
+    const newCounter = await counterSvc.increment();
+    expect(newCounter).to.equal(2);
+
+    // Test echo service still works
+    const echoResult = await echoSvc.echo("reconnected");
+    expect(echoResult).to.equal("echo: reconnected");
+
+    const reverseResult = await echoSvc.reverse("reconnected");
+    expect(reverseResult).to.equal("detcennocer");
+
+    // Test setting new data
+    await counterSvc.setData("after_reconnection");
+    const dataResult = await counterSvc.getData();
+    expect(dataResult).to.equal("after_reconnection");
+
+    // Verify we got reconnection events
+    expect(reconnectionEvents.length).to.be.greaterThan(0);
+
+    // Verify we got service registration events
+    expect(serviceRegistrationEvents.length).to.be.greaterThan(0);
+
+    // Check if services were successfully re-registered
+    const successfulRegistration = serviceRegistrationEvents.some(
+      (event) =>
+        event.type === "services_registered" && event.info.registered >= 2,
+    );
+    expect(successfulRegistration).to.be.true;
+
+    console.log(
+      "✅ Robust reconnection with service re-registration test passed!",
+    );
+
+    await api.disconnect();
+  }).timeout(30000);
+
+  it("should test reconnection cancellation", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "cancellation-test-client",
+    });
+
+    // Register a service
+    await api.registerService({
+      id: "test-service",
+      name: "Test Service",
+      config: { visibility: "protected" },
+      test: () => "ok",
+    });
+
+    // Simulate unexpected disconnection
+    api.rpc._connection._websocket.close(3001);
+
+    // Give a moment for reconnection to start
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Now explicitly disconnect - this should cancel reconnection
+    await api.disconnect();
+
+    // Wait a bit more to ensure reconnection doesn't happen
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Try to use the service - should fail
+    try {
+      const svc = await api.getService("test-service");
+      await svc.test();
+      expect.fail("Service should not be accessible after explicit disconnect");
+    } catch (error) {
+      // Expected - connection should be closed
+      expect(error.message).to.include("Connection is closed");
+    }
+
+    console.log("✅ Reconnection cancellation test passed!");
+  }).timeout(20000);
+
   it("should correctly handle schemaFunction annotation", async () => {
     const api = await connectToServer({
       server_url: SERVER_URL,
@@ -376,7 +540,12 @@ describe("RPC", async () => {
             data,
             options,
           });
-          return { success: true, data, options, workspace: kwargs.context?.ws };
+          return {
+            success: true,
+            data,
+            options,
+            workspace: kwargs.context?.ws,
+          };
         },
       });
 

@@ -6,6 +6,7 @@ import logging
 import sys
 import os
 import io
+import random
 
 import shortuuid
 import json
@@ -360,7 +361,11 @@ class WebsocketRPCConnection:
 
                     async def reconnect_with_retry():
                         retry = 0
-                        while retry < MAX_RETRY:
+                        base_delay = 1.0  # Start with 1 second
+                        max_delay = 60.0  # Maximum delay of 60 seconds
+                        max_jitter = 0.1  # Maximum jitter factor
+
+                        while retry < MAX_RETRY and not self._closed:
                             try:
                                 logger.warning(
                                     "Reconnecting to %s (attempt #%s)",
@@ -386,6 +391,9 @@ class WebsocketRPCConnection:
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
                                 )
+                                # Emit reconnection success event
+                                if self._handle_connected:
+                                    await self._handle_connected(connection_info)
                                 break
                             except NotImplementedError as e:
                                 logger.error(
@@ -400,20 +408,73 @@ class WebsocketRPCConnection:
                             except ConnectionAbortedError as e:
                                 logger.warning("Server refuse to reconnect: %s", e)
                                 break
+                            except (ConnectionRefusedError, OSError) as e:
+                                # Network-related errors that might be temporary
+                                logger.error(
+                                    f"Failed to connect to {self._server_url.split('?')[0]}: {e}"
+                                )
+                            except asyncio.TimeoutError as e:
+                                # Connection timeout - might be temporary
+                                logger.error(
+                                    f"Connection timeout to {self._server_url.split('?')[0]}: {e}"
+                                )
                             except Exception as e:
-                                # Use tracked sleep task for cancellation
-                                sleep_task = asyncio.create_task(asyncio.sleep(1))
-                                self._reconnect_tasks.add(sleep_task)
-                                try:
-                                    await sleep_task
-                                except asyncio.CancelledError:
-                                    break
-                                finally:
-                                    self._reconnect_tasks.discard(sleep_task)
+                                # Log unexpected errors but continue retrying
+                                logger.error(
+                                    f"Unexpected error during reconnection: {e}"
+                                )
 
-                                if self._websocket and self._websocket.open:
-                                    break
+                            # Calculate exponential backoff with jitter
+                            delay = min(base_delay * (2**retry), max_delay)
+                            # Add jitter to prevent thundering herd
+                            jitter = random.uniform(-max_jitter, max_jitter) * delay
+                            final_delay = max(0.1, delay + jitter)
+
+                            logger.debug(
+                                f"Waiting {final_delay:.2f}s before next reconnection attempt"
+                            )
+
+                            # Use tracked sleep task for cancellation
+                            sleep_task = asyncio.create_task(asyncio.sleep(final_delay))
+                            self._reconnect_tasks.add(sleep_task)
+                            try:
+                                await sleep_task
+                            except asyncio.CancelledError:
+                                logger.info("Reconnection cancelled")
+                                self._reconnect_tasks.discard(sleep_task)
+                                return  # Exit immediately on cancellation
+                            finally:
+                                self._reconnect_tasks.discard(sleep_task)
+
+                            # Check if connection was restored externally
+                            if self._websocket and self._websocket.open:
+                                logger.info("Connection restored externally")
+                                break
+
+                            # Check if we were explicitly closed
+                            if self._closed:
+                                logger.info(
+                                    "Connection was closed, stopping reconnection"
+                                )
+                                break
+
                             retry += 1
+
+                        if retry >= MAX_RETRY and not self._closed:
+                            logger.error(
+                                f"Failed to reconnect after {MAX_RETRY} attempts, giving up. Exiting process."
+                            )
+                            if self._handle_disconnected:
+                                self._handle_disconnected(
+                                    "Max reconnection attempts exceeded"
+                                )
+                            # Exit process to prevent stuck event loop
+                            import os
+
+                            logger.error(
+                                "Forcing process exit due to unrecoverable connection failure"
+                            )
+                            os._exit(1)
 
                     # Create and track the reconnection task
                     reconnect_task = asyncio.create_task(reconnect_with_retry())
@@ -431,13 +492,16 @@ class WebsocketRPCConnection:
         self._closed = True
         self._last_message = None
         if self._websocket and not self._websocket.state == State.CLOSED:
-            await self._websocket.close(code=1000)
+            try:
+                await self._websocket.close(code=1000)
+            except Exception as e:
+                logger.warning(f"Error closing websocket: {e}")
         # Use centralized cleanup to cancel all tasks
         try:
             await self._cleanup()
-        except RuntimeError:
+        except Exception as e:
             # Event loop might be closed during shutdown
-            pass
+            logger.warning(f"Error during cleanup: {e}")
         logger.info("Websocket connection disconnected (%s)", reason)
 
     async def _on_message(self, message):
@@ -483,12 +547,21 @@ class WebsocketRPCConnection:
     async def _cleanup(self):
         """Centralized cleanup method to cancel all tasks and prevent resource leaks."""
         try:
+            # Check if event loop is running before cleanup
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                logger.warning("Event loop is closed, skipping cleanup")
+                self._refresh_token_task = None
+                self._listen_task = None
+                self._reconnect_tasks.clear()
+                return
+
             # Cancel token refresh task
             if self._refresh_token_task and not self._refresh_token_task.done():
                 self._refresh_token_task.cancel()
                 try:
-                    await self._refresh_token_task
-                except (asyncio.CancelledError, RuntimeError):
+                    await asyncio.wait_for(self._refresh_token_task, timeout=1.0)
+                except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
                     # RuntimeError occurs when event loop is closed
                     pass
                 self._refresh_token_task = None
@@ -497,8 +570,8 @@ class WebsocketRPCConnection:
             if self._listen_task and not self._listen_task.done():
                 self._listen_task.cancel()
                 try:
-                    await self._listen_task
-                except (asyncio.CancelledError, RuntimeError):
+                    await asyncio.wait_for(self._listen_task, timeout=1.0)
+                except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
                     # RuntimeError occurs when event loop is closed
                     pass
                 self._listen_task = None
@@ -508,13 +581,14 @@ class WebsocketRPCConnection:
                 if not task.done():
                     task.cancel()
                     try:
-                        await task
-                    except (asyncio.CancelledError, RuntimeError):
+                        await asyncio.wait_for(task, timeout=0.5)
+                    except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
                         # RuntimeError occurs when event loop is closed
                         pass
                 self._reconnect_tasks.discard(task)
-        except RuntimeError:
+        except RuntimeError as e:
             # If event loop is closed, just clear the references
+            logger.warning(f"RuntimeError during cleanup: {e}")
             self._refresh_token_task = None
             self._listen_task = None
             self._reconnect_tasks.clear()

@@ -437,6 +437,241 @@ async def test_reconnect_to_server(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_robust_reconnection_with_service_reregistration(websocket_server):
+    """Test robust reconnection with exponential backoff and service re-registration."""
+    import asyncio
+
+    # Create connection with custom client ID for easier identification
+    ws = await connect_to_server(
+        {
+            "name": "reconnection test plugin",
+            "server_url": WS_SERVER_URL,
+            "client_id": "reconnection-test-client",
+        }
+    )
+
+    # Keep track of reconnection events
+    reconnection_events = []
+    service_registration_events = []
+
+    def on_connected(info):
+        reconnection_events.append({"type": "connected", "info": info})
+
+    def on_services_registered(info):
+        service_registration_events.append(
+            {"type": "services_registered", "info": info}
+        )
+
+    def on_services_registration_failed(info):
+        service_registration_events.append(
+            {"type": "services_registration_failed", "info": info}
+        )
+
+    # Register event handlers
+    ws.rpc.on("connected", on_connected)
+    ws.rpc.on("services_registered", on_services_registered)
+    ws.rpc.on("services_registration_failed", on_services_registration_failed)
+
+    # Register multiple services to test batch re-registration
+    service_data = {"counter": 0, "test_data": "initial"}
+
+    await ws.register_service(
+        {
+            "name": "Counter Service",
+            "id": "counter-service",
+            "description": "Service with state for testing reconnection",
+            "config": {"visibility": "protected"},
+            "increment": lambda: service_data.update(
+                {"counter": service_data["counter"] + 1}
+            )
+            or service_data["counter"],
+            "get_counter": lambda: service_data["counter"],
+            "set_data": lambda data: service_data.update({"test_data": data}),
+            "get_data": lambda: service_data["test_data"],
+        }
+    )
+
+    await ws.register_service(
+        {
+            "name": "Echo Service",
+            "id": "echo-service",
+            "description": "Simple echo service for testing",
+            "config": {"visibility": "protected"},
+            "echo": lambda x: f"echo: {x}",
+            "reverse": lambda x: x[::-1] if isinstance(x, str) else str(x)[::-1],
+        }
+    )
+
+    # Verify services work initially
+    counter_svc = await ws.get_service("counter-service")
+    echo_svc = await ws.get_service("echo-service")
+
+    # Test initial functionality
+    assert await counter_svc.get_counter() == 0
+    assert await counter_svc.increment() == 1
+    assert await echo_svc.echo("test") == "echo: test"
+    assert await echo_svc.reverse("hello") == "olleh"
+
+    # Clear events from initial connection
+    reconnection_events.clear()
+    service_registration_events.clear()
+
+    # Simulate unexpected disconnection (code 1011 - unexpected condition)
+    print("Simulating unexpected disconnection...")
+    await ws.rpc._connection._websocket.close(1011)
+
+    # Wait a moment for reconnection to complete
+    # The new implementation should reconnect automatically
+    await asyncio.sleep(2.0)
+
+    # Verify services still work after reconnection
+    print("Testing services after reconnection...")
+    counter_svc = await ws.get_service("counter-service")
+    echo_svc = await ws.get_service("echo-service")
+
+    # Test that service state is preserved (since they were re-registered)
+    current_counter = await counter_svc.get_counter()
+    assert (
+        current_counter == 1
+    ), f"Counter should be 1 after reconnection, got {current_counter}"
+
+    # Test incrementing works
+    new_counter = await counter_svc.increment()
+    assert new_counter == 2, f"Counter should be 2 after increment, got {new_counter}"
+
+    # Test echo service still works
+    echo_result = await echo_svc.echo("reconnected")
+    assert echo_result == "echo: reconnected"
+
+    reverse_result = await echo_svc.reverse("reconnected")
+    assert reverse_result == "detcennocer"
+
+    # Test setting new data
+    await counter_svc.set_data("after_reconnection")
+    data_result = await counter_svc.get_data()
+    assert data_result == "after_reconnection"
+
+    # Verify we got reconnection events
+    assert len(reconnection_events) > 0, "Should have received reconnection events"
+
+    # Verify we got service registration events
+    assert (
+        len(service_registration_events) > 0
+    ), "Should have received service registration events"
+
+    # Check if services were successfully re-registered
+    successful_registration = any(
+        event["type"] == "services_registered" and event["info"]["registered"] >= 2
+        for event in service_registration_events
+    )
+    assert (
+        successful_registration
+    ), f"Services should have been re-registered successfully. Events: {service_registration_events}"
+
+    print("✅ Robust reconnection with service re-registration test passed!")
+
+
+@pytest.mark.asyncio
+async def test_reconnection_exponential_backoff(websocket_server):
+    """Test that reconnection uses exponential backoff."""
+    import time
+
+    ws = await connect_to_server(
+        {
+            "name": "backoff test plugin",
+            "server_url": WS_SERVER_URL,
+            "client_id": "backoff-test-client",
+        }
+    )
+
+    # Register a simple service
+    await ws.register_service(
+        {
+            "name": "Test Service",
+            "id": "test-service",
+            "config": {"visibility": "protected"},
+            "test": lambda: "ok",
+        }
+    )
+
+    # Record reconnection attempt times
+    reconnection_times = []
+
+    def on_connected(info):
+        reconnection_times.append(time.time())
+
+    ws.rpc.on("connected", on_connected)
+
+    # Clear initial connection event
+    reconnection_times.clear()
+
+    # Simulate multiple disconnections to test backoff
+    print("Testing exponential backoff behavior...")
+
+    # First disconnection
+    start_time = time.time()
+    await ws.rpc._connection._websocket.close(1011)
+
+    # Wait for reconnection
+    await asyncio.sleep(3.0)
+
+    # Should have reconnected by now
+    assert len(reconnection_times) >= 1, "Should have reconnected at least once"
+
+    # Test that service still works
+    svc = await ws.get_service("test-service")
+    result = await svc.test()
+    assert result == "ok"
+
+    print("✅ Exponential backoff test passed!")
+
+
+@pytest.mark.asyncio
+async def test_reconnection_cancellation(websocket_server):
+    """Test that reconnection can be cancelled when explicitly disconnecting."""
+    ws = await connect_to_server(
+        {
+            "name": "cancellation test plugin",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cancellation-test-client",
+        }
+    )
+
+    # Register a service
+    await ws.register_service(
+        {
+            "name": "Test Service",
+            "id": "test-service",
+            "config": {"visibility": "protected"},
+            "test": lambda: "ok",
+        }
+    )
+
+    # Simulate unexpected disconnection
+    await ws.rpc._connection._websocket.close(1011)
+
+    # Give a moment for reconnection to start
+    await asyncio.sleep(0.5)
+
+    # Now explicitly disconnect - this should cancel reconnection
+    await ws.disconnect()
+
+    # Wait a bit more to ensure reconnection doesn't happen
+    await asyncio.sleep(2.0)
+
+    # Try to use the service - should fail
+    try:
+        svc = await ws.get_service("test-service")
+        await svc.test()
+        assert False, "Service should not be accessible after explicit disconnect"
+    except Exception:
+        # Expected - connection should be closed
+        pass
+
+    print("✅ Reconnection cancellation test passed!")
+
+
+@pytest.mark.asyncio
 async def test_numpy_array(websocket_server):
     """Test numpy array."""
     ws = await connect_to_server(

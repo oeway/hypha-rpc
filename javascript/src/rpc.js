@@ -339,20 +339,23 @@ export class RPC extends MessageEmitter {
         if (!this._silent && this._connection.manager_id) {
           console.debug("Connection established, reporting services...");
           try {
-            const manager = await this.get_manager_service({
-              timeout: 10,
-              case_conversion: "camel",
-            });
+            // Retry getting manager service with exponential backoff
+            const manager = await this._get_manager_with_retry();
             const services = Object.values(this._services);
             const servicesCount = services.length;
             let registeredCount = 0;
+            const failedServices = [];
 
             for (let service of services) {
               try {
                 const serviceInfo = this._extract_service_info(service);
                 await manager.registerService(serviceInfo);
                 registeredCount++;
+                console.debug(
+                  `Successfully registered service: ${service.id || "unknown"}`,
+                );
               } catch (serviceError) {
+                failedServices.push(service.id || "unknown");
                 console.error(
                   `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
                 );
@@ -365,13 +368,25 @@ export class RPC extends MessageEmitter {
               );
             } else {
               console.warn(
-                `Only registered ${registeredCount} out of ${servicesCount} services with the server`,
+                `Only registered ${registeredCount} out of ${servicesCount} services with the server. Failed services: ${failedServices.join(", ")}`,
               );
             }
+
+            // Fire event with registration status
+            this._fire("services_registered", {
+              total: servicesCount,
+              registered: registeredCount,
+              failed: failedServices,
+            });
           } catch (managerError) {
             console.error(
               `Failed to get manager service for registering services: ${managerError}`,
             );
+            // Fire event with error status
+            this._fire("services_registration_failed", {
+              error: managerError.toString(),
+              total_services: Object.keys(this._services).length,
+            });
           }
         } else {
           // console.debug("Connection established", connectionInfo);
@@ -592,6 +607,35 @@ export class RPC extends MessageEmitter {
   async disconnect() {
     this.close();
     await this._connection.disconnect();
+  }
+
+  async _get_manager_with_retry(maxRetries = 20) {
+    const baseDelay = 500;
+    const maxDelay = 10000;
+    let lastError = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const svc = await this.get_remote_service(
+          `*/${this._connection.manager_id}:default`,
+          { timeout: 20, case_conversion: "camel" },
+        );
+        return svc;
+      } catch (e) {
+        lastError = e;
+        console.warn(
+          `Failed to get manager service (attempt ${attempt + 1}/${maxRetries}): ${e.message}`,
+        );
+        if (attempt < maxRetries - 1) {
+          // Exponential backoff with maximum delay
+          const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    // If we get here, all retries failed
+    throw lastError;
   }
 
   async get_manager_service(config) {
@@ -1103,9 +1147,9 @@ export class RPC extends MessageEmitter {
 
         const taskFn = async () => {
           await message_cache.set(message_id, idx, chunk, !!session_id);
-          console.debug(
-            `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
-          );
+          // console.debug(
+          //   `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
+          // );
         };
 
         // Push into an array, each one runs under the semaphore
@@ -1136,14 +1180,14 @@ export class RPC extends MessageEmitter {
           startByte + this._long_message_chunk_size,
         );
         await message_cache.append(message_id, chunk, !!session_id);
-        console.debug(
-          `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
-        );
+        // console.debug(
+        //   `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
+        // );
       }
     }
     await message_cache.process(message_id, !!session_id);
     const durationSec = ((Date.now() - start_time) / 1000).toFixed(2);
-    console.debug(`All chunks (${total_size} bytes) sent in ${durationSec} s`);
+    // console.debug(`All chunks (${total_size} bytes) sent in ${durationSec} s`);
   }
 
   emit(main_message, extra_data) {
@@ -1528,7 +1572,7 @@ export class RPC extends MessageEmitter {
       if (data.with_kwargs) {
         kwargs = args.pop();
       }
-      
+
       if (
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
@@ -1536,6 +1580,17 @@ export class RPC extends MessageEmitter {
         // Always use kwargs approach for consistency
         kwargs.context = data.ctx;
         kwargs._rkwargs = true;
+
+        // CRITICAL FIX: Ensure kwargs goes to the correct position
+        // For a function like multiply_context(a, b, kwargs), we need to ensure
+        // that kwargs is always the last parameter, even if fewer args are provided
+        const expectedParamCount = method.length;
+
+        // Pad args array to the expected parameter count (minus 1 for kwargs)
+        while (args.length < expectedParamCount - 1) {
+          args.push(undefined);
+        }
+
         args.push(kwargs);
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
@@ -1556,6 +1611,7 @@ export class RPC extends MessageEmitter {
           clearInterval(heartbeat_task);
         }
       } else {
+        // console.log(`DEBUG: About to call method (no promise) ${data.method} with args:`, args);
         method.apply(null, args);
         clearInterval(heartbeat_task);
       }

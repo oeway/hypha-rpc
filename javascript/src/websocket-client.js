@@ -302,8 +302,19 @@ class WebsocketRPCConnection {
           event.code,
           event.reason,
         );
+
         let retry = 0;
+        const baseDelay = 1000; // Start with 1 second
+        const maxDelay = 60000; // Maximum delay of 60 seconds
+        const maxJitter = 0.1; // Maximum jitter factor
+
         const reconnect = async () => {
+          // Check if we were explicitly closed
+          if (this._closed) {
+            console.info("Connection was closed, stopping reconnection");
+            return;
+          }
+
           try {
             console.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
@@ -325,6 +336,10 @@ class WebsocketRPCConnection {
             console.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
+            // Emit reconnection success event
+            if (this._handle_connected) {
+              this._handle_connected(this.connection_info);
+            }
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
               console.warn("Failed to reconnect, connection aborted:", e);
@@ -335,26 +350,74 @@ class WebsocketRPCConnection {
               );
               return;
             }
+
+            // Log specific error types for better debugging
+            if (e.name === "NetworkError" || e.message.includes("network")) {
+              console.error(`Network error during reconnection: ${e.message}`);
+            } else if (
+              e.name === "TimeoutError" ||
+              e.message.includes("timeout")
+            ) {
+              console.error(
+                `Connection timeout during reconnection: ${e.message}`,
+              );
+            } else {
+              console.error(
+                `Unexpected error during reconnection: ${e.message}`,
+              );
+            }
+
+            // Calculate exponential backoff with jitter
+            const delay = Math.min(baseDelay * Math.pow(2, retry), maxDelay);
+            // Add jitter to prevent thundering herd
+            const jitter = (Math.random() * 2 - 1) * maxJitter * delay;
+            const finalDelay = Math.max(100, delay + jitter);
+
+            console.debug(
+              `Waiting ${(finalDelay / 1000).toFixed(2)}s before next reconnection attempt`,
+            );
+
             // Track the reconnection timeout to prevent leaks
             const timeoutId = setTimeout(async () => {
               this._reconnect_timeouts.delete(timeoutId);
+
+              // Check if connection was restored externally
               if (
                 this._websocket &&
-                this._websocket.readyState === WebSocket.CONNECTED
+                this._websocket.readyState === WebSocket.OPEN
               ) {
+                console.info("Connection restored externally");
                 return;
               }
+
+              // Check if we were explicitly closed
+              if (this._closed) {
+                console.info("Connection was closed, stopping reconnection");
+                return;
+              }
+
               retry += 1;
               if (retry < MAX_RETRY) {
                 await reconnect();
               } else {
                 console.error(
-                  "Failed to reconnect after",
-                  MAX_RETRY,
-                  "attempts",
+                  `Failed to reconnect after ${MAX_RETRY} attempts, giving up. Exiting process.`,
                 );
+                // Notify about max retry exceeded
+                if (this._handle_disconnected) {
+                  this._handle_disconnected(
+                    "Max reconnection attempts exceeded",
+                  );
+                }
+                // Exit process to prevent stuck event loop
+                if (typeof process !== "undefined" && process.exit) {
+                  console.error(
+                    "Forcing process exit due to unrecoverable connection failure",
+                  );
+                  process.exit(1);
+                }
               }
-            }, 1000);
+            }, finalDelay);
             this._reconnect_timeouts.add(timeoutId);
           }
         };

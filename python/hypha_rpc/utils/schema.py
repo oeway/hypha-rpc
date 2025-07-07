@@ -19,15 +19,16 @@ except ImportError:
     PydanticUndefined = inspect._empty
     ValidationError = Exception
 
+
 # Dynamic pydantic availability check
 def _check_pydantic_available():
     """Check if pydantic is available and update imports if needed."""
     global _PYDANTIC_AVAILABLE, create_model, BaseModel, ConfigDict, PydanticField
     global FieldInfo, PydanticUndefined, ValidationError, GenerateJsonSchema
-    
+
     try:
         import pydantic
-        
+
         # If pydantic is available but we haven't imported it yet, do it now
         if not _PYDANTIC_AVAILABLE:
             from pydantic import create_model, BaseModel, ConfigDict
@@ -35,13 +36,14 @@ def _check_pydantic_available():
             from pydantic.fields import FieldInfo
             from pydantic_core import PydanticUndefined, ValidationError
             from pydantic.json_schema import GenerateJsonSchema
-            
+
             # Update the cached flag
             _PYDANTIC_AVAILABLE = True
-        
+
         return True
     except ImportError:
         return False
+
 
 class Field:
     def __init__(self, default=inspect._empty, description=None):
