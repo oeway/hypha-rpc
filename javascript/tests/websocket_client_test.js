@@ -282,24 +282,30 @@ describe("RPC", async () => {
       server_url: SERVER_URL,
       client_id: "test-plugin-3",
     });
-    function multiply_context(a, b, context) {
-      assert(context.user, "context should not be null");
-      /* multiply two numbers */
+    function multiply_context(a, b, kwargs) {
+      assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+      assert(kwargs.context.user, "context should not be null");
       if (b === undefined) {
         b = a;
       }
       return a * b;
     }
-    await api.registerService({
+    const svcInfo = await api.registerService({
       name: "my service",
       id: "test-service",
       description: "test service",
       config: { visibility: "public", require_context: true },
       multiply_context,
     });
-    const svc = await api.rpc.get_remote_service("test-service");
+
+    const api2 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-plugin-4",
+    });
+    const svc = await api2.getService(svcInfo.id);
     expect(await svc.multiply_context(2, 3)).to.equal(6);
     expect(await svc.multiply_context(2)).to.equal(4);
+    await api2.disconnect();
     await api.disconnect();
   }).timeout(20000);
 
@@ -336,35 +342,41 @@ describe("RPC", async () => {
           require_context: true,
           visibility: "public",
         },
-        // Function with 0 parameters - should receive context as last argument
-        quickTest: function (context) {
-          console.log("quickTest called with context:", !!context);
+        // Function with 0 parameters - should receive kwargs as last argument
+        quickTest: function (kwargs) {
+          assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+          assert(kwargs.context.user, "context should not be null");
+          console.log("quickTest called with context:", !!kwargs.context);
           return {
             success: true,
-            hasContext: !!context,
-            workspace: context?.ws,
+            hasContext: !!kwargs.context,
+            workspace: kwargs.context?.ws,
           };
         },
-        // Function with 1 parameter - should receive (userInput, context)
-        processInput: function (userInput, context) {
+        // Function with 1 parameter - should receive (userInput, kwargs)
+        processInput: function (userInput, kwargs) {
+          assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+          assert(kwargs.context.user, "context.user should not be null");
           console.log("processInput called with:", {
-            hasContext: !!context,
+            hasContext: !!kwargs.context,
             userInput,
           });
           return {
             success: true,
             processed: userInput,
-            workspace: context?.ws,
+            workspace: kwargs.context?.ws,
           };
         },
-        // Function with 2 parameters - should receive (data, options, context)
-        complexMethod: function (data, options, context) {
+        // Function with 2 parameters - should receive (data, options, kwargs)
+        complexMethod: function (data, options, kwargs) {
+          assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+          assert(kwargs.context.user, "context.user should not be null");
           console.log("complexMethod called with:", {
-            hasContext: !!context,
+            hasContext: !!kwargs.context,
             data,
             options,
           });
-          return { success: true, data, options, workspace: context?.ws };
+          return { success: true, data, options, workspace: kwargs.context?.ws };
         },
       });
 

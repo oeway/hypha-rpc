@@ -220,6 +220,71 @@ Remote function call is almost the same as calling a local function. The argumen
  * For functions defined in Javascript, there is no difference when calling from Python
  * For functions defined in Python, when calling from Javascript, if the last argument is an object and its `_rkwargs` is set to true, then it will be converted into keyword arguments when calling the Python function. For example, if you have a Python function defined as `def foo(a, b, c=None):`, in Javascript, you should call it as `foo(9, 10, {c: 33, _rkwargs: true})`.
 
+### Context Injection with `require_context`
+
+When registering a service, you can set `require_context: true` in the service configuration to automatically inject execution context into your service methods. This is useful for accessing information about the caller, workspace, user permissions, etc.
+
+#### How it works
+
+When `require_context` is enabled, Hypha RPC automatically adds a `context` parameter to your method calls:
+
+**Python:**
+```python
+def my_service_method(arg1, arg2, context=None, **kwargs):
+    """Service method that receives context automatically."""
+    # context contains: {"from": "...", "to": "...", "ws": "...", "user": {...}}
+    workspace = context["ws"]
+    user_info = context["user"]
+    return f"Hello {user_info.get('id', 'anonymous')} from {workspace}"
+
+# Register service with require_context
+await server.register_service({
+    "id": "my-service",
+    "config": {
+        "require_context": True, "visibility": "public"
+    },
+    "my_method": my_service_method
+})
+```
+
+**JavaScript:**
+```javascript
+function myServiceMethod(arg1, arg2, kwargs) {
+    // For require_context methods, kwargs will have _rkwargs=true and contain context
+    if (kwargs && kwargs._rkwargs) {
+        const context = kwargs.context;
+        const workspace = context.ws;
+        const userInfo = context.user;
+        return `Hello ${userInfo.id || 'anonymous'} from ${workspace}`;
+    }
+    throw new Error("Context not available");
+}
+
+// Register service with require_context
+await server.registerService({
+    id: "my-service",
+    config: {
+        require_context: true, visibility: "public"
+    },
+    myMethod: myServiceMethod
+});
+```
+
+#### Context Information
+
+The injected context object contains:
+- `from`: The caller's client ID (e.g., "workspace/client-id")
+- `to`: The target service path 
+- `ws`: The workspace name
+- `user`: User information object with permissions and identity
+
+#### Usage Notes
+
+- Context injection works consistently across both Python and JavaScript implementations
+- The context is automatically filtered out from function signatures when generating schemas
+- Built-in services (like `get_service`, `ping`, etc.) handle context injection transparently
+- External client services receive context via the kwargs mechanism with the `_rkwargs` flag
+
 ### Generators Support
 
 Hypha RPC supports both synchronous and asynchronous generators across Python and JavaScript. This allows you to stream data between services efficiently.
@@ -245,7 +310,10 @@ async def async_counter(start=0, end=5):
 # Register service with generators
 await server.register_service({
     "id": "generator-service",
-    "config": {"visibility": "public"},
+    "config": {
+        "visibility": "public",
+        "require_context": True,
+    },
     "get_counter": counter,
     "get_async_counter": async_counter,
 })

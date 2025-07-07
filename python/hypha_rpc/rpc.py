@@ -1528,6 +1528,11 @@ class RPC(MessageEmitter):
                 method
             ].get("require_context"):
                 kwargs["context"] = data["ctx"]
+                kwargs["_rkwargs"] = True
+
+            # Filter out _rkwargs before calling the method since it's only for JavaScript compatibility
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k != "_rkwargs"}
+
             run_in_executor = (
                 method in self._method_annotations
                 and self._method_annotations[method].get("run_in_executor")
@@ -1536,7 +1541,7 @@ class RPC(MessageEmitter):
             method_task = self._call_method(
                 method,
                 args,
-                kwargs,
+                filtered_kwargs,
                 resolve,
                 reject,
                 heartbeat_task=heartbeat_task,

@@ -11,13 +11,37 @@ try:
     from pydantic_core import PydanticUndefined, ValidationError
     from pydantic.json_schema import GenerateJsonSchema
 
-    PYDANTIC_AVAILABLE = True
+    _PYDANTIC_AVAILABLE = True
 except ImportError:
-    PYDANTIC_AVAILABLE = False
+    _PYDANTIC_AVAILABLE = False
     FieldInfo = type("FieldInfo", (), {})
-    PydanticField = Field  # fallback to your own Field class
+    PydanticField = Field  # fallback to your own Field class (defined below)
     PydanticUndefined = inspect._empty
     ValidationError = Exception
+
+# Dynamic pydantic availability check
+def _check_pydantic_available():
+    """Check if pydantic is available and update imports if needed."""
+    global _PYDANTIC_AVAILABLE, create_model, BaseModel, ConfigDict, PydanticField
+    global FieldInfo, PydanticUndefined, ValidationError, GenerateJsonSchema
+    
+    try:
+        import pydantic
+        
+        # If pydantic is available but we haven't imported it yet, do it now
+        if not _PYDANTIC_AVAILABLE:
+            from pydantic import create_model, BaseModel, ConfigDict
+            from pydantic import Field as PydanticField
+            from pydantic.fields import FieldInfo
+            from pydantic_core import PydanticUndefined, ValidationError
+            from pydantic.json_schema import GenerateJsonSchema
+            
+            # Update the cached flag
+            _PYDANTIC_AVAILABLE = True
+        
+        return True
+    except ImportError:
+        return False
 
 class Field:
     def __init__(self, default=inspect._empty, description=None):
@@ -84,7 +108,7 @@ def extract_parameter_schema(param, mode="strict", arbitrary_types_allowed=False
                     )
                 if serializable:
                     param_schema["default"] = param.default.default
-        elif PYDANTIC_AVAILABLE and isinstance(param.default, FieldInfo):
+        elif _check_pydantic_available() and isinstance(param.default, FieldInfo):
             param_schema["description"] = param.default.description
             if (
                 param.default.default != Ellipsis
@@ -114,7 +138,7 @@ def fill_missing_args_and_kwargs(original_func_sig, args, kwargs):
     for name, param in original_func_sig.parameters.items():
         if name not in kwargs and name not in bound_args.arguments:
             if isinstance(param.default, Field) or (
-                PYDANTIC_AVAILABLE and isinstance(param.default, FieldInfo)
+                _check_pydantic_available() and isinstance(param.default, FieldInfo)
             ):
                 bound_args.arguments[name] = param.default.default
             else:
@@ -257,7 +281,7 @@ def extract_pydantic_schema(
     skip_args=None,
     arbitrary_types_allowed=False,
 ):
-    assert PYDANTIC_AVAILABLE, "Pydantic is not available"
+    assert _check_pydantic_available(), "Pydantic is not available"
     assert callable(func), "Function must be callable functions"
     skip_args = skip_args or set()
     sig = signature(func)
@@ -343,7 +367,7 @@ def schema_function_pydantic(
     arbitrary_types_allowed=False,
 ):
     """Decorator to add input/output schema to a function."""
-    assert PYDANTIC_AVAILABLE, "Pydantic is not available"
+    assert _check_pydantic_available(), "Pydantic is not available"
     assert callable(original_func)
     if hasattr(original_func, "__schema__"):
         return original_func
@@ -523,7 +547,7 @@ def schema_function(
     ], "Schema type must be 'pydantic' or 'native'"
 
     if schema_type == "auto":
-        if PYDANTIC_AVAILABLE:
+        if _check_pydantic_available():
             schema_type = "pydantic"
             mode = mode or "auto"
         else:
@@ -576,7 +600,7 @@ def parse_schema_function(obj, name=None, schema_type="native"):
     ], "Schema type must be 'pydantic' or 'native'"
 
     if schema_type == "auto":
-        if PYDANTIC_AVAILABLE:
+        if _check_pydantic_available():
             schema_type = "pydantic"
             mode = "auto"
         else:

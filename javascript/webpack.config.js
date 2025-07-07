@@ -29,6 +29,12 @@ const config = {
       },
     ],
   },
+  ignoreWarnings: [
+    {
+      module: /node_modules/,
+      message: /Failed to parse source map/,
+    },
+  ],
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: process.env.NODE_ENV === 'production'

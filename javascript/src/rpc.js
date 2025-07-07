@@ -411,6 +411,10 @@ export class RPC extends MessageEmitter {
   }
 
   async _ping(msg, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     assert(msg == "ping");
     return "pong";
   }
@@ -427,6 +431,10 @@ export class RPC extends MessageEmitter {
   }
 
   _create_message(key, heartbeat, overwrite, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -446,6 +454,10 @@ export class RPC extends MessageEmitter {
   }
 
   _append_message(key, data, heartbeat, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -461,6 +473,10 @@ export class RPC extends MessageEmitter {
   }
 
   _set_message(key, index, data, heartbeat, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -476,6 +492,10 @@ export class RPC extends MessageEmitter {
   }
 
   _remove_message(key, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
       throw new Error(`Message with key ${key} does not exists.`);
@@ -484,6 +504,10 @@ export class RPC extends MessageEmitter {
   }
 
   _process_message(key, heartbeat, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -613,6 +637,10 @@ export class RPC extends MessageEmitter {
     return this._services;
   }
   get_local_service(service_id, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     assert(service_id);
     const [ws, client_id] = context["to"].split("/");
     assert(
@@ -1496,34 +1524,19 @@ export class RPC extends MessageEmitter {
       } else {
         args = [];
       }
+      let kwargs = {};
+      if (data.with_kwargs) {
+        kwargs = args.pop();
+      }
+      
       if (
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
       ) {
-        // Check if this is a remote service (from external clients)
-        // Remote services start with a session ID or client ID, not "services."
-        const isRemoteService = !data.method.startsWith("services.");
-
-        if (isRemoteService) {
-          // For remote services (external client services), the method.length reflects
-          // the original signature and cannot be modified. We inject context as the last argument
-          // and skip the strict argument validation that fails for external services.
-          args.push(data.ctx);
-        } else {
-          // For local services, use the existing logic with padding and validation
-          // if args.length + 1 is less than the required number of arguments we will pad with undefined
-          // so we make sure the last argument is the context
-          if (args.length + 1 < method.length) {
-            for (let i = args.length; i < method.length - 1; i++) {
-              args.push(undefined);
-            }
-          }
-          args.push(data.ctx);
-          assert(
-            args.length === method.length,
-            `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
-          );
-        }
+        // Always use kwargs approach for consistency
+        kwargs.context = data.ctx;
+        kwargs._rkwargs = true;
+        args.push(kwargs);
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
