@@ -446,8 +446,9 @@ describe("RPC", async () => {
       server_url: SERVER_URL,
       client_id: "test-plugin-3",
     });
-    function multiply_context(a, b, context) {
-      assert(context.user, "context should not be null");
+    function multiply_context(a, b, kwargs) {
+      assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+      assert(kwargs.context.user, "context should not be null");
       if (b === undefined) {
         b = a;
       }
@@ -505,34 +506,37 @@ describe("RPC", async () => {
           require_context: true,
           visibility: "public",
         },
-        // Function with 0 parameters - should receive context as last argument
-        quickTest: function (context) {
-          assert(context.user, "context should not be null");
-          console.log("quickTest called with context:", !!context);
+        // Function with 0 parameters - should receive kwargs as last argument
+        quickTest: function (kwargs) {
+          assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+          assert(kwargs.context.user, "context should not be null");
+          console.log("quickTest called with context:", !!kwargs.context);
           return {
             success: true,
-            hasContext: !!context,
-            workspace: context?.ws,
+            hasContext: !!kwargs.context,
+            workspace: kwargs.context?.ws,
           };
         },
-        // Function with 1 parameter - should receive (userInput, context)
-        processInput: function (userInput, context) {
-          assert(context.user, "context.user should not be null");
+        // Function with 1 parameter - should receive (userInput, kwargs)
+        processInput: function (userInput, kwargs) {
+          assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+          assert(kwargs.context.user, "context.user should not be null");
           console.log("processInput called with:", {
-            hasContext: !!context,
+            hasContext: !!kwargs.context,
             userInput,
           });
           return {
             success: true,
             processed: userInput,
-            workspace: context?.ws,
+            workspace: kwargs.context?.ws,
           };
         },
-        // Function with 2 parameters - should receive (data, options, context)
-        complexMethod: function (data, options, context) {
-          assert(context.user, "context.user should not be null");
+        // Function with 2 parameters - should receive (data, options, kwargs)
+        complexMethod: function (data, options, kwargs) {
+          assert(kwargs._rkwargs === true, "kwargs should have _rkwargs flag");
+          assert(kwargs.context.user, "context.user should not be null");
           console.log("complexMethod called with:", {
-            hasContext: !!context,
+            hasContext: !!kwargs.context,
             data,
             options,
           });
@@ -540,7 +544,7 @@ describe("RPC", async () => {
             success: true,
             data,
             options,
-            workspace: context?.ws,
+            workspace: kwargs.context?.ws,
           };
         },
       });

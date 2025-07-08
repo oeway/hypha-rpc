@@ -28,7 +28,12 @@ describe("Old Server Compatibility", () => {
       await server.registerService({
         id: "test-old-server-compat",
         config: { require_context: true, visibility: "public" },
-        testContext: function (x, context) {
+        testContext: function (x, kwargs) {
+          // Use the correct kwargs pattern for context injection
+          if (!kwargs || kwargs._rkwargs !== true) {
+            throw new Error("kwargs should have _rkwargs flag");
+          }
+          const context = kwargs.context;
           return {
             input: x,
             hasContext: context !== null && context !== undefined,
@@ -36,7 +41,7 @@ describe("Old Server Compatibility", () => {
             from: context ? context.from : null,
           };
         },
-        testNormal: function (x, context) {
+        testNormal: function (x) {
           return `echo: ${x}`;
         },
       });
