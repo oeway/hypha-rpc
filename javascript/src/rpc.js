@@ -539,6 +539,9 @@ export class RPC extends MessageEmitter {
   _on_message(message) {
     if (typeof message === "string") {
       const main = JSON.parse(message);
+      // Add trusted context to the method call
+      main["ctx"] = JSON.parse(JSON.stringify(main));
+      Object.assign(main["ctx"], this.default_context);
       this._fire(main["type"], main);
     } else if (message instanceof ArrayBuffer) {
       let unpacker = decodeMulti(message);
@@ -553,6 +556,9 @@ export class RPC extends MessageEmitter {
       }
       this._fire(main["type"], main);
     } else if (typeof message === "object") {
+      // Add trusted context to the method call
+      message["ctx"] = JSON.parse(JSON.stringify(message));
+      Object.assign(message["ctx"], this.default_context);
       this._fire(message["type"], message);
     } else {
       throw new Error("Invalid message format");
@@ -658,6 +664,8 @@ export class RPC extends MessageEmitter {
   }
   get_local_service(service_id, context) {
     assert(service_id);
+    assert(context, "Context is required");
+
     const [ws, client_id] = context["to"].split("/");
     assert(
       client_id === this._client_id,
@@ -1549,29 +1557,42 @@ export class RPC extends MessageEmitter {
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
       ) {
-        // Check if this is a remote service (from external clients)
-        // Remote services start with a session ID or client ID, not "services."
-        const isRemoteService = !data.method.startsWith("services.");
+        // Create context from data.ctx if available, otherwise from default_context + message fields
+        let context = data.ctx;
+        if (!context) {
+          // For local service calls, create context from default_context and message fields
+          context = JSON.parse(JSON.stringify(this.default_context));
+          context.from = data.from;
+          context.to = data.to;
+          if (data.ws) context.ws = data.ws;
+        }
 
-        if (isRemoteService) {
-          // For remote services (external client services), the method.length reflects
-          // the original signature and cannot be modified. We inject context as the last argument
-          // and skip the strict argument validation that fails for external services.
-          args.push(data.ctx);
+        // NEW JS-KWARGS PATTERN: Check if first argument has ._rkwargs=true
+        if (
+          args.length > 0 &&
+          args[0] &&
+          typeof args[0] === "object" &&
+          args[0]._rkwargs === true
+        ) {
+          // Inject context into the kwargs object instead of appending
+          args[0].context = context;
+          // Remove the _rkwargs flag as it's just for detection
+          delete args[0]._rkwargs;
+        } else if (data.with_kwargs) {
+          // Standard kwargs handling
+          kwargs.context = context;
         } else {
-          // For local services, use the existing logic with padding and validation
-          // if args.length + 1 is less than the required number of arguments we will pad with undefined
-          // so we make sure the last argument is the context
-          if (args.length + 1 < method.length) {
-            for (let i = args.length; i < method.length - 1; i++) {
+          // Backward compatibility: append context as last argument
+          // For functions expecting context, we need to inject context at the right position
+          // to avoid breaking parameter ordering when some parameters are optional
+          const expectedParams = method.length; // Number of parameters the function expects
+          if (expectedParams > 0 && args.length < expectedParams - 1) {
+            // Pad with undefined to ensure context goes to the right position
+            while (args.length < expectedParams - 1) {
               args.push(undefined);
             }
           }
-          args.push(data.ctx);
-          assert(
-            args.length === method.length,
-            `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
-          );
+          args.push(context);
         }
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
@@ -1592,7 +1613,6 @@ export class RPC extends MessageEmitter {
           clearInterval(heartbeat_task);
         }
       } else {
-        // console.log(`DEBUG: About to call method (no promise) ${data.method} with args:`, args);
         method.apply(null, args);
         clearInterval(heartbeat_task);
       }

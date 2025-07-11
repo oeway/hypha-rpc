@@ -555,10 +555,20 @@ class RPC(MessageEmitter):
         self._fire(main["type"], main)
         del cache[key]
 
+    def _add_context_to_message(self, main):
+        """Add trusted context to a message if it doesn't already have it."""
+        if "ctx" not in main:
+            # Create context from message fields + default_context
+            main["ctx"] = main.copy()
+            main["ctx"].update(self.default_context)
+        return main
+
     def _on_message(self, message):
         """Handle message."""
         if isinstance(message, str):
             main = json.loads(message)
+            # Add trusted context to the method call
+            main = self._add_context_to_message(main)
             self._fire(main["type"], main)
         elif isinstance(message, bytes):
             unpacker = msgpack.Unpacker(
@@ -567,8 +577,7 @@ class RPC(MessageEmitter):
             )
             main = unpacker.unpack()
             # Add trusted context to the method call
-            main["ctx"] = main.copy()
-            main["ctx"].update(self.default_context)
+            main = self._add_context_to_message(main)
             try:
                 extra = unpacker.unpack()
                 main.update(extra)
@@ -576,6 +585,8 @@ class RPC(MessageEmitter):
                 pass
             self._fire(main["type"], main)
         elif isinstance(message, dict):
+            # Add trusted context to the method call
+            message = self._add_context_to_message(message)
             self._fire(message["type"], message)
         else:
             raise Exception(f"Invalid message type: {type(message)}")
@@ -1426,7 +1437,10 @@ class RPC(MessageEmitter):
         method_task = None
         heartbeat_task = None
         try:
-            assert "method" in data and "ctx" in data and "from" in data
+            assert "method" in data and "from" in data
+            # Ensure context is available - create it if missing (for local service calls)
+            if "ctx" not in data:
+                data = self._add_context_to_message(data)
             method_name = f'{data["from"]}:{data["method"]}'
             remote_workspace = data["from"].split("/")[0]
             remote_client_id = data["from"].split("/")[1]
