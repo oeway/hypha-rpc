@@ -426,6 +426,10 @@ export class RPC extends MessageEmitter {
   }
 
   async _ping(msg, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     assert(msg == "ping");
     return "pong";
   }
@@ -442,6 +446,10 @@ export class RPC extends MessageEmitter {
   }
 
   _create_message(key, heartbeat, overwrite, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -461,6 +469,10 @@ export class RPC extends MessageEmitter {
   }
 
   _append_message(key, data, heartbeat, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -476,6 +488,10 @@ export class RPC extends MessageEmitter {
   }
 
   _set_message(key, index, data, heartbeat, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -491,6 +507,10 @@ export class RPC extends MessageEmitter {
   }
 
   _remove_message(key, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
       throw new Error(`Message with key ${key} does not exists.`);
@@ -499,6 +519,10 @@ export class RPC extends MessageEmitter {
   }
 
   _process_message(key, heartbeat, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     if (heartbeat) {
       if (!this._object_store[key]) {
         throw new Error(`session does not exist anymore: ${key}`);
@@ -663,6 +687,10 @@ export class RPC extends MessageEmitter {
     return this._services;
   }
   get_local_service(service_id, context) {
+    // Handle the new kwargs format with _rkwargs flag
+    if (typeof context === "object" && context && context._rkwargs) {
+      context = context.context;
+    }
     assert(service_id);
     assert(context, "Context is required");
 
@@ -1594,6 +1622,8 @@ export class RPC extends MessageEmitter {
           }
           args.push(context);
         }
+
+        args.push(kwargs);
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
