@@ -577,20 +577,28 @@ export class RPC extends MessageEmitter {
     delete cache[key];
   }
 
+  _add_context_to_message(main) {
+    // Add trusted context to a message if it doesn't already have it
+    if (!main.ctx) {
+      // Create context from message fields + default_context
+      main.ctx = JSON.parse(JSON.stringify(main));
+      Object.assign(main.ctx, this.default_context);
+    }
+    return main;
+  }
+
   _on_message(message) {
     if (typeof message === "string") {
       const main = JSON.parse(message);
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       this._fire(main["type"], main);
     } else if (message instanceof ArrayBuffer) {
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       if (!done) {
         let extra = unpacker.next();
         Object.assign(main, extra.value);
@@ -598,8 +606,7 @@ export class RPC extends MessageEmitter {
       this._fire(main["type"], main);
     } else if (typeof message === "object") {
       // Add trusted context to the method call
-      message["ctx"] = JSON.parse(JSON.stringify(message));
-      Object.assign(message["ctx"], this.default_context);
+      this._add_context_to_message(message);
       this._fire(message["type"], message);
     } else {
       throw new Error("Invalid message format");
@@ -1419,8 +1426,7 @@ export class RPC extends MessageEmitter {
               ws: contextData.ws || "",
               user: contextData.user || "",
             });
-            main.ctx = JSON.parse(JSON.stringify(main));
-            Object.assign(main.ctx, this.default_context);
+            this._add_context_to_message(main);
 
             if (!done) {
               const extra = unpacker.next();
@@ -1711,7 +1717,11 @@ export class RPC extends MessageEmitter {
     let reject = null;
     let heartbeat_task = null;
     try {
-      assert(data.method && data.ctx && data.from);
+      assert(data.method && data.from);
+      // Ensure context is available - create it if missing (for local service calls)
+      if (!data.ctx) {
+        data = this._add_context_to_message(data);
+      }
       const method_name = data.from + ":" + data.method;
       const remote_workspace = data.from.split("/")[0];
       const remote_client_id = data.from.split("/")[1];
@@ -1874,35 +1884,17 @@ export class RPC extends MessageEmitter {
           if (data.ws) context.ws = data.ws;
         }
 
-        // NEW JS-KWARGS PATTERN: Check if first argument has ._rkwargs=true
-        if (
-          args.length > 0 &&
-          args[0] &&
-          typeof args[0] === "object" &&
-          args[0]._rkwargs === true
-        ) {
-          // Inject context into the kwargs object instead of appending
-          args[0].context = context;
-          // Remove the _rkwargs flag as it's just for detection
-          delete args[0]._rkwargs;
-        } else if (data.with_kwargs) {
-          // Standard kwargs handling
-          kwargs.context = context;
-        } else {
-          // Backward compatibility: append context as last argument
-          // For functions expecting context, we need to inject context at the right position
-          // to avoid breaking parameter ordering when some parameters are optional
-          const expectedParams = method.length; // Number of parameters the function expects
-          if (expectedParams > 0 && args.length < expectedParams - 1) {
-            // Pad with undefined to ensure context goes to the right position
-            while (args.length < expectedParams - 1) {
-              args.push(undefined);
-            }
-          }
-          args.push(context);
-        }
+        // Add context to kwargs and set _rkwargs flag (matching Python behavior)
+        kwargs.context = context;
+        kwargs._rkwargs = true;
 
+        // For require_context methods, always push kwargs (even if empty except for context)
         args.push(kwargs);
+      } else {
+        // For methods without require_context, only add kwargs if we have some
+        if (data.with_kwargs && Object.keys(kwargs).length > 0) {
+          args.push(kwargs);
+        }
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
@@ -2038,8 +2030,7 @@ export class RPC extends MessageEmitter {
                 ws: data.ws || "",
                 user: data.user || "",
               });
-              main.ctx = JSON.parse(JSON.stringify(main));
-              Object.assign(main.ctx, this.default_context);
+              this._add_context_to_message(main);
 
               if (!done) {
                 const extra = unpacker.next();
