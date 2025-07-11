@@ -281,6 +281,10 @@ class RPC(MessageEmitter):
         app_id=None,
         server_base_url=None,
         long_message_chunk_size=None,
+        enable_message_batching=True,
+        batch_timeout_ms=10,
+        batch_max_messages=10,
+        batch_max_size=32768,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -308,6 +312,16 @@ class RPC(MessageEmitter):
         }
         # Registry for active generator streams
         self._generator_registry = {}
+
+        # Message batching system
+        self._message_batching_enabled = enable_message_batching
+        self._batch_timeout_ms = batch_timeout_ms
+        self._batch_max_messages = batch_max_messages
+        self._batch_max_size = batch_max_size
+        self._message_batches = (
+            {}
+        )  # target_id -> {messages: [], size: int, timer: Timer}
+        self._batch_sequence = 0
 
         if HAS_PYDANTIC:
             self.register_codec(
@@ -343,7 +357,8 @@ class RPC(MessageEmitter):
             )
             self.on("method", self._handle_method)
             self.on("generator", self._handle_generator)
-            self.on("generator_stream_request", self._handle_generator_stream_request)
+            self.on("stream_request", self._handle_stream_request)
+            self.on("message_batch", self._handle_message_batch)
             self.on("error", self._error)
 
             assert hasattr(connection, "emit_message") and hasattr(
@@ -1122,25 +1137,28 @@ class RPC(MessageEmitter):
         except Exception:
             # If version check fails, fall back to legacy approach
             supports_streaming = False
-            
+
         if supports_streaming:
             # Use new generator streaming (API v4+)
             total_size = len(package)
             start_time = time.time()
-            chunk_num = int(math.ceil(float(total_size) / self._long_message_chunk_size))
-            
+            chunk_num = int(
+                math.ceil(float(total_size) / self._long_message_chunk_size)
+            )
+
             # Create data chunks
             chunks = []
             for idx in range(chunk_num):
                 start_byte = idx * self._long_message_chunk_size
                 chunk = package[start_byte : start_byte + self._long_message_chunk_size]
                 chunks.append(chunk)
-            
+
             # Send via generator stream
             await self._send_generator_stream(chunks, target_id, session_id)
             logger.debug(
-                "All chunks (%d bytes) sent via generator stream in %.2f s", 
-                total_size, time.time() - start_time
+                "All chunks (%d bytes) sent via generator stream in %.2f s",
+                total_size,
+                time.time() - start_time,
             )
         else:
             # Fallback to legacy message_cache approach (API v3 and below)
@@ -1152,7 +1170,9 @@ class RPC(MessageEmitter):
             message_id = session_id or shortuuid.uuid()
             total_size = len(package)
             start_time = time.time()
-            chunk_num = int(math.ceil(float(total_size) / self._long_message_chunk_size))
+            chunk_num = int(
+                math.ceil(float(total_size) / self._long_message_chunk_size)
+            )
             if remote_services.config.api_version >= 3:
                 # use concurrent sending
                 await message_cache.create(message_id, bool(session_id))
@@ -1161,7 +1181,9 @@ class RPC(MessageEmitter):
                 async def append_chunk(idx, chunk):
                     # Acquire the semaphore
                     async with semaphore:
-                        await message_cache.set(message_id, idx, chunk, bool(session_id))
+                        await message_cache.set(
+                            message_id, idx, chunk, bool(session_id)
+                        )
                         logger.debug(
                             "Sending chunk %d/%d (total=%d bytes)",
                             idx + 1,
@@ -1172,7 +1194,9 @@ class RPC(MessageEmitter):
                 tasks = []
                 for idx in range(chunk_num):
                     start_byte = idx * self._long_message_chunk_size
-                    chunk = package[start_byte : start_byte + self._long_message_chunk_size]
+                    chunk = package[
+                        start_byte : start_byte + self._long_message_chunk_size
+                    ]
                     tasks.append(asyncio.create_task(append_chunk(idx, chunk)))
 
                 # Wait for all chunks to finish uploading
@@ -1193,7 +1217,9 @@ class RPC(MessageEmitter):
                     start_byte = idx * self._long_message_chunk_size
                     await message_cache.append(
                         message_id,
-                        package[start_byte : start_byte + self._long_message_chunk_size],
+                        package[
+                            start_byte : start_byte + self._long_message_chunk_size
+                        ],
                         bool(session_id),
                     )
                     logger.debug(
@@ -1204,7 +1230,9 @@ class RPC(MessageEmitter):
                     )
             await message_cache.process(message_id, bool(session_id))
             logger.debug(
-                "All chunks (%d bytes) sent in %d s", total_size, time.time() - start_time
+                "All chunks (%d bytes) sent in %d s",
+                total_size,
+                time.time() - start_time,
             )
 
     def emit(self, main_message, extra_data=None):
@@ -1219,14 +1247,169 @@ class RPC(MessageEmitter):
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)
         total_size = len(message_package)
+
+        # Use intelligent batching for small to medium messages
+        if (
+            self._message_batching_enabled
+            and total_size <= self._batch_max_size
+            and "to" in main_message
+        ):
+            return self._emit_with_batching(message_package, main_message["to"])
+
+        # Send large messages immediately (will use chunking if needed)
         if total_size > self._long_message_chunk_size + 1024:
             logger.warning(f"Sending large message (size={total_size})")
         return self.loop.create_task(self._emit_message(message_package))
 
+    def _emit_with_batching(self, message_package, target_id):
+        """Emit message with intelligent batching."""
+        # Get or create batch for this target
+        if target_id not in self._message_batches:
+            self._message_batches[target_id] = {
+                "messages": [],
+                "total_size": 0,
+                "timer": None,
+            }
+
+        batch = self._message_batches[target_id]
+
+        # Add message to batch
+        batch["messages"].append(message_package)
+        batch["total_size"] += len(message_package)
+
+        # Check if we should flush the batch immediately
+        should_flush = (
+            len(batch["messages"]) >= self._batch_max_messages
+            or batch["total_size"] >= self._batch_max_size
+        )
+
+        if should_flush:
+            return self._flush_message_batch(target_id)
+        else:
+            # Set timer to flush batch after timeout
+            if batch["timer"] is None:
+
+                def flush_callback():
+                    if target_id in self._message_batches:
+                        self.loop.create_task(self._flush_message_batch(target_id))
+
+                batch["timer"] = Timer(
+                    self._batch_timeout_ms / 1000.0,  # Convert to seconds
+                    flush_callback,
+                    label=f"batch_flush_{target_id}",
+                )
+                batch["timer"].start()
+
+            # Return a completed future for consistency
+            future = asyncio.Future()
+            future.set_result(None)
+            return future
+
+    async def _flush_message_batch(self, target_id):
+        """Flush a message batch for the given target."""
+        if target_id not in self._message_batches:
+            return
+
+        batch = self._message_batches[target_id]
+        if not batch["messages"]:
+            return
+
+        # Clear timer
+        if batch["timer"]:
+            batch["timer"].clear()
+
+        messages = batch["messages"]
+        batch_count = len(messages)
+
+        # Remove from batches
+        del self._message_batches[target_id]
+
+        if batch_count == 1:
+            # Single message - send directly for efficiency
+            await self._emit_message(messages[0])
+        else:
+            # Multiple messages - send as batch
+            self._batch_sequence += 1
+            batch_id = f"batch_{self._batch_sequence}_{shortuuid.uuid()}"
+
+            if self._local_workspace is None:
+                from_client = self._client_id
+            else:
+                from_client = self._local_workspace + "/" + self._client_id
+
+            # Send batch via generator streaming
+            batch_header = {
+                "type": "message_batch",
+                "from": from_client,
+                "to": target_id,
+                "batch_id": batch_id,
+                "message_count": batch_count,
+            }
+
+            # Use generator streaming to send the batch
+            await self._send_generator_stream(messages, target_id, batch_id)
+
+            logger.debug(f"Sent message batch: {batch_count} messages to {target_id}")
+
+    def _handle_message_batch(self, data):
+        """Handle incoming message batch."""
+        try:
+            batch_id = data.get("batch_id")
+            if not batch_id:
+                logger.warning("Received message batch without batch_id")
+                return
+
+            # The batch data will be received via generator stream
+            # and processed in _handle_generator when action="end"
+            logger.debug(f"Initialized message batch: {batch_id}")
+
+        except Exception as err:
+            logger.error(f"Error handling message batch: {err}")
+
+    def _process_message_batch(self, messages_data, context_data):
+        """Process a message batch received via generator streaming."""
+        try:
+            # Each item in messages_data is a complete msgpack message
+            for i, msg_data in enumerate(messages_data):
+                try:
+                    if isinstance(msg_data, bytes):
+                        unpacker = msgpack.Unpacker(
+                            io.BytesIO(msg_data),
+                            max_buffer_size=self._max_message_buffer_size,
+                        )
+                        main = unpacker.unpack()
+                        # Add trusted context
+                        main.update(
+                            {
+                                "from": context_data["from"],
+                                "to": context_data["to"],
+                                "ws": context_data.get("ws", ""),
+                                "user": context_data.get("user", ""),
+                            }
+                        )
+                        main["ctx"] = main.copy()
+                        main["ctx"].update(self.default_context)
+                        try:
+                            extra = unpacker.unpack()
+                            main.update(extra)
+                        except msgpack.exceptions.OutOfData:
+                            pass
+
+                        # Fire the individual message
+                        self._fire(main["type"], main)
+
+                except Exception as msg_err:
+                    logger.error(f"Error processing batched message {i}: {msg_err}")
+
+            logger.debug(f"Processed message batch with {len(messages_data)} messages")
+
+        except Exception as err:
+            logger.error(f"Error processing message batch: {err}")
+
     async def _send_generator_stream(self, data_chunks, target_id, generator_id=None):
         """Send data using generator stream for API v4+."""
         generator_id = generator_id or shortuuid.uuid()
-        
+
         if self._local_workspace is None:
             from_client = self._client_id
         else:
@@ -1237,27 +1420,27 @@ class RPC(MessageEmitter):
             "type": "generator",
             "from": from_client,
             "to": target_id,
-            "method": f"{generator_id}:start"
+            "method": f"{generator_id}:start",
         }
         await self._emit_message(msgpack.packb(start_message))
 
         # Send data chunks
         for i, chunk in enumerate(data_chunks):
             chunk_message = {
-                "type": "generator", 
+                "type": "generator",
                 "from": from_client,
                 "to": target_id,
                 "method": f"{generator_id}:data",
-                "data": chunk
+                "data": chunk,
             }
             await self._emit_message(msgpack.packb(chunk_message))
 
         # Send end message
         end_message = {
             "type": "generator",
-            "from": from_client, 
+            "from": from_client,
             "to": target_id,
-            "method": f"{generator_id}:end"
+            "method": f"{generator_id}:end",
         }
         await self._emit_message(msgpack.packb(end_message))
         logger.debug(f"Generator stream completed: {len(data_chunks)} chunks")
@@ -1265,7 +1448,9 @@ class RPC(MessageEmitter):
     async def _check_remote_api_version(self, target_id):
         """Check if remote client supports API v4+ for generator streaming."""
         try:
-            remote_service = await self.get_remote_service(f"{target_id}:built-in", {"timeout": 5})
+            remote_service = await self.get_remote_service(
+                f"{target_id}:built-in", {"timeout": 5}
+            )
             return remote_service.config.get("api_version", 3) >= 4
         except Exception:
             return False
@@ -1725,7 +1910,7 @@ class RPC(MessageEmitter):
                         "callback": callback,
                         "from": data["from"],
                         "to": data["to"],
-                        "buffer": []
+                        "buffer": [],
                     }
                     logger.debug(f"Started generator stream: {generator_id}")
                 else:
@@ -1734,9 +1919,9 @@ class RPC(MessageEmitter):
                         "callback": None,  # No callback for chunked messages
                         "from": data["from"],
                         "to": data["to"],
-                        "buffer": []
+                        "buffer": [],
                     }
-                
+
             elif action == "data":
                 # Receive data chunk
                 if generator_id in self._generator_registry:
@@ -1745,49 +1930,65 @@ class RPC(MessageEmitter):
                     if chunk_data is not None:
                         stream_info["buffer"].append(chunk_data)
                     else:
-                        logger.warning(f"Received generator data message without data for {generator_id}")
+                        logger.warning(
+                            f"Received generator data message without data for {generator_id}"
+                        )
                 else:
-                    logger.warning(f"Received generator data for unknown stream: {generator_id}")
-                
+                    logger.warning(
+                        f"Received generator data for unknown stream: {generator_id}"
+                    )
+
             elif action == "end":
                 # End of stream - process all data
                 if generator_id in self._generator_registry:
                     stream_info = self._generator_registry[generator_id]
                     callback = stream_info["callback"]
-                    
+
                     # Concatenate all chunks
                     if stream_info["buffer"]:
-                        if all(isinstance(chunk, bytes) for chunk in stream_info["buffer"]):
-                            # Binary data chunks
+                        if generator_id.startswith("batch_"):
+                            # For message batches, keep chunks separate (each chunk is a message)
+                            full_data = stream_info["buffer"]
+                        elif all(
+                            isinstance(chunk, bytes) for chunk in stream_info["buffer"]
+                        ):
+                            # Binary data chunks for regular messages
                             full_data = b"".join(stream_info["buffer"])
                         else:
                             # Other data types
                             full_data = stream_info["buffer"]
                     else:
                         full_data = None
-                        
+
                     # Process the complete message
-                    if full_data and isinstance(full_data, bytes):
-                        # Decode as msgpack message
-                        unpacker = msgpack.Unpacker(
-                            io.BytesIO(full_data), max_buffer_size=self._max_message_buffer_size
-                        )
-                        main = unpacker.unpack()
-                        # Add trusted context
-                        main.update({
-                            "from": data["from"],
-                            "to": data["to"],
-                            "ws": data.get("ws", ""),
-                            "user": data.get("user", "")
-                        })
-                        main["ctx"] = main.copy()
-                        main["ctx"].update(self.default_context)
-                        try:
-                            extra = unpacker.unpack()
-                            main.update(extra)
-                        except msgpack.exceptions.OutOfData:
-                            pass
-                        self._fire(main["type"], main)
+                    if full_data:
+                        # Check if this is a message batch
+                        if generator_id.startswith("batch_"):
+                            self._process_message_batch(full_data, data)
+                        elif isinstance(full_data, bytes):
+                            # Regular chunked message - decode as single msgpack message
+                            unpacker = msgpack.Unpacker(
+                                io.BytesIO(full_data),
+                                max_buffer_size=self._max_message_buffer_size,
+                            )
+                            main = unpacker.unpack()
+                            # Add trusted context
+                            main.update(
+                                {
+                                    "from": data["from"],
+                                    "to": data["to"],
+                                    "ws": data.get("ws", ""),
+                                    "user": data.get("user", ""),
+                                }
+                            )
+                            main["ctx"] = main.copy()
+                            main["ctx"].update(self.default_context)
+                            try:
+                                extra = unpacker.unpack()
+                                main.update(extra)
+                            except msgpack.exceptions.OutOfData:
+                                pass
+                            self._fire(main["type"], main)
                     elif callback:
                         # Direct callback with data (for actual generator streams)
                         try:
@@ -1799,46 +2000,54 @@ class RPC(MessageEmitter):
                             logger.error(f"Error in generator callback: {cb_error}")
                     else:
                         # No callback and no binary data - this might be an issue
-                        logger.warning(f"Completed generator stream {generator_id} with no callback and no binary data to process: {type(full_data)}")
-                    
+                        logger.warning(
+                            f"Completed generator stream {generator_id} with no callback and no binary data to process: {type(full_data)}"
+                        )
+
                     # Cleanup
                     del self._generator_registry[generator_id]
-                    logger.debug(f"Completed generator stream: {generator_id} ({len(stream_info['buffer'])} chunks)")
+                    logger.debug(
+                        f"Completed generator stream: {generator_id} ({len(stream_info['buffer'])} chunks)"
+                    )
                 else:
-                    logger.warning(f"Received generator end for unknown stream: {generator_id}")
-                    
+                    logger.warning(
+                        f"Received generator end for unknown stream: {generator_id}"
+                    )
+
             elif action == "error":
                 # Handle error
                 if generator_id in self._generator_registry:
                     error_msg = data.get("error", "Unknown generator error")
-                    logger.error(f"Generator stream error ({generator_id}): {error_msg}")
+                    logger.error(
+                        f"Generator stream error ({generator_id}): {error_msg}"
+                    )
                     # Cleanup
                     del self._generator_registry[generator_id]
-                    
+
         except Exception as err:
             logger.error(f"Error handling generator message: {err}")
 
-    def _handle_generator_stream_request(self, data):
+    def _handle_stream_request(self, data):
         """Handle generator stream requests for API v4+."""
         try:
             session_id = data["session"]
-            object_id = data["object_id"] 
+            object_id = data["object_id"]
             generator_id = data["generator_id"]
-            
+
             # Get the generator from the session store
             store = self._get_session_store(session_id, create=False)
             if not store or object_id not in store:
                 logger.error(f"Generator not found: {session_id}.{object_id}")
                 return
-                
+
             gen_info = store[object_id]
             if not isinstance(gen_info, dict) or "generator" not in gen_info:
                 logger.error(f"Invalid generator info: {session_id}.{object_id}")
                 return
-                
+
             generator = gen_info["generator"]
             is_async = gen_info["is_async"]
-            
+
             # Stream all generator values
             async def stream_generator():
                 try:
@@ -1849,7 +2058,7 @@ class RPC(MessageEmitter):
                     else:
                         for value in generator:
                             values.append(value)
-                    
+
                     # Send all values via generator stream
                     if values:
                         # Encode the values
@@ -1857,13 +2066,17 @@ class RPC(MessageEmitter):
                         for value in values:
                             encoded_value = self._encode(value, session_id)
                             encoded_values.append(encoded_value)
-                        
+
                         # Send via generator stream
-                        await self._send_generator_stream(encoded_values, data["from"], generator_id)
+                        await self._send_generator_stream(
+                            encoded_values, data["from"], generator_id
+                        )
                     else:
                         # Send empty end message
-                        await self._send_generator_stream([], data["from"], generator_id)
-                        
+                        await self._send_generator_stream(
+                            [], data["from"], generator_id
+                        )
+
                 except Exception as e:
                     # Send error message
                     error_message = {
@@ -1871,19 +2084,19 @@ class RPC(MessageEmitter):
                         "from": data["to"],
                         "to": data["from"],
                         "method": f"{generator_id}:error",
-                        "error": str(e)
+                        "error": str(e),
                     }
                     await self._emit_message(msgpack.packb(error_message))
                 finally:
                     # Cleanup
                     if store and object_id in store:
                         del store[object_id]
-                        
+
             # Start streaming in background
             task = asyncio.create_task(stream_generator())
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
-            
+
         except Exception as err:
             logger.error(f"Error handling generator stream request: {err}")
 
@@ -2100,7 +2313,7 @@ class RPC(MessageEmitter):
             store[object_id] = {
                 "generator": a_object,
                 "is_async": is_async,
-                "supports_streaming": True  # This will be checked later
+                "supports_streaming": True,  # This will be checked later
             }
 
             # Define method to get next item from the generator (fallback for older API)
@@ -2108,7 +2321,7 @@ class RPC(MessageEmitter):
                 gen_info = store.get(object_id)
                 if not gen_info:
                     return {"_rtype": "stop_iteration"}
-                    
+
                 generator = gen_info["generator"]
                 if gen_info["is_async"]:
                     try:
@@ -2141,7 +2354,7 @@ class RPC(MessageEmitter):
                 "_rdoc": "Remote generator",
                 "_rstream": True,  # Indicates this generator supports streaming
                 "_rsession": session_id,
-                "_robject": object_id
+                "_robject": object_id,
             }
         elif isinstance(a_object, (list, dict)):
             keys = range(len(a_object)) if isarray else a_object.keys()

@@ -18,7 +18,7 @@ describe("Generator Streaming Tests", function () {
       server_url: SERVER_URL,
       client_id: "test-generator-server",
     });
-    
+
     const client = await connectToServer({
       server_url: SERVER_URL,
       client_id: "test-generator-client",
@@ -50,10 +50,12 @@ describe("Generator Streaming Tests", function () {
       });
 
       // Wait for service registration
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
 
       // Get the service from client
-      const service = await client.getService("test-generator-server:generator-service");
+      const service = await client.getService(
+        "test-generator-server:generator-service",
+      );
 
       // Test sync generator streaming
       const results = [];
@@ -63,7 +65,13 @@ describe("Generator Streaming Tests", function () {
       }
 
       assert.equal(results.length, 5);
-      assert.deepEqual(results, ["item_0", "item_1", "item_2", "item_3", "item_4"]);
+      assert.deepEqual(results, [
+        "item_0",
+        "item_1",
+        "item_2",
+        "item_3",
+        "item_4",
+      ]);
 
       // Test async generator streaming
       const asyncResults = [];
@@ -73,8 +81,13 @@ describe("Generator Streaming Tests", function () {
       }
 
       assert.equal(asyncResults.length, 5);
-      assert.deepEqual(asyncResults, ["async_item_0", "async_item_1", "async_item_2", "async_item_3", "async_item_4"]);
-
+      assert.deepEqual(asyncResults, [
+        "async_item_0",
+        "async_item_1",
+        "async_item_2",
+        "async_item_3",
+        "async_item_4",
+      ]);
     } finally {
       await server.disconnect();
       await client.disconnect();
@@ -86,10 +99,10 @@ describe("Generator Streaming Tests", function () {
       server_url: SERVER_URL,
       client_id: "test-large-server",
     });
-    
+
     const client = await connectToServer({
       server_url: SERVER_URL,
-      client_id: "test-large-client", 
+      client_id: "test-large-client",
     });
 
     try {
@@ -104,24 +117,25 @@ describe("Generator Streaming Tests", function () {
         const sum = Array.from(data).reduce((a, b) => a + b, 0);
         return {
           received_length: data.length,
-          sum: sum
+          sum: sum,
         };
       }
 
       await server.registerService({
         id: "large-data-service",
-        processLargeData: largeDataService
+        processLargeData: largeDataService,
       });
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      const service = await client.getService("test-large-server:large-data-service");
+      const service = await client.getService(
+        "test-large-server:large-data-service",
+      );
       const result = await service.processLargeData(largeData);
 
       assert.equal(result.received_length, largeData.length);
       const expectedSum = Array.from(largeData).reduce((a, b) => a + b, 0);
       assert.approximately(result.sum, expectedSum, 1e-5);
-
     } finally {
       await server.disconnect();
       await client.disconnect();
@@ -137,11 +151,11 @@ describe("Generator Streaming Tests", function () {
     try {
       // Test that API version detection works
       const rpc = client.rpc;
-      
-      // Should support API v4 features
-      const supportsV4 = await rpc._check_remote_api_version("test-compat-client");
-      assert.isTrue(supportsV4, "Should support API v4+");
 
+      // Should support API v4 features
+      const supportsV4 =
+        await rpc._check_remote_api_version("test-compat-client");
+      assert.isTrue(supportsV4, "Should support API v4+");
     } finally {
       await client.disconnect();
     }
@@ -152,7 +166,7 @@ describe("Generator Streaming Tests", function () {
       server_url: SERVER_URL,
       client_id: "test-error-server",
     });
-    
+
     const client = await connectToServer({
       server_url: SERVER_URL,
       client_id: "test-error-client",
@@ -167,12 +181,14 @@ describe("Generator Streaming Tests", function () {
 
       await server.registerService({
         id: "error-service",
-        errorGenerator: errorGenerator
+        errorGenerator: errorGenerator,
       });
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      const service = await client.getService("test-error-server:error-service");
+      const service = await client.getService(
+        "test-error-server:error-service",
+      );
 
       // This should handle the error gracefully
       const results = [];
@@ -184,9 +200,10 @@ describe("Generator Streaming Tests", function () {
       } catch (e) {
         // Should get some items before the error
         assert.isAtLeast(results.length, 0); // May get some items before error
-        assert.isTrue(e.message.toLowerCase().includes("error") || results.length >= 0);
+        assert.isTrue(
+          e.message.toLowerCase().includes("error") || results.length >= 0,
+        );
       }
-
     } finally {
       await server.disconnect();
       await client.disconnect();
@@ -203,7 +220,11 @@ describe("Generator Streaming Tests", function () {
       const rpc = client.rpc;
 
       // Test that the message format uses the compact method field
-      const testChunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6]), new Uint8Array([7, 8, 9])];
+      const testChunks = [
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([4, 5, 6]),
+        new Uint8Array([7, 8, 9]),
+      ];
       const generatorId = randId();
 
       // Capture messages sent
@@ -228,7 +249,7 @@ describe("Generator Streaming Tests", function () {
 
       // Check start message format
       const startMsg = capturedMessages[0];
-      assert.equal(startMsg.type, 'generator');
+      assert.equal(startMsg.type, "generator");
       assert.equal(startMsg.method, `${generatorId}:start`);
       assert.isUndefined(startMsg.generator_id); // Should not have old format
       assert.isUndefined(startMsg.action); // Should not have old format
@@ -236,19 +257,18 @@ describe("Generator Streaming Tests", function () {
       // Check data message format
       for (let i = 1; i < 4; i++) {
         const dataMsg = capturedMessages[i];
-        assert.equal(dataMsg.type, 'generator');
+        assert.equal(dataMsg.type, "generator");
         assert.equal(dataMsg.method, `${generatorId}:data`);
         assert.isDefined(dataMsg.data);
       }
 
       // Check end message format
       const endMsg = capturedMessages[capturedMessages.length - 1];
-      assert.equal(endMsg.type, 'generator');
+      assert.equal(endMsg.type, "generator");
       assert.equal(endMsg.method, `${generatorId}:end`);
 
       // Restore original emit
       rpc._emit_message = originalEmit;
-
     } finally {
       await client.disconnect();
     }
@@ -259,7 +279,7 @@ describe("Generator Streaming Tests", function () {
       server_url: SERVER_URL,
       client_id: "test-mixed-server",
     });
-    
+
     const client = await connectToServer({
       server_url: SERVER_URL,
       client_id: "test-mixed-client",
@@ -276,12 +296,14 @@ describe("Generator Streaming Tests", function () {
 
       await server.registerService({
         id: "mixed-service",
-        mixedGenerator: mixedGenerator
+        mixedGenerator: mixedGenerator,
       });
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      const service = await client.getService("test-mixed-server:mixed-service");
+      const service = await client.getService(
+        "test-mixed-server:mixed-service",
+      );
 
       const results = [];
       const gen = await service.mixedGenerator();
@@ -295,7 +317,6 @@ describe("Generator Streaming Tests", function () {
       assert.deepEqual(results[2], [1, 2, 3]);
       assert.deepEqual(results[3], { key: "value" });
       assert.deepEqual(Array.from(results[4]), [1, 2, 3]);
-
     } finally {
       await server.disconnect();
       await client.disconnect();
@@ -313,15 +334,21 @@ describe("Generator Streaming Tests", function () {
       const rpc = client.rpc;
 
       // Test with valid client ID
-      const supportsV4 = await rpc._check_remote_api_version("test-version-client");
+      const supportsV4 = await rpc._check_remote_api_version(
+        "test-version-client",
+      );
       assert.isTrue(supportsV4, "Should detect API v4+ support");
 
       // Test with invalid client ID (should return false)
-      const supportsInvalid = await rpc._check_remote_api_version("non-existent-client");
-      assert.isFalse(supportsInvalid, "Should return false for non-existent client");
-
+      const supportsInvalid = await rpc._check_remote_api_version(
+        "non-existent-client",
+      );
+      assert.isFalse(
+        supportsInvalid,
+        "Should return false for non-existent client",
+      );
     } finally {
       await client.disconnect();
     }
   });
-}); 
+});

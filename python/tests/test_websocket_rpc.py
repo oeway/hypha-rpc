@@ -1369,3 +1369,489 @@ async def test_memory_leak_prevention(websocket_server):
     await api.disconnect()
 
     print("Test completed successfully - no memory leaks detected")
+
+
+@pytest.mark.asyncio
+async def test_message_batching_small_frequent_messages(websocket_server):
+    """Test that small frequent messages are batched for improved performance."""
+    import time
+
+    # Create server and client
+    server = await connect_to_server(
+        {"client_id": "batching-server", "server_url": WS_SERVER_URL}
+    )
+
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Track received messages
+    received_messages = []
+
+    # Service that collects small messages
+    def collect_message(msg_id, data):
+        received_messages.append({"id": msg_id, "data": data, "timestamp": time.time()})
+        return f"received_{msg_id}"
+
+    await server.register_service(
+        {
+            "id": "message-collector",
+            "config": {"visibility": "public"},
+            "collect": collect_message,
+        }
+    )
+
+    # Connect client
+    client = await connect_to_server(
+        {
+            "client_id": "batching-client",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    # Get service
+    collector = await client.get_service("message-collector")
+
+    # Test small frequent messages (should be batched)
+    print("Sending 20 small frequent messages...")
+    start_time = time.time()
+
+    # Send messages rapidly
+    tasks = []
+    for i in range(20):
+        small_data = f"small_message_{i}" * 10  # ~150 bytes each
+        task = collector.collect(i, small_data)
+        tasks.append(task)
+
+    # Wait for all to complete
+    results = await asyncio.gather(*tasks)
+    end_time = time.time()
+
+    # Verify results
+    assert len(results) == 20
+    assert len(received_messages) == 20
+
+    # Verify all messages received correctly
+    for i in range(20):
+        assert f"received_{i}" in results
+        assert any(msg["id"] == i for msg in received_messages)
+
+    print(f"Small messages completed in {end_time - start_time:.3f}s")
+
+    # Clear for next test
+    received_messages.clear()
+
+    await server.disconnect()
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_message_batching_large_messages(websocket_server):
+    """Test that large messages bypass batching and use chunking."""
+    import time
+
+    # Create server and client
+    server = await connect_to_server(
+        {"client_id": "large-msg-server", "server_url": WS_SERVER_URL}
+    )
+
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Track received messages
+    received_large_messages = []
+
+    # Service that handles large messages
+    def handle_large_message(msg_id, large_data):
+        received_large_messages.append(
+            {"id": msg_id, "size": len(large_data), "timestamp": time.time()}
+        )
+        return f"processed_large_{msg_id}"
+
+    await server.register_service(
+        {
+            "id": "large-message-handler",
+            "config": {"visibility": "public"},
+            "handle_large": handle_large_message,
+        }
+    )
+
+    # Connect client
+    client = await connect_to_server(
+        {
+            "client_id": "large-msg-client",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    # Get service
+    handler = await client.get_service("large-message-handler")
+
+    # Test large messages (should use chunking, not batching)
+    print("Sending 3 large messages...")
+    start_time = time.time()
+
+    # Send large messages
+    tasks = []
+    for i in range(3):
+        # Create large data (~1MB each, well above batch size limit)
+        large_data = "X" * (1024 * 1024)  # 1MB
+        task = handler.handle_large(i, large_data)
+        tasks.append(task)
+
+    # Wait for all to complete
+    results = await asyncio.gather(*tasks)
+    end_time = time.time()
+
+    # Verify results
+    assert len(results) == 3
+    assert len(received_large_messages) == 3
+
+    # Verify all messages received correctly
+    for i in range(3):
+        assert f"processed_large_{i}" in results
+        assert any(
+            msg["id"] == i and msg["size"] == 1024 * 1024
+            for msg in received_large_messages
+        )
+
+    print(f"Large messages completed in {end_time - start_time:.3f}s")
+
+    await server.disconnect()
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_message_batching_mixed_sizes(websocket_server):
+    """Test mixed small and large messages to verify intelligent routing."""
+    import time
+
+    # Create server and client
+    server = await connect_to_server(
+        {"client_id": "mixed-msg-server", "server_url": WS_SERVER_URL}
+    )
+
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Track received messages
+    received_mixed_messages = []
+
+    # Service that handles mixed messages
+    def handle_mixed_message(msg_id, data, msg_type):
+        received_mixed_messages.append(
+            {
+                "id": msg_id,
+                "type": msg_type,
+                "size": len(data),
+                "timestamp": time.time(),
+            }
+        )
+        return f"processed_{msg_type}_{msg_id}"
+
+    await server.register_service(
+        {
+            "id": "mixed-message-handler",
+            "config": {"visibility": "public"},
+            "handle_mixed": handle_mixed_message,
+        }
+    )
+
+    # Connect client
+    client = await connect_to_server(
+        {
+            "client_id": "mixed-msg-client",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    # Get service
+    handler = await client.get_service("mixed-message-handler")
+
+    # Test mixed messages
+    print("Sending mixed small and large messages...")
+    start_time = time.time()
+
+    # Send mixed messages
+    tasks = []
+    for i in range(10):
+        if i % 3 == 0:
+            # Send large message (should use chunking)
+            large_data = "L" * (500 * 1024)  # 500KB
+            task = handler.handle_mixed(i, large_data, "large")
+        else:
+            # Send small message (should be batched)
+            small_data = f"small_{i}" * 50  # ~400 bytes
+            task = handler.handle_mixed(i, small_data, "small")
+        tasks.append(task)
+
+    # Wait for all to complete
+    results = await asyncio.gather(*tasks)
+    end_time = time.time()
+
+    # Verify results
+    assert len(results) == 10
+    assert len(received_mixed_messages) == 10
+
+    # Count message types
+    large_count = sum(1 for msg in received_mixed_messages if msg["type"] == "large")
+    small_count = sum(1 for msg in received_mixed_messages if msg["type"] == "small")
+
+    # Should have 4 large messages (indices 0, 3, 6, 9) and 6 small messages
+    assert large_count == 4
+    assert small_count == 6
+
+    # Verify large messages have correct size
+    for msg in received_mixed_messages:
+        if msg["type"] == "large":
+            assert msg["size"] == 500 * 1024
+        else:
+            assert msg["size"] < 1000  # Small messages
+
+    print(f"Mixed messages completed in {end_time - start_time:.3f}s")
+
+    await server.disconnect()
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_message_batching_numpy_arrays(websocket_server):
+    """Test message batching with numpy arrays of different sizes."""
+    import time
+
+    # Create server and client
+    server = await connect_to_server(
+        {"client_id": "numpy-server", "server_url": WS_SERVER_URL}
+    )
+
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Track received arrays
+    received_arrays = []
+
+    # Service that processes numpy arrays
+    def process_array(array_id, arr):
+        received_arrays.append(
+            {
+                "id": array_id,
+                "shape": arr.shape,
+                "dtype": str(arr.dtype),
+                "size_bytes": arr.nbytes,
+                "timestamp": time.time(),
+            }
+        )
+        return f"processed_array_{array_id}"
+
+    await server.register_service(
+        {
+            "id": "numpy-processor",
+            "config": {"visibility": "public"},
+            "process": process_array,
+        }
+    )
+
+    # Connect client
+    client = await connect_to_server(
+        {
+            "client_id": "numpy-client",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    # Get service
+    processor = await client.get_service("numpy-processor")
+
+    # Test arrays of different sizes
+    print("Sending numpy arrays of different sizes...")
+    start_time = time.time()
+
+    tasks = []
+
+    # Small arrays (should be batched)
+    for i in range(5):
+        small_array = np.random.rand(10, 10).astype(np.float32)  # ~1.6KB
+        task = processor.process(f"small_{i}", small_array)
+        tasks.append(task)
+
+    # Medium arrays (might be batched or sent individually)
+    for i in range(3):
+        medium_array = np.random.rand(100, 100).astype(np.float32)  # ~160KB
+        task = processor.process(f"medium_{i}", medium_array)
+        tasks.append(task)
+
+    # Large arrays (should use chunking)
+    for i in range(2):
+        large_array = np.random.rand(1000, 1000).astype(np.float32)  # ~16MB
+        task = processor.process(f"large_{i}", large_array)
+        tasks.append(task)
+
+    # Wait for all to complete
+    results = await asyncio.gather(*tasks)
+    end_time = time.time()
+
+    # Verify results
+    assert len(results) == 10
+    assert len(received_arrays) == 10
+
+    # Verify array processing
+    small_arrays = [arr for arr in received_arrays if arr["id"].startswith("small_")]
+    medium_arrays = [arr for arr in received_arrays if arr["id"].startswith("medium_")]
+    large_arrays = [arr for arr in received_arrays if arr["id"].startswith("large_")]
+
+    assert len(small_arrays) == 5
+    assert len(medium_arrays) == 3
+    assert len(large_arrays) == 2
+
+    # Verify sizes
+    for arr in small_arrays:
+        assert arr["shape"] == (10, 10)
+        assert arr["size_bytes"] == 10 * 10 * 4  # float32 = 4 bytes
+
+    for arr in medium_arrays:
+        assert arr["shape"] == (100, 100)
+        assert arr["size_bytes"] == 100 * 100 * 4
+
+    for arr in large_arrays:
+        assert arr["shape"] == (1000, 1000)
+        assert arr["size_bytes"] == 1000 * 1000 * 4
+
+    print(f"Numpy arrays completed in {end_time - start_time:.3f}s")
+
+    await server.disconnect()
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_message_batching_performance_comparison(websocket_server):
+    """Compare performance with and without message batching."""
+    import time
+
+    # Test with batching enabled
+    server1 = await connect_to_server(
+        {"client_id": "batching-perf-server1", "server_url": WS_SERVER_URL}
+    )
+
+    workspace = server1.config.workspace
+    token = await server1.generate_token()
+
+    # Verify batching is enabled
+    assert server1.rpc._message_batching_enabled == True
+
+    # Service for performance testing
+    call_count = {"count": 0}
+
+    def fast_echo(msg_id, data):
+        call_count["count"] += 1
+        return f"echo_{msg_id}"
+
+    await server1.register_service(
+        {
+            "id": "perf-echo",
+            "config": {"visibility": "public"},
+            "echo": fast_echo,
+        }
+    )
+
+    # Connect client with batching enabled
+    client1 = await connect_to_server(
+        {
+            "client_id": "batching-perf-client1",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    echo_service1 = await client1.get_service("perf-echo")
+
+    # Test with batching - send 30 small messages rapidly
+    print("Testing with batching enabled...")
+    call_count["count"] = 0
+    start_time = time.time()
+
+    tasks = []
+    for i in range(30):
+        small_data = f"msg_{i}" * 20  # ~140 bytes
+        task = echo_service1.echo(i, small_data)
+        tasks.append(task)
+
+    results1 = await asyncio.gather(*tasks)
+    batching_time = time.time() - start_time
+    batching_calls = call_count["count"]
+
+    assert len(results1) == 30
+    assert batching_calls == 30
+
+    # Now test with batching disabled
+    server2 = await connect_to_server(
+        {"client_id": "no-batching-server", "server_url": WS_SERVER_URL}
+    )
+
+    # Disable batching on server
+    server2.rpc._message_batching_enabled = False
+
+    workspace2 = server2.config.workspace
+    token2 = await server2.generate_token()
+
+    call_count["count"] = 0
+
+    await server2.register_service(
+        {
+            "id": "perf-echo-no-batch",
+            "config": {"visibility": "public"},
+            "echo": fast_echo,
+        }
+    )
+
+    # Connect client with batching disabled
+    client2 = await connect_to_server(
+        {
+            "client_id": "no-batching-client",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace2,
+            "token": token2,
+        }
+    )
+
+    # Disable batching on client
+    client2.rpc._message_batching_enabled = False
+
+    echo_service2 = await client2.get_service("perf-echo-no-batch")
+
+    # Test without batching - send same 30 messages
+    print("Testing with batching disabled...")
+    call_count["count"] = 0
+    start_time = time.time()
+
+    tasks = []
+    for i in range(30):
+        small_data = f"msg_{i}" * 20  # Same size as before
+        task = echo_service2.echo(i, small_data)
+        tasks.append(task)
+
+    results2 = await asyncio.gather(*tasks)
+    no_batching_time = time.time() - start_time
+    no_batching_calls = call_count["count"]
+
+    assert len(results2) == 30
+    assert no_batching_calls == 30
+
+    # Print performance comparison
+    print(f"With batching: {batching_time:.3f}s")
+    print(f"Without batching: {no_batching_time:.3f}s")
+
+    # Batching should generally be equal or faster for small messages
+    # The improvement depends on network conditions, but we mainly verify it doesn't break functionality
+
+    await server1.disconnect()
+    await client1.disconnect()
+    await server2.disconnect()
+    await client2.disconnect()
