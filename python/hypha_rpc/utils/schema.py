@@ -14,10 +14,6 @@ try:
     _PYDANTIC_AVAILABLE = True
 except ImportError:
     _PYDANTIC_AVAILABLE = False
-    FieldInfo = type("FieldInfo", (), {})
-    PydanticField = Field  # fallback to your own Field class (defined below)
-    PydanticUndefined = inspect._empty
-    ValidationError = Exception
 
 
 # Dynamic pydantic availability check
@@ -49,6 +45,13 @@ class Field:
     def __init__(self, default=inspect._empty, description=None):
         self.default = default
         self.description = description
+
+
+if not _PYDANTIC_AVAILABLE:
+    PydanticField = Field
+    FieldInfo = type("FieldInfo", (), {})
+    PydanticUndefined = inspect._empty
+    ValidationError = Exception
 
 
 # https://stackoverflow.com/a/58938747
