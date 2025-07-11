@@ -922,4 +922,603 @@ describe("RPC", async () => {
       "Test completed successfully - JavaScript now behaves like Python!",
     );
   }).timeout(15000);
+
+  it("should handle message batching with small frequent messages", async () => {
+    // Create server and client
+    const server = await connectToServer({
+      client_id: "js-batching-server",
+      server_url: SERVER_URL,
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Track received messages
+    const receivedMessages = [];
+
+    // Service that collects small messages
+    function collectMessage(msgId, data) {
+      receivedMessages.push({
+        id: msgId,
+        data: data,
+        timestamp: Date.now(),
+      });
+      return `received_${msgId}`;
+    }
+
+    await server.registerService({
+      id: "js-message-collector",
+      config: { visibility: "public" },
+      collect: collectMessage,
+    });
+
+    // Connect client
+    const client = await connectToServer({
+      client_id: "js-batching-client",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    // Get service
+    const collector = await client.getService("js-message-collector");
+
+    // Test small frequent messages (should be batched)
+    console.log("Sending 20 small frequent messages...");
+    const startTime = Date.now();
+
+    // Send messages rapidly
+    const promises = [];
+    for (let i = 0; i < 20; i++) {
+      const smallData = `small_message_${i}`.repeat(10); // ~150 bytes each
+      const promise = collector.collect(i, smallData);
+      promises.push(promise);
+    }
+
+    // Wait for all to complete
+    const results = await Promise.all(promises);
+    const endTime = Date.now();
+
+    // Verify results
+    expect(results.length).to.equal(20);
+    expect(receivedMessages.length).to.equal(20);
+
+    // Verify all messages received correctly
+    for (let i = 0; i < 20; i++) {
+      expect(results).to.contain(`received_${i}`);
+      expect(receivedMessages.some((msg) => msg.id === i)).to.equal(true);
+    }
+
+    console.log(`Small messages completed in ${endTime - startTime}ms`);
+
+    await server.disconnect();
+    await client.disconnect();
+  });
+
+  it("should handle large messages with chunking", async () => {
+    // Create server and client
+    const server = await connectToServer({
+      client_id: "js-large-msg-server",
+      server_url: SERVER_URL,
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Track received messages
+    const receivedLargeMessages = [];
+
+    // Service that handles large messages
+    function handleLargeMessage(msgId, largeData) {
+      receivedLargeMessages.push({
+        id: msgId,
+        size: largeData.length,
+        timestamp: Date.now(),
+      });
+      return `processed_large_${msgId}`;
+    }
+
+    await server.registerService({
+      id: "js-large-message-handler",
+      config: { visibility: "public" },
+      handle_large: handleLargeMessage,
+    });
+
+    // Connect client
+    const client = await connectToServer({
+      client_id: "js-large-msg-client",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    // Get service
+    const handler = await client.getService("js-large-message-handler");
+
+    // Test large messages (should use chunking, not batching)
+    console.log("Sending 3 large messages...");
+    const startTime = Date.now();
+
+    // Send large messages
+    const promises = [];
+    for (let i = 0; i < 3; i++) {
+      // Create large data (~1MB each, well above batch size limit)
+      const largeData = "X".repeat(1024 * 1024); // 1MB
+      const promise = handler.handle_large(i, largeData);
+      promises.push(promise);
+    }
+
+    // Wait for all to complete
+    const results = await Promise.all(promises);
+    const endTime = Date.now();
+
+    // Verify results
+    expect(results.length).to.equal(3);
+    expect(receivedLargeMessages.length).to.equal(3);
+
+    // Verify all messages received correctly
+    for (let i = 0; i < 3; i++) {
+      expect(results).to.contain(`processed_large_${i}`);
+      expect(
+        receivedLargeMessages.some(
+          (msg) => msg.id === i && msg.size === 1024 * 1024,
+        ),
+      ).to.equal(true);
+    }
+
+    console.log(`Large messages completed in ${endTime - startTime}ms`);
+
+    await server.disconnect();
+    await client.disconnect();
+  });
+
+  it("should handle mixed small and large messages intelligently", async () => {
+    // Create server and client
+    const server = await connectToServer({
+      client_id: "js-mixed-msg-server",
+      server_url: SERVER_URL,
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Track received messages
+    const receivedMixedMessages = [];
+
+    // Service that handles mixed messages
+    function handleMixedMessage(msgId, data, msgType) {
+      receivedMixedMessages.push({
+        id: msgId,
+        type: msgType,
+        size: data.length,
+        timestamp: Date.now(),
+      });
+      return `processed_${msgType}_${msgId}`;
+    }
+
+    await server.registerService({
+      id: "js-mixed-message-handler",
+      config: { visibility: "public" },
+      handle_mixed: handleMixedMessage,
+    });
+
+    // Connect client
+    const client = await connectToServer({
+      client_id: "js-mixed-msg-client",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    // Get service
+    const handler = await client.getService("js-mixed-message-handler");
+
+    // Test mixed messages
+    console.log("Sending mixed small and large messages...");
+    const startTime = Date.now();
+
+    // Send mixed messages
+    const promises = [];
+    for (let i = 0; i < 10; i++) {
+      if (i % 3 === 0) {
+        // Send large message (should use chunking)
+        const largeData = "L".repeat(500 * 1024); // 500KB
+        const promise = handler.handle_mixed(i, largeData, "large");
+        promises.push(promise);
+      } else {
+        // Send small message (should be batched)
+        const smallData = `small_${i}`.repeat(50); // ~400 bytes
+        const promise = handler.handle_mixed(i, smallData, "small");
+        promises.push(promise);
+      }
+    }
+
+    // Wait for all to complete
+    const results = await Promise.all(promises);
+    const endTime = Date.now();
+
+    // Verify results
+    expect(results.length).to.equal(10);
+    expect(receivedMixedMessages.length).to.equal(10);
+
+    // Count message types
+    const largeCount = receivedMixedMessages.filter(
+      (msg) => msg.type === "large",
+    ).length;
+    const smallCount = receivedMixedMessages.filter(
+      (msg) => msg.type === "small",
+    ).length;
+
+    // Should have 4 large messages (indices 0, 3, 6, 9) and 6 small messages
+    expect(largeCount).to.equal(4);
+    expect(smallCount).to.equal(6);
+
+    // Verify large messages have correct size
+    receivedMixedMessages.forEach((msg) => {
+      if (msg.type === "large") {
+        expect(msg.size).to.equal(500 * 1024);
+      } else {
+        expect(msg.size).to.be.below(1000); // Small messages
+      }
+    });
+
+    console.log(`Mixed messages completed in ${endTime - startTime}ms`);
+
+    await server.disconnect();
+    await client.disconnect();
+  });
+
+  it("should handle typed arrays of different sizes", async () => {
+    // Create server and client
+    const server = await connectToServer({
+      client_id: "js-typed-array-server",
+      server_url: SERVER_URL,
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Track received arrays
+    const receivedArrays = [];
+
+    // Service that processes typed arrays
+    function processTypedArray(arrayId, arr) {
+      receivedArrays.push({
+        id: arrayId,
+        size: arr.length,
+        type: arr.constructor.name,
+        byteLength: arr.byteLength,
+        timestamp: Date.now(),
+      });
+      return `processed_array_${arrayId}`;
+    }
+
+    await server.registerService({
+      id: "js-typed-array-processor",
+      config: { visibility: "public" },
+      process: processTypedArray,
+    });
+
+    // Connect client
+    const client = await connectToServer({
+      client_id: "js-typed-array-client",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    // Get service
+    const processor = await client.getService("js-typed-array-processor");
+
+    // Test arrays of different sizes
+    console.log("Sending typed arrays of different sizes...");
+    const startTime = Date.now();
+
+    const promises = [];
+
+    // Small arrays (should be batched)
+    for (let i = 0; i < 5; i++) {
+      const smallArray = new Float32Array(100); // ~400 bytes
+      smallArray.fill(i);
+      const promise = processor.process(`small_${i}`, smallArray);
+      promises.push(promise);
+    }
+
+    // Medium arrays (might be batched or sent individually)
+    for (let i = 0; i < 3; i++) {
+      const mediumArray = new Float32Array(10000); // ~40KB
+      mediumArray.fill(i + 100);
+      const promise = processor.process(`medium_${i}`, mediumArray);
+      promises.push(promise);
+    }
+
+    // Large arrays (should use chunking)
+    for (let i = 0; i < 2; i++) {
+      const largeArray = new Float32Array(1000000); // ~4MB
+      largeArray.fill(i + 1000);
+      const promise = processor.process(`large_${i}`, largeArray);
+      promises.push(promise);
+    }
+
+    // Wait for all to complete
+    const results = await Promise.all(promises);
+    const endTime = Date.now();
+
+    // Verify results
+    expect(results.length).to.equal(10);
+    expect(receivedArrays.length).to.equal(10);
+
+    // Verify array processing
+    const smallArrays = receivedArrays.filter((arr) =>
+      arr.id.startsWith("small_"),
+    );
+    const mediumArrays = receivedArrays.filter((arr) =>
+      arr.id.startsWith("medium_"),
+    );
+    const largeArrays = receivedArrays.filter((arr) =>
+      arr.id.startsWith("large_"),
+    );
+
+    expect(smallArrays.length).to.equal(5);
+    expect(mediumArrays.length).to.equal(3);
+    expect(largeArrays.length).to.equal(2);
+
+    // Verify sizes
+    smallArrays.forEach((arr) => {
+      expect(arr.size).to.equal(100);
+      expect(arr.byteLength).to.equal(100 * 4); // Float32Array = 4 bytes per element
+    });
+
+    mediumArrays.forEach((arr) => {
+      expect(arr.size).to.equal(10000);
+      expect(arr.byteLength).to.equal(10000 * 4);
+    });
+
+    largeArrays.forEach((arr) => {
+      expect(arr.size).to.equal(1000000);
+      expect(arr.byteLength).to.equal(1000000 * 4);
+    });
+
+    console.log(`Typed arrays completed in ${endTime - startTime}ms`);
+
+    await server.disconnect();
+    await client.disconnect();
+  });
+
+  it("should compare performance with and without batching", async () => {
+    // Test with batching enabled
+    const server1 = await connectToServer({
+      client_id: "js-batching-perf-server1",
+      server_url: SERVER_URL,
+    });
+
+    const workspace = server1.config.workspace;
+    const token = await server1.generateToken();
+
+    // Verify batching is enabled
+    expect(server1.rpc._message_batching_enabled).to.equal(true);
+
+    // Service for performance testing
+    const callCount = { count: 0 };
+
+    function fastEcho(msgId, data) {
+      callCount.count++;
+      return `echo_${msgId}`;
+    }
+
+    await server1.registerService({
+      id: "js-perf-echo",
+      config: { visibility: "public" },
+      echo: fastEcho,
+    });
+
+    // Connect client with batching enabled
+    const client1 = await connectToServer({
+      client_id: "js-batching-perf-client1",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    const echoService1 = await client1.getService("js-perf-echo");
+
+    // Test with batching - send 30 small messages rapidly
+    console.log("Testing with batching enabled...");
+    callCount.count = 0;
+    const startTime1 = Date.now();
+
+    const promises1 = [];
+    for (let i = 0; i < 30; i++) {
+      const smallData = `msg_${i}`.repeat(20); // ~140 bytes
+      const promise = echoService1.echo(i, smallData);
+      promises1.push(promise);
+    }
+
+    const results1 = await Promise.all(promises1);
+    const batchingTime = Date.now() - startTime1;
+    const batchingCalls = callCount.count;
+
+    expect(results1.length).to.equal(30);
+    expect(batchingCalls).to.equal(30);
+
+    // Now test with batching disabled
+    const server2 = await connectToServer({
+      client_id: "js-no-batching-server",
+      server_url: SERVER_URL,
+    });
+
+    // Disable batching on server
+    server2.rpc._message_batching_enabled = false;
+
+    const workspace2 = server2.config.workspace;
+    const token2 = await server2.generateToken();
+
+    callCount.count = 0;
+
+    await server2.registerService({
+      id: "js-perf-echo-no-batch",
+      config: { visibility: "public" },
+      echo: fastEcho,
+    });
+
+    // Connect client with batching disabled
+    const client2 = await connectToServer({
+      client_id: "js-no-batching-client",
+      server_url: SERVER_URL,
+      workspace: workspace2,
+      token: token2,
+    });
+
+    // Disable batching on client
+    client2.rpc._message_batching_enabled = false;
+
+    const echoService2 = await client2.getService("js-perf-echo-no-batch");
+
+    // Test without batching - send same 30 messages
+    console.log("Testing with batching disabled...");
+    callCount.count = 0;
+    const startTime2 = Date.now();
+
+    const promises2 = [];
+    for (let i = 0; i < 30; i++) {
+      const smallData = `msg_${i}`.repeat(20); // Same size as before
+      const promise = echoService2.echo(i, smallData);
+      promises2.push(promise);
+    }
+
+    const results2 = await Promise.all(promises2);
+    const noBatchingTime = Date.now() - startTime2;
+    const noBatchingCalls = callCount.count;
+
+    expect(results2.length).to.equal(30);
+    expect(noBatchingCalls).to.equal(30);
+
+    // Print performance comparison
+    console.log(`With batching: ${batchingTime}ms`);
+    console.log(`Without batching: ${noBatchingTime}ms`);
+
+    // Batching should generally be equal or faster for small messages
+    // The improvement depends on network conditions, but we mainly verify it doesn't break functionality
+
+    await server1.disconnect();
+    await client1.disconnect();
+    await server2.disconnect();
+    await client2.disconnect();
+  });
+
+  it("should handle batching with binary data", async () => {
+    // Create server and client
+    const server = await connectToServer({
+      client_id: "js-binary-batching-server",
+      server_url: SERVER_URL,
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Track received binary data
+    const receivedBinaryData = [];
+
+    // Service that handles binary data
+    function handleBinaryData(dataId, binaryData) {
+      receivedBinaryData.push({
+        id: dataId,
+        size: binaryData.byteLength,
+        type: binaryData.constructor.name,
+        timestamp: Date.now(),
+      });
+      return `processed_binary_${dataId}`;
+    }
+
+    await server.registerService({
+      id: "js-binary-handler",
+      config: { visibility: "public" },
+      handle_binary: handleBinaryData,
+    });
+
+    // Connect client
+    const client = await connectToServer({
+      client_id: "js-binary-client",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    // Get service
+    const handler = await client.getService("js-binary-handler");
+
+    // Test binary data of different sizes
+    console.log("Sending binary data of different sizes...");
+    const startTime = Date.now();
+
+    const promises = [];
+
+    // Small binary data (should be batched)
+    for (let i = 0; i < 5; i++) {
+      const smallBuffer = new ArrayBuffer(1024); // 1KB
+      const smallView = new Uint8Array(smallBuffer);
+      smallView.fill(i);
+      const promise = handler.handle_binary(`small_${i}`, smallBuffer);
+      promises.push(promise);
+    }
+
+    // Medium binary data
+    for (let i = 0; i < 3; i++) {
+      const mediumBuffer = new ArrayBuffer(50 * 1024); // 50KB
+      const mediumView = new Uint8Array(mediumBuffer);
+      mediumView.fill(i + 100);
+      const promise = handler.handle_binary(`medium_${i}`, mediumBuffer);
+      promises.push(promise);
+    }
+
+    // Large binary data (should use chunking)
+    for (let i = 0; i < 2; i++) {
+      const largeBuffer = new ArrayBuffer(2 * 1024 * 1024); // 2MB
+      const largeView = new Uint8Array(largeBuffer);
+      largeView.fill(i + 200);
+      const promise = handler.handle_binary(`large_${i}`, largeBuffer);
+      promises.push(promise);
+    }
+
+    // Wait for all to complete
+    const results = await Promise.all(promises);
+    const endTime = Date.now();
+
+    // Verify results
+    expect(results.length).to.equal(10);
+    expect(receivedBinaryData.length).to.equal(10);
+
+    // Verify binary data processing
+    const smallBinaryData = receivedBinaryData.filter((data) =>
+      data.id.startsWith("small_"),
+    );
+    const mediumBinaryData = receivedBinaryData.filter((data) =>
+      data.id.startsWith("medium_"),
+    );
+    const largeBinaryData = receivedBinaryData.filter((data) =>
+      data.id.startsWith("large_"),
+    );
+
+    expect(smallBinaryData.length).to.equal(5);
+    expect(mediumBinaryData.length).to.equal(3);
+    expect(largeBinaryData.length).to.equal(2);
+
+    // Verify sizes
+    smallBinaryData.forEach((data) => {
+      expect(data.size).to.equal(1024);
+    });
+
+    mediumBinaryData.forEach((data) => {
+      expect(data.size).to.equal(50 * 1024);
+    });
+
+    largeBinaryData.forEach((data) => {
+      expect(data.size).to.equal(2 * 1024 * 1024);
+    });
+
+    console.log(`Binary data completed in ${endTime - startTime}ms`);
+
+    await server.disconnect();
+    await client.disconnect();
+  });
 });

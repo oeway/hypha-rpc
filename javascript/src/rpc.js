@@ -19,7 +19,7 @@ import { schemaFunction } from "./utils/schema.js";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 
-export const API_VERSION = 3;
+export const API_VERSION = 4;
 const CHUNK_SIZE = 1024 * 256;
 const CONCURRENCY_LIMIT = 30;
 
@@ -279,6 +279,10 @@ export class RPC extends MessageEmitter {
       app_id = null,
       server_base_url = null,
       long_message_chunk_size = null,
+      enable_message_batching = true,
+      batch_timeout_ms = 10,
+      batch_max_messages = 10,
+      batch_max_size = 32768,
     },
   ) {
     super(debug);
@@ -303,6 +307,16 @@ export class RPC extends MessageEmitter {
     this._object_store = {
       services: this._services,
     };
+    // Registry for active generator streams
+    this._generator_registry = {};
+
+    // Message batching system
+    this._message_batching_enabled = enable_message_batching;
+    this._batch_timeout_ms = batch_timeout_ms;
+    this._batch_max_messages = batch_max_messages;
+    this._batch_max_size = batch_max_size;
+    this._message_batches = {}; // target_id -> {messages: [], size: int, timer: Timer}
+    this._batch_sequence = 0;
 
     if (connection) {
       this.add_service({
@@ -325,6 +339,9 @@ export class RPC extends MessageEmitter {
         },
       });
       this.on("method", this._handle_method.bind(this));
+      this.on("generator", this._handle_generator.bind(this));
+      this.on("stream_request", this._handle_stream_request.bind(this));
+      this.on("message_batch", this._handle_message_batch.bind(this));
       this.on("error", console.error);
 
       assert(connection.emit_message && connection.on_message);
@@ -560,20 +577,28 @@ export class RPC extends MessageEmitter {
     delete cache[key];
   }
 
+  _add_context_to_message(main) {
+    // Add trusted context to a message if it doesn't already have it
+    if (!main.ctx) {
+      // Create context from message fields + default_context
+      main.ctx = JSON.parse(JSON.stringify(main));
+      Object.assign(main.ctx, this.default_context);
+    }
+    return main;
+  }
+
   _on_message(message) {
     if (typeof message === "string") {
       const main = JSON.parse(message);
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       this._fire(main["type"], main);
     } else if (message instanceof ArrayBuffer) {
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       if (!done) {
         let extra = unpacker.next();
         Object.assign(main, extra.value);
@@ -581,8 +606,7 @@ export class RPC extends MessageEmitter {
       this._fire(main["type"], main);
     } else if (typeof message === "object") {
       // Add trusted context to the method call
-      message["ctx"] = JSON.parse(JSON.stringify(message));
-      Object.assign(message["ctx"], this.default_context);
+      this._add_context_to_message(message);
       this._fire(message["type"], message);
     } else {
       throw new Error("Invalid message format");
@@ -1126,76 +1150,112 @@ export class RPC extends MessageEmitter {
   }
 
   async _send_chunks(data, target_id, session_id) {
-    // 1) Get the remote service
-    const remote_services = await this.get_remote_service(
-      `${target_id}:built-in`,
-    );
-    if (!remote_services.message_cache) {
-      throw new Error(
-        "Remote client does not support message caching for large messages.",
-      );
+    // Check if remote supports API v4+ for generator streaming
+    let supportsStreaming = false;
+    try {
+      supportsStreaming = await this._check_remote_api_version(target_id);
+    } catch (error) {
+      // If version check fails, fall back to legacy approach
+      supportsStreaming = false;
     }
 
-    const message_cache = remote_services.message_cache;
-    const message_id = session_id || randId();
-    const total_size = data.length;
-    const start_time = Date.now(); // measure time
-    const chunk_num = Math.ceil(total_size / this._long_message_chunk_size);
-    if (remote_services.config.api_version >= 3) {
-      await message_cache.create(message_id, !!session_id);
-      const semaphore = new Semaphore(CONCURRENCY_LIMIT);
+    if (supportsStreaming) {
+      // Use new generator streaming (API v4+)
+      const total_size = data.length;
+      const start_time = Date.now();
+      const chunk_num = Math.ceil(total_size / this._long_message_chunk_size);
 
-      const tasks = [];
+      // Create data chunks
+      const chunks = [];
       for (let idx = 0; idx < chunk_num; idx++) {
         const startByte = idx * this._long_message_chunk_size;
         const chunk = data.slice(
           startByte,
           startByte + this._long_message_chunk_size,
         );
+        chunks.push(chunk);
+      }
 
-        const taskFn = async () => {
-          await message_cache.set(message_id, idx, chunk, !!session_id);
+      // Send via generator stream
+      await this._send_generator_stream(chunks, target_id, session_id);
+      const durationSec = ((Date.now() - start_time) / 1000).toFixed(2);
+      console.debug(
+        `All chunks (${total_size} bytes) sent via generator stream in ${durationSec} s`,
+      );
+    } else {
+      // Fallback to legacy message_cache approach (API v3 and below)
+      const remote_services = await this.get_remote_service(
+        `${target_id}:built-in`,
+      );
+      if (!remote_services.message_cache) {
+        throw new Error(
+          "Remote client does not support message caching for large messages.",
+        );
+      }
+
+      const message_cache = remote_services.message_cache;
+      const message_id = session_id || randId();
+      const total_size = data.length;
+      const start_time = Date.now(); // measure time
+      const chunk_num = Math.ceil(total_size / this._long_message_chunk_size);
+      if (remote_services.config.api_version >= 3) {
+        await message_cache.create(message_id, !!session_id);
+        const semaphore = new Semaphore(CONCURRENCY_LIMIT);
+
+        const tasks = [];
+        for (let idx = 0; idx < chunk_num; idx++) {
+          const startByte = idx * this._long_message_chunk_size;
+          const chunk = data.slice(
+            startByte,
+            startByte + this._long_message_chunk_size,
+          );
+
+          const taskFn = async () => {
+            await message_cache.set(message_id, idx, chunk, !!session_id);
+            // console.debug(
+            //   `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
+            // );
+          };
+
+          // Push into an array, each one runs under the semaphore
+          tasks.push(semaphore.run(taskFn));
+        }
+
+        // Wait for all chunk uploads to finish
+        try {
+          await Promise.all(tasks);
+        } catch (error) {
+          // If any chunk fails, clean up the message cache
+          try {
+            await message_cache.remove(message_id);
+          } catch (cleanupError) {
+            console.error(
+              `Failed to clean up message cache after error: ${cleanupError}`,
+            );
+          }
+          throw error;
+        }
+      } else {
+        // 3) Legacy version (sequential appends):
+        await message_cache.create(message_id, !!session_id);
+        for (let idx = 0; idx < chunk_num; idx++) {
+          const startByte = idx * this._long_message_chunk_size;
+          const chunk = data.slice(
+            startByte,
+            startByte + this._long_message_chunk_size,
+          );
+          await message_cache.append(message_id, chunk, !!session_id);
           // console.debug(
           //   `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
           // );
-        };
-
-        // Push into an array, each one runs under the semaphore
-        tasks.push(semaphore.run(taskFn));
-      }
-
-      // Wait for all chunk uploads to finish
-      try {
-        await Promise.all(tasks);
-      } catch (error) {
-        // If any chunk fails, clean up the message cache
-        try {
-          await message_cache.remove(message_id);
-        } catch (cleanupError) {
-          console.error(
-            `Failed to clean up message cache after error: ${cleanupError}`,
-          );
         }
-        throw error;
       }
-    } else {
-      // 3) Legacy version (sequential appends):
-      await message_cache.create(message_id, !!session_id);
-      for (let idx = 0; idx < chunk_num; idx++) {
-        const startByte = idx * this._long_message_chunk_size;
-        const chunk = data.slice(
-          startByte,
-          startByte + this._long_message_chunk_size,
-        );
-        await message_cache.append(message_id, chunk, !!session_id);
-        // console.debug(
-        //   `Sending chunk ${idx + 1}/${chunk_num} (total=${total_size} bytes)`,
-        // );
-      }
+      await message_cache.process(message_id, !!session_id);
+      const durationSec = ((Date.now() - start_time) / 1000).toFixed(2);
+      console.debug(
+        `All chunks (${total_size} bytes) sent in ${durationSec} s`,
+      );
     }
-    await message_cache.process(message_id, !!session_id);
-    const durationSec = ((Date.now() - start_time) / 1000).toFixed(2);
-    // console.debug(`All chunks (${total_size} bytes) sent in ${durationSec} s`);
   }
 
   emit(main_message, extra_data) {
@@ -1213,10 +1273,235 @@ export class RPC extends MessageEmitter {
       message_package = new Uint8Array([...message_package, ...extra]);
     }
     const total_size = message_package.length;
+
+    // Use intelligent batching for small to medium messages
+    if (
+      this._message_batching_enabled &&
+      total_size <= this._batch_max_size &&
+      main_message.to
+    ) {
+      return this._emit_with_batching(message_package, main_message.to);
+    }
+
+    // Send large messages immediately (will use chunking if needed)
     if (total_size > this._long_message_chunk_size + 1024) {
       console.warn(`Sending large message (size=${total_size})`);
     }
     return this._emit_message(message_package);
+  }
+
+  _emit_with_batching(messagePackage, targetId) {
+    // Get or create batch for this target
+    if (!this._message_batches[targetId]) {
+      this._message_batches[targetId] = {
+        messages: [],
+        totalSize: 0,
+        timer: null,
+      };
+    }
+
+    const batch = this._message_batches[targetId];
+
+    // Add message to batch
+    batch.messages.push(messagePackage);
+    batch.totalSize += messagePackage.length;
+
+    // Check if we should flush the batch immediately
+    const shouldFlush =
+      batch.messages.length >= this._batch_max_messages ||
+      batch.totalSize >= this._batch_max_size;
+
+    if (shouldFlush) {
+      return this._flush_message_batch(targetId);
+    } else {
+      // Set timer to flush batch after timeout
+      if (batch.timer === null) {
+        const flushCallback = () => {
+          if (this._message_batches[targetId]) {
+            this._flush_message_batch(targetId);
+          }
+        };
+
+        batch.timer = new Timer(
+          this._batch_timeout_ms / 1000.0, // Convert to seconds
+          flushCallback,
+          [],
+          `batch_flush_${targetId}`,
+        );
+        batch.timer.start();
+      }
+
+      // Return a resolved promise for consistency
+      return Promise.resolve();
+    }
+  }
+
+  async _flush_message_batch(targetId) {
+    if (!this._message_batches[targetId]) {
+      return;
+    }
+
+    const batch = this._message_batches[targetId];
+    if (batch.messages.length === 0) {
+      return;
+    }
+
+    // Clear timer
+    if (batch.timer) {
+      batch.timer.clear();
+    }
+
+    const messages = batch.messages;
+    const batchCount = messages.length;
+
+    // Remove from batches
+    delete this._message_batches[targetId];
+
+    if (batchCount === 1) {
+      // Single message - send directly for efficiency
+      await this._emit_message(messages[0]);
+    } else {
+      // Multiple messages - send as batch
+      this._batch_sequence += 1;
+      const batchId = `batch_${this._batch_sequence}_${randId()}`;
+
+      let fromClient;
+      if (!this._local_workspace) {
+        fromClient = this._client_id;
+      } else {
+        fromClient = this._local_workspace + "/" + this._client_id;
+      }
+
+      // Send batch via generator streaming
+      const batchHeader = {
+        type: "message_batch",
+        from: fromClient,
+        to: targetId,
+        batch_id: batchId,
+        message_count: batchCount,
+      };
+
+      // Use generator streaming to send the batch
+      await this._send_generator_stream(messages, targetId, batchId);
+
+      console.debug(
+        `Sent message batch: ${batchCount} messages to ${targetId}`,
+      );
+    }
+  }
+
+  _handle_message_batch(data) {
+    try {
+      const batchId = data.batch_id;
+      if (!batchId) {
+        console.warn("Received message batch without batch_id");
+        return;
+      }
+
+      // The batch data will be received via generator stream
+      // and processed in _handle_generator when action="end"
+      console.debug(`Initialized message batch: ${batchId}`);
+    } catch (err) {
+      console.error(`Error handling message batch: ${err}`);
+    }
+  }
+
+  _process_message_batch(messagesData, contextData) {
+    try {
+      // Each item in messagesData is a complete msgpack message
+      messagesData.forEach((msgData, i) => {
+        try {
+          if (
+            msgData instanceof ArrayBuffer ||
+            msgData instanceof ArrayBufferView
+          ) {
+            const unpacker = decodeMulti(msgData);
+            const { done, value } = unpacker.next();
+            const main = value;
+
+            // Add trusted context
+            Object.assign(main, {
+              from: contextData.from,
+              to: contextData.to,
+              ws: contextData.ws || "",
+              user: contextData.user || "",
+            });
+            this._add_context_to_message(main);
+
+            if (!done) {
+              const extra = unpacker.next();
+              Object.assign(main, extra.value);
+            }
+
+            // Fire the individual message
+            this._fire(main.type, main);
+          }
+        } catch (msgErr) {
+          console.error(`Error processing batched message ${i}: ${msgErr}`);
+        }
+      });
+
+      console.debug(
+        `Processed message batch with ${messagesData.length} messages`,
+      );
+    } catch (err) {
+      console.error(`Error processing message batch: ${err}`);
+    }
+  }
+
+  async _send_generator_stream(dataChunks, targetId, generatorId = null) {
+    generatorId = generatorId || randId();
+
+    let fromClient;
+    if (!this._local_workspace) {
+      fromClient = this._client_id;
+    } else {
+      fromClient = this._local_workspace + "/" + this._client_id;
+    }
+
+    // Send start message
+    const startMessage = {
+      type: "generator",
+      from: fromClient,
+      to: targetId,
+      method: `${generatorId}:start`,
+    };
+    await this._emit_message(msgpack_packb(startMessage));
+
+    // Send data chunks
+    for (let i = 0; i < dataChunks.length; i++) {
+      const chunk = dataChunks[i];
+      const chunkMessage = {
+        type: "generator",
+        from: fromClient,
+        to: targetId,
+        method: `${generatorId}:data`,
+        data: chunk,
+      };
+      await this._emit_message(msgpack_packb(chunkMessage));
+    }
+
+    // Send end message
+    const endMessage = {
+      type: "generator",
+      from: fromClient,
+      to: targetId,
+      method: `${generatorId}:end`,
+    };
+    await this._emit_message(msgpack_packb(endMessage));
+    console.debug(`Generator stream completed: ${dataChunks.length} chunks`);
+  }
+
+  async _check_remote_api_version(targetId) {
+    try {
+      const remoteService = await this.get_remote_service(
+        `${targetId}:built-in`,
+        { timeout: 5 },
+      );
+      return (remoteService.config.api_version || 3) >= 4;
+    } catch (error) {
+      return false;
+    }
   }
 
   _generate_remote_method(
@@ -1432,7 +1717,11 @@ export class RPC extends MessageEmitter {
     let reject = null;
     let heartbeat_task = null;
     try {
-      assert(data.method && data.ctx && data.from);
+      assert(data.method && data.from);
+      // Ensure context is available - create it if missing (for local service calls)
+      if (!data.ctx) {
+        data = this._add_context_to_message(data);
+      }
       const method_name = data.from + ":" + data.method;
       const remote_workspace = data.from.split("/")[0];
       const remote_client_id = data.from.split("/")[1];
@@ -1595,35 +1884,17 @@ export class RPC extends MessageEmitter {
           if (data.ws) context.ws = data.ws;
         }
 
-        // NEW JS-KWARGS PATTERN: Check if first argument has ._rkwargs=true
-        if (
-          args.length > 0 &&
-          args[0] &&
-          typeof args[0] === "object" &&
-          args[0]._rkwargs === true
-        ) {
-          // Inject context into the kwargs object instead of appending
-          args[0].context = context;
-          // Remove the _rkwargs flag as it's just for detection
-          delete args[0]._rkwargs;
-        } else if (data.with_kwargs) {
-          // Standard kwargs handling
-          kwargs.context = context;
-        } else {
-          // Backward compatibility: append context as last argument
-          // For functions expecting context, we need to inject context at the right position
-          // to avoid breaking parameter ordering when some parameters are optional
-          const expectedParams = method.length; // Number of parameters the function expects
-          if (expectedParams > 0 && args.length < expectedParams - 1) {
-            // Pad with undefined to ensure context goes to the right position
-            while (args.length < expectedParams - 1) {
-              args.push(undefined);
-            }
-          }
-          args.push(context);
-        }
+        // Add context to kwargs and set _rkwargs flag (matching Python behavior)
+        kwargs.context = context;
+        kwargs._rkwargs = true;
 
+        // For require_context methods, always push kwargs (even if empty except for context)
         args.push(kwargs);
+      } else {
+        // For methods without require_context, only add kwargs if we have some
+        if (data.with_kwargs && Object.keys(kwargs).length > 0) {
+          args.push(kwargs);
+        }
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
@@ -1661,6 +1932,231 @@ export class RPC extends MessageEmitter {
       }
       // make sure we clear the heartbeat timer
       clearInterval(heartbeat_task);
+    }
+  }
+
+  _handle_generator(data) {
+    try {
+      assert(data.method);
+      // Parse generator_id and action from method field: "<generator-id>:<action>"
+      const methodParts = data.method.split(":", 2);
+      if (methodParts.length !== 2) {
+        throw new Error(`Invalid generator method format: ${data.method}`);
+      }
+      const [generatorId, action] = methodParts;
+
+      if (action === "start") {
+        // Initialize a new generator stream
+        if (data.callback) {
+          const callback = this._decode(data.callback);
+          this._generator_registry[generatorId] = {
+            callback: callback,
+            from: data.from,
+            to: data.to,
+            buffer: [],
+          };
+          console.debug(`Started generator stream: ${generatorId}`);
+        } else {
+          // This is likely a chunked method call, not a callback-based generator
+          this._generator_registry[generatorId] = {
+            callback: null, // No callback for chunked messages
+            from: data.from,
+            to: data.to,
+            buffer: [],
+          };
+        }
+      } else if (action === "data") {
+        // Receive data chunk
+        if (this._generator_registry[generatorId]) {
+          const streamInfo = this._generator_registry[generatorId];
+          const chunkData = data.data;
+          if (chunkData !== undefined) {
+            streamInfo.buffer.push(chunkData);
+          } else {
+            console.warn(
+              `Received generator data message without data for ${generatorId}`,
+            );
+          }
+        } else {
+          console.warn(
+            `Received generator data for unknown stream: ${generatorId}`,
+          );
+        }
+      } else if (action === "end") {
+        // End of stream - process all data
+        if (this._generator_registry[generatorId]) {
+          const streamInfo = this._generator_registry[generatorId];
+          const callback = streamInfo.callback;
+
+          // Concatenate all chunks
+          let fullData = null;
+          if (streamInfo.buffer.length > 0) {
+            if (generatorId.startsWith("batch_")) {
+              // For message batches, keep chunks separate (each chunk is a message)
+              fullData = streamInfo.buffer;
+            } else if (
+              streamInfo.buffer.every(
+                (chunk) =>
+                  chunk instanceof ArrayBufferView ||
+                  chunk instanceof ArrayBuffer,
+              )
+            ) {
+              // Binary data chunks for regular messages
+              fullData = concatArrayBuffers(streamInfo.buffer);
+            } else {
+              // Other data types
+              fullData = streamInfo.buffer;
+            }
+          }
+
+          // Process the complete message
+          if (fullData) {
+            // Check if this is a message batch
+            if (generatorId.startsWith("batch_")) {
+              this._process_message_batch(fullData, data);
+            } else if (
+              fullData instanceof ArrayBuffer ||
+              fullData instanceof ArrayBufferView
+            ) {
+              // Regular chunked message - decode as single msgpack message
+              const unpacker = decodeMulti(fullData);
+              const { done, value } = unpacker.next();
+              const main = value;
+
+              // Add trusted context
+              Object.assign(main, {
+                from: data.from,
+                to: data.to,
+                ws: data.ws || "",
+                user: data.user || "",
+              });
+              this._add_context_to_message(main);
+
+              if (!done) {
+                const extra = unpacker.next();
+                Object.assign(main, extra.value);
+              }
+              this._fire(main.type, main);
+            }
+          } else if (callback) {
+            // Direct callback with data (for actual generator streams)
+            try {
+              if (callback.constructor.name === "AsyncFunction") {
+                callback(fullData).catch((error) => {
+                  console.error(`Error in generator callback: ${error}`);
+                });
+              } else {
+                callback(fullData);
+              }
+            } catch (cbError) {
+              console.error(`Error in generator callback: ${cbError}`);
+            }
+          } else {
+            // No callback and no binary data - this might be an issue
+            console.warn(
+              `Completed generator stream ${generatorId} with no callback and no binary data to process: ${typeof fullData}`,
+            );
+          }
+
+          // Cleanup
+          delete this._generator_registry[generatorId];
+          console.debug(
+            `Completed generator stream: ${generatorId} (${streamInfo.buffer.length} chunks)`,
+          );
+        }
+      } else if (action === "error") {
+        // Handle error
+        if (this._generator_registry[generatorId]) {
+          const errorMsg = data.error || "Unknown generator error";
+          console.error(`Generator stream error (${generatorId}): ${errorMsg}`);
+          // Cleanup
+          delete this._generator_registry[generatorId];
+        }
+      }
+    } catch (err) {
+      console.error(`Error handling generator message: ${err}`);
+    }
+  }
+
+  _handle_stream_request(data) {
+    try {
+      const sessionId = data.session;
+      const objectId = data.object_id;
+      const generatorId = data.generator_id;
+
+      // Get the generator from the session store
+      const store = this._get_session_store(sessionId, false);
+      if (!store || !store[objectId]) {
+        console.error(`Generator not found: ${sessionId}.${objectId}`);
+        return;
+      }
+
+      const genInfo = store[objectId];
+      if (typeof genInfo !== "object" || !genInfo.generator) {
+        console.error(`Invalid generator info: ${sessionId}.${objectId}`);
+        return;
+      }
+
+      const generator = genInfo.generator;
+      const isAsync = genInfo.isAsync;
+
+      // Stream all generator values
+      const streamGenerator = async () => {
+        try {
+          const values = [];
+          if (isAsync) {
+            for await (const value of generator) {
+              values.push(value);
+            }
+          } else {
+            for (const value of generator) {
+              values.push(value);
+            }
+          }
+
+          // Send all values via generator stream
+          if (values.length > 0) {
+            // Encode the values
+            const encodedValues = [];
+            for (const value of values) {
+              const encodedValue = await this._encode(value, sessionId);
+              encodedValues.push(encodedValue);
+            }
+
+            // Send via generator stream
+            await this._send_generator_stream(
+              encodedValues,
+              data.from,
+              generatorId,
+            );
+          } else {
+            // Send empty end message
+            await this._send_generator_stream([], data.from, generatorId);
+          }
+        } catch (e) {
+          // Send error message
+          const errorMessage = {
+            type: "generator",
+            from: data.to,
+            to: data.from,
+            method: `${generatorId}:error`,
+            error: e.toString(),
+          };
+          await this._emit_message(msgpack_packb(errorMessage));
+        } finally {
+          // Cleanup
+          if (store && store[objectId]) {
+            delete store[objectId];
+          }
+        }
+      };
+
+      // Start streaming
+      streamGenerator().catch((err) => {
+        console.error(`Error in generator streaming: ${err}`);
+      });
+    } catch (err) {
+      console.error(`Error handling generator stream request: ${err}`);
     }
   }
 
@@ -1765,10 +2261,24 @@ export class RPC extends MessageEmitter {
       // Check if it's an async generator
       const isAsync = isAsyncGenerator(aObject);
 
-      // Define method to get next item from the generator
+      // For API v4+, we can support streaming generators
+      // Store both the generator and a streaming flag
+      store[object_id] = {
+        generator: aObject,
+        isAsync: isAsync,
+        supportsStreaming: true, // This will be checked later
+      };
+
+      // Define method to get next item from the generator (fallback for older API)
       const nextItemMethod = async () => {
-        if (isAsync) {
-          const iterator = aObject;
+        const genInfo = store[object_id];
+        if (!genInfo) {
+          return { _rtype: "stop_iteration" };
+        }
+
+        const generator = genInfo.generator;
+        if (genInfo.isAsync) {
+          const iterator = generator;
           const result = await iterator.next();
           if (result.done) {
             delete store[object_id];
@@ -1776,7 +2286,7 @@ export class RPC extends MessageEmitter {
           }
           return result.value;
         } else {
-          const iterator = aObject;
+          const iterator = generator;
           const result = iterator.next();
           if (result.done) {
             delete store[object_id];
@@ -1787,16 +2297,19 @@ export class RPC extends MessageEmitter {
       };
 
       // Store the next_item method in the session
-      store[object_id] = nextItemMethod;
+      store[`${object_id}_next`] = nextItemMethod;
 
       // Create a method that will be used to fetch the next item from the generator
       bObject = {
         _rtype: "generator",
         _rserver: this._server_base_url,
         _rtarget: this._client_id,
-        _rmethod: `${session_id}.${object_id}`,
+        _rmethod: `${session_id}.${object_id}_next`,
         _rpromise: "*",
         _rdoc: "Remote generator",
+        _rstream: true, // Indicates this generator supports streaming
+        _rsession: session_id,
+        _robject: object_id,
       };
       return bObject;
     } else if (typeof aObject === "function") {
@@ -2048,32 +2561,101 @@ export class RPC extends MessageEmitter {
           local_workspace,
         );
       } else if (aObject._rtype === "generator") {
-        // Create a method to fetch next items from the remote generator
-        const gen_method = this._generate_remote_method(
-          aObject,
-          remote_parent,
-          local_parent,
-          remote_workspace,
-          local_workspace,
-        );
+        // Check if this generator supports streaming and if both sides support API v4+
+        let supportsStreaming = false;
+        try {
+          if (aObject._rstream && remote_workspace) {
+            supportsStreaming = await this._check_remote_api_version(
+              `${remote_workspace}/${aObject._rtarget.split("/").pop()}`,
+            );
+          }
+        } catch (error) {
+          // If version check fails, fall back to traditional approach
+          supportsStreaming = false;
+        }
 
-        // Create an async generator proxy
-        async function* asyncGeneratorProxy() {
-          while (true) {
-            try {
-              const next_item = await gen_method();
-              // Check for StopIteration signal
-              if (next_item && next_item._rtype === "stop_iteration") {
-                break;
+        if (supportsStreaming) {
+          // Use streaming generator for API v4+
+          const generatorId = randId();
+
+          const streamingGeneratorProxy = async function* () {
+            // Send a request to stream the generator
+            const streamRequest = {
+              type: "stream_request",
+              from: local_workspace
+                ? `${local_workspace}/${this._client_id}`
+                : this._client_id,
+              to: aObject._rtarget,
+              session: aObject._rsession,
+              object_id: aObject._robject,
+              generator_id: generatorId,
+            };
+            await this._emit_message(msgpack_packb(streamRequest));
+
+            // Wait for streaming data
+            const streamData = [];
+            let streamCompleted = false;
+
+            const streamCallback = (data) => {
+              if (data === null) {
+                // End of stream
+                streamCompleted = true;
+              } else {
+                streamData.push(data);
               }
-              yield next_item;
-            } catch (error) {
-              console.error("Error in generator:", error);
-              throw error;
+            };
+
+            // Register callback for this generator stream
+            this._generator_registry[generatorId] = {
+              callback: streamCallback,
+              from: aObject._rtarget,
+              to: local_workspace
+                ? `${local_workspace}/${this._client_id}`
+                : this._client_id,
+              buffer: [],
+            };
+
+            // Wait for stream to complete
+            while (!streamCompleted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+
+            // Yield all collected items
+            for (const item of streamData) {
+              yield item;
+            }
+          }.bind(this);
+
+          bObject = streamingGeneratorProxy();
+        } else {
+          // Fallback to traditional RPC-based generator for older API versions
+          // Create a method to fetch next items from the remote generator
+          const gen_method = this._generate_remote_method(
+            aObject,
+            remote_parent,
+            local_parent,
+            remote_workspace,
+            local_workspace,
+          );
+
+          // Create an async generator proxy
+          async function* asyncGeneratorProxy() {
+            while (true) {
+              try {
+                const next_item = await gen_method();
+                // Check for StopIteration signal
+                if (next_item && next_item._rtype === "stop_iteration") {
+                  break;
+                }
+                yield next_item;
+              } catch (error) {
+                console.error("Error in generator:", error);
+                throw error;
+              }
             }
           }
+          bObject = asyncGeneratorProxy();
         }
-        bObject = asyncGeneratorProxy();
       } else if (aObject._rtype === "ndarray") {
         /*global nj tf*/
         //create build array/tensor if used in the plugin
