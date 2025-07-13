@@ -447,7 +447,7 @@ class WebsocketRPCConnection:
                                 self._reconnect_tasks.discard(sleep_task)
 
                             # Check if connection was restored externally
-                            if self._websocket and self._websocket.open:
+                            if self._websocket and self._websocket.state == State.OPEN:
                                 logger.info("Connection restored externally")
                                 break
 
