@@ -9,12 +9,9 @@
     "dist/"
   ],
   "scripts": {
-    "build": "npm run build:cjs && npm run build:esm && npm run build:types",
-    "build:cjs": "webpack --mode=production",
-    "build:esm": "BUILD_ESM=true webpack --mode=production",
-    "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
-    "build:dev": "webpack --mode=development",
-    "dev": "webpack serve --mode=development",
+    "build": "[ -f web-python-kernel.js ] || node --max-old-space-size=8192 ./node_modules/.bin/webpack --mode=development; cp -r src/pypi .",
+    "serve": "node serve.js",
+    "playground": "npm run build && npm run serve",
     "test": "node --max-old-space-size=8192 ./node_modules/.bin/karma start --single-run --browsers ChromeHeadless",
     "test:watch": "node --max-old-space-size=8192 ./node_modules/.bin/karma start --auto-watch",
     "test:chrome": "node --max-old-space-size=8192 ./node_modules/.bin/karma start --single-run --browsers Chrome",
@@ -22,7 +19,8 @@
     "lint:fix": "eslint src/**/*.ts tests/**/*.ts --fix",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist pypi web-python-kernel.js .webpack-cache",
+    "rebuild": "npm run clean && node --max-old-space-size=8192 ./node_modules/.bin/webpack --mode=development && cp -r src/pypi .",
     "prepare": "npm run build"
   },
   "keywords": [

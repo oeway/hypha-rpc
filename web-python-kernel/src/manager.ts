@@ -116,6 +116,7 @@ export interface IManagerKernelOptions {
   };
   filesystem?: IFilesystemMountOptions;
   env?: Record<string, string>; // Environment variables to set in the kernel
+  lockFileURL?: string; // URL to pyodide-lock.json file for faster loading
   inactivityTimeout?: number; // Time in milliseconds after which an inactive kernel will be shut down
   maxExecutionTime?: number; // Maximum time in milliseconds a single execution can run before considered stuck/dead
 }
@@ -1013,6 +1014,11 @@ export class KernelManager extends EventEmitter {
       kernelOptions.env = options.env;
     }
     
+    // Add lockFileURL if provided
+    if (options.lockFileURL) {
+      kernelOptions.lockFileURL = options.lockFileURL;
+    }
+    
     // Initialize the kernel
     await kernel.initialize(kernelOptions);
     
@@ -1098,6 +1104,7 @@ export class KernelManager extends EventEmitter {
       options: {
         filesystem: options.filesystem,
         env: options.env,
+        lockFileURL: options.lockFileURL,
         lang: language
       }
     });

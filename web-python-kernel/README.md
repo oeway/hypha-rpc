@@ -1,196 +1,150 @@
-# Web Python Kernel
+# 🐍 Web Python Kernel
 
-A Python kernel based on Pyodide for browser environments. This package provides a complete Jupyter kernel implementation that can run Python code directly in the browser using Pyodide.
+A web-based Python kernel for browser environments with TypeScript support.
 
-## Features
+## 🚀 Quick Start - Playground
 
-- **Python Kernel**: Full Python kernel implementation using Pyodide
-- **Browser Support**: Runs entirely in the browser (no server required)
-- **Worker Support**: Supports both main thread and web worker execution modes
-- **Event System**: Complete event system for kernel communication
-- **Streaming Execution**: Support for streaming code execution with real-time output
-- **Interrupt Support**: Kernel interruption capabilities (worker mode only)
-- **TypeScript**: Full TypeScript support with type definitions
-- **Multiple Formats**: Available as both ESM and UMD modules
-
-## Installation
-
+### **Option 1: Simple Setup (Recommended)**
 ```bash
-npm install web-python-kernel
+npm run playground
 ```
+This will build the kernel and start the playground at http://localhost:8080/playground.html
 
-## Usage
-
-### Basic Usage
-
-```javascript
-import { KernelManager, KernelMode, KernelLanguage } from 'web-python-kernel';
-
-// Create a kernel manager
-const manager = new KernelManager();
-
-// Create a Python kernel
-const kernelId = await manager.createKernel({
-  mode: KernelMode.WORKER, // or KernelMode.MAIN_THREAD
-  lang: KernelLanguage.PYTHON
-});
-
-// Execute Python code
-const result = await manager.execute(kernelId, 'print("Hello, World!")');
-console.log(result); // { success: true, result: ... }
-```
-
-### Event Handling
-
-```javascript
-import { KernelEvents } from 'web-python-kernel';
-
-// Listen for output events
-manager.onKernelEvent(kernelId, KernelEvents.STREAM, (data) => {
-  console.log(`${data.name}: ${data.text}`);
-});
-
-// Listen for execution results
-manager.onKernelEvent(kernelId, KernelEvents.EXECUTE_RESULT, (data) => {
-  console.log('Execution result:', data.data);
-});
-
-// Listen for errors
-manager.onKernelEvent(kernelId, KernelEvents.EXECUTE_ERROR, (data) => {
-  console.error(`${data.ename}: ${data.evalue}`);
-});
-```
-
-### Streaming Execution
-
-```javascript
-// Stream execution with real-time output
-const streamGenerator = manager.executeStream(kernelId, `
-for i in range(5):
-    print(f"Count: {i}")
-    import time
-    time.sleep(1)
-`);
-
-for await (const event of streamGenerator) {
-  if (event.type === 'stream') {
-    console.log(event.data.text);
-  }
-}
-```
-
-### Kernel Management
-
-```javascript
-// List all kernels
-const kernels = await manager.listKernels();
-
-// Get kernel information
-const kernel = manager.getKernel(kernelId);
-
-// Destroy a kernel
-await manager.destroyKernel(kernelId);
-
-// Destroy all kernels
-await manager.destroyAll();
-```
-
-## API Reference
-
-### KernelManager
-
-The main class for managing kernel instances.
-
-#### Methods
-
-- `createKernel(options)`: Create a new kernel instance
-- `getKernel(id)`: Get a kernel instance by ID
-- `listKernels()`: List all kernel instances
-- `execute(kernelId, code)`: Execute code in a kernel
-- `executeStream(kernelId, code)`: Execute code with streaming output
-- `destroyKernel(id)`: Destroy a kernel instance
-- `destroyAll()`: Destroy all kernel instances
-
-### Events
-
-- `KernelEvents.STREAM`: Output stream events (stdout/stderr)
-- `KernelEvents.EXECUTE_RESULT`: Execution result events
-- `KernelEvents.EXECUTE_ERROR`: Execution error events
-- `KernelEvents.DISPLAY_DATA`: Display data events
-- `KernelEvents.INPUT_REQUEST`: Input request events
-
-### Kernel Modes
-
-- `KernelMode.MAIN_THREAD`: Run kernel in main thread
-- `KernelMode.WORKER`: Run kernel in web worker (recommended)
-
-## Development
-
-### Setup
-
+### **Option 2: Manual Steps**
 ```bash
-# Install dependencies
-npm install
-
-# Build the project
+# Build the kernel bundle
 npm run build
 
-# Run tests
-npm test
+# Start the development server  
+npm run serve
 
-# Watch mode for development
-npm run watch
+# Open http://localhost:8080/playground.html
 ```
 
-### Building
+---
 
-The project builds both ESM and UMD formats:
+## 🎮 Playground Features
 
-```bash
-npm run build
-```
+The playground offers **two modes**:
 
-This creates:
-- `dist/web-python-kernel.js` - UMD format
-- `dist/web-python-kernel.mjs` - ESM format
-- `dist/web-python-kernel.min.js` - Minified UMD
-- `dist/web-python-kernel.min.mjs` - Minified ESM
+### **Simple Mode (CDN Pyodide)**
+- ✅ **No build required** - uses Pyodide directly from CDN
+- ✅ **Fast startup** - loads in ~30 seconds
+- ✅ **Basic packages** - numpy, matplotlib available
+- ✅ **Perfect for learning** and simple scripts
 
-### Testing
+### **Advanced Mode (Web-Python-Kernel)**  
+- ✅ **Full kernel features** - uses your web-python-kernel implementation
+- ✅ **Event streaming** - KERNEL_BUSY, KERNEL_IDLE, STREAM events
+- ✅ **Advanced packages** - pyodide_kernel, piplite, ipykernel
+- ✅ **Perfect for development** and testing kernel features
+
+**The playground automatically falls back to Simple Mode if the kernel bundle is not available.**
+
+---
+
+## 🛠 Development Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run playground` | Build and start playground |
+| `npm run build` | Build kernel bundle |
+| `npm run serve` | Start development server |
+| `npm run test` | Run all tests (33 tests) |
+| `npm run test:watch` | Run tests in watch mode |
+| `npm run clean` | Clean build artifacts |
+
+---
+
+## 🧪 Testing
 
 ```bash
 # Run all tests
 npm test
 
-# Run tests in watch mode
-npm run test:watch
-
-# Run tests for CI
-npm run test:ci
+# Expected output: 33/33 tests passing
+# Tests cover: kernel functionality, manager features, streaming
 ```
 
-## Browser Compatibility
+---
 
-- Chrome/Chromium 67+
-- Firefox 79+
-- Safari 14+
-- Edge 79+
+## 📁 Project Structure
 
-Note: SharedArrayBuffer support is required for kernel interruption features.
+```
+web-python-kernel/
+├── src/                 # TypeScript source code
+│   ├── manager.ts       # Kernel manager 
+│   ├── index.ts         # Main kernel implementation
+│   ├── pypi/           # Python wheel files
+│   └── ...
+├── tests/              # Test files
+│   ├── kernel_test.ts
+│   ├── kernel_manager_test.ts  
+│   └── kernel_stream_test.ts
+├── playground.html     # Interactive playground
+├── serve.js           # Development server
+└── package.json       # Dependencies and scripts
+```
 
-## License
+---
 
-MIT License - see LICENSE file for details.
+## 🎯 Key Features
 
-## Contributing
+### **Real Python Execution**
+- ✅ **Pyodide integration** - real Python 3.11 in browser
+- ✅ **Package support** - numpy, matplotlib, custom wheels  
+- ✅ **Import system** - standard Python imports work
+- ✅ **Error handling** - proper Python exception handling
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Run the test suite
-6. Submit a pull request
+### **Kernel Management**
+- ✅ **Multiple kernels** - create and manage multiple Python environments
+- ✅ **Event system** - KERNEL_BUSY, KERNEL_IDLE, STREAM, ERROR events
+- ✅ **Stream capture** - capture stdout, stderr, results separately
+- ✅ **Lifecycle management** - proper kernel creation and destruction
 
-## Support
+### **Development Tools**
+- ✅ **TypeScript** - full type safety and intellisense
+- ✅ **Testing suite** - comprehensive test coverage
+- ✅ **Hot reload** - fast development iteration
+- ✅ **Interactive playground** - test features immediately
 
-For issues and questions, please use the GitHub issue tracker. 
+---
+
+## 🎨 Playground Usage
+
+1. **Open** http://localhost:8080/playground.html
+2. **Select Mode**: Simple (CDN) or Advanced (Kernel)
+3. **Initialize**: Click the Initialize button  
+4. **Code**: Write Python code in the editor
+5. **Run**: Click "▶ Run Code" or press Ctrl+Enter
+6. **Experiment**: Try the example code snippets
+
+### **Example Code**
+```python
+# Basic Python
+print("Hello, World!")
+
+# Data processing  
+numbers = [1, 2, 3, 4, 5]
+squared = [x**2 for x in numbers]
+print(f"Squared: {squared}")
+
+# Math operations
+import math
+print(f"π = {math.pi:.4f}")
+
+# NumPy (if available)
+import numpy as np
+arr = np.array([1, 2, 3])
+print(f"NumPy array: {arr}")
+```
+
+---
+
+## 🚀 Ready to Go!
+
+Your web-python-kernel playground is ready! 
+
+**Quick start**: Run `npm run playground` and open the URL in your browser.
+
+Happy coding! 🐍✨ 

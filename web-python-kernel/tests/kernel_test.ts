@@ -9,16 +9,16 @@ describe('Individual Kernel Tests', function() {
 
   // Simplified options for individual kernel testing
   const kernelTestOptions: IKernelManagerOptions = {
-    allowedKernelTypes: [
+  allowedKernelTypes: [
       { mode: KernelMode.MAIN_THREAD, language: KernelLanguage.PYTHON }
-    ],
-    pool: {
+  ],
+  pool: {
       enabled: false,
       poolSize: 1,
       autoRefill: false,
-      preloadConfigs: []
-    }
-  };
+    preloadConfigs: []
+  }
+};
 
   beforeEach('Initialize kernel manager', function() {
     manager = new KernelManager(kernelTestOptions);

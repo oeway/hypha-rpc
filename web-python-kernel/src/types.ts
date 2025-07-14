@@ -59,6 +59,7 @@ export interface IFilesystemMountOptions {
 export interface IKernelOptions {
   filesystem?: IFilesystemMountOptions;
   env?: Record<string, string>; // Environment variables to set in the kernel
+  lockFileURL?: string; // URL to pyodide-lock.json file for faster loading
 }
 
 // Kernel interface

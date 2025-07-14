@@ -35,7 +35,7 @@ class EventEmitter {
 import { loadPyodide } from "./pyodide-loader";
 
 // Import types and enums
-import { KernelEvents, IEventData, IMessage } from "./types";
+import { KernelEvents, IEventData, IMessage, IKernel, IKernelOptions, IFilesystemMountOptions, IKernelExecuteOptions, IEventEmitter } from "./types";
 
 // Import PyPI URLs
 import {
@@ -60,63 +60,8 @@ export type {
   IEventEmitter
 } from "./types";
 
-// Interface for kernel events
-export interface IFilesystemMountOptions {
-  enabled?: boolean;
-  root?: string;
-  mountPoint?: string;
-}
 
-// Interface for kernel options
-export interface IKernelOptions {
-  filesystem?: IFilesystemMountOptions;
-  env?: Record<string, string>; // Environment variables to set in the kernel
-}
 
-// Interface for kernel
-export interface IKernel extends EventEmitter {
-  initialize(options?: IKernelOptions): Promise<void>;
-  execute(code: string, parent?: any): Promise<{ success: boolean, result?: any, error?: Error }>;
-  executeStream?(code: string, parent?: any): AsyncGenerator<any, { success: boolean, result?: any, error?: Error }, void>;
-  isInitialized(): boolean;
-  inputReply(content: { value: string }): Promise<void>;
-  getStatus(): Promise<"active" | "busy" | "unknown">;
-  
-  // Interrupt functionality
-  interrupt?(): Promise<boolean>;
-  setInterruptBuffer?(buffer: Uint8Array): void;
-  
-  // Optional methods
-  complete?(code: string, cursor_pos: number, parent?: any): Promise<any>;
-  inspect?(code: string, cursor_pos: number, detail_level: 0 | 1, parent?: any): Promise<any>;
-  isComplete?(code: string, parent?: any): Promise<any>;
-  commInfo?(target_name: string | null, parent?: any): Promise<any>;
-  commOpen?(content: any, parent?: any): Promise<void>;
-  commMsg?(content: any, parent?: any): Promise<void>;
-  commClose?(content: any, parent?: any): Promise<void>;
-}
-
-export interface IKernelExecuteOptions {
-  code: string;
-  silent?: boolean;
-  storeHistory?: boolean;
-}
-
-export interface IMessage {
-  type: string;
-  bundle?: any;
-  content?: any;
-  metadata?: any;
-  parentHeader?: any;
-  buffers?: any;
-  ident?: any;
-}
-
-// Event data structure with standardized format
-export interface IEventData {
-  type: string;
-  data: any;
-}
 
 export class Kernel extends EventEmitter implements IKernel {
   private pyodide: any;
@@ -129,6 +74,9 @@ export class Kernel extends EventEmitter implements IKernel {
     root: ".",
     mountPoint: "/home/pyodide"
   };
+  
+  // Kernel options
+  private lockFileURL?: string;
   
   // Kernel components
   private _kernel: any;
@@ -192,6 +140,11 @@ export class Kernel extends EventEmitter implements IKernel {
       this.environmentVariables = { ...options.env };
     }
 
+    // Set lockFileURL if provided
+    if (options?.lockFileURL) {
+      this.lockFileURL = options.lockFileURL;
+    }
+
     this.initPromise = this._initializeInternal();
     return this.initPromise;
   }
@@ -208,24 +161,46 @@ export class Kernel extends EventEmitter implements IKernel {
       // Load Pyodide from CDN
       const pyodideStartTime = Date.now();
       
+      // Configure pyodide options
+      const pyodideConfig: any = {};
+      if (this.lockFileURL) {
+        pyodideConfig.lockFileURL = this.lockFileURL;
+        console.log(`🔒 Using lockFileURL: ${this.lockFileURL}`);
+      }
+      
       // Use our CDN loader - it will automatically handle main thread vs worker
-      this.pyodide = await loadPyodide();
+      this.pyodide = await loadPyodide(pyodideConfig);
       const pyodideTime = Date.now() - pyodideStartTime;
       console.log(`✅ Pyodide loaded in ${pyodideTime}ms`);
       
       // Initialize core components in parallel
-      const [, ,] = await Promise.all([
-        // 1. Filesystem mounting (if enabled)
-        this.filesystemOptions.enabled ? this.mountFilesystem() : Promise.resolve(),
-        // 2. Package manager initialization
-        this.initPackageManager(),
-        // 3. Environment variables setup
-        this.setEnvironmentVariables()
-      ]);
-      
-      // Install packages and initialize globals
-      await this.initKernel();
-      await this.initGlobals();
+      if (this.lockFileURL) {
+        // When using lockFileURL, packages are pre-installed, skip package installation
+        console.log("🚀 Using lock file - skipping package installation");
+        const [,] = await Promise.all([
+          // 1. Filesystem mounting (if enabled)
+          this.filesystemOptions.enabled ? this.mountFilesystem() : Promise.resolve(),
+          // 2. Environment variables setup
+          this.setEnvironmentVariables()
+        ]);
+        
+        // Initialize globals directly (packages are already available)
+        await this.initGlobals();
+      } else {
+        // Standard initialization with package installation
+        const [, ,] = await Promise.all([
+          // 1. Filesystem mounting (if enabled)
+          this.filesystemOptions.enabled ? this.mountFilesystem() : Promise.resolve(),
+          // 2. Package manager initialization
+          this.initPackageManager(),
+          // 3. Environment variables setup
+          this.setEnvironmentVariables()
+        ]);
+        
+        // Install packages and initialize globals
+        await this.initKernel();
+        await this.initGlobals();
+      }
       
       const totalTime = Date.now() - startTime;
       console.log(`🎯 KERNEL INITIALIZATION COMPLETE in ${totalTime}ms`);
