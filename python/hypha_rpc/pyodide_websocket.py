@@ -8,6 +8,7 @@ import js
 from js import WebSocket
 import json
 import logging
+import shortuuid
 
 try:
     from pyodide.ffi import to_js
@@ -170,6 +171,170 @@ class PyodideWebsocketRPCConnection:
         else:
             self._WebSocketClass = WebSocket
 
+    # HTTP large message functionality  
+    async def start_large_message_upload_via_websocket(self, total_size: int, total_parts: int) -> str:
+        """Start large message upload via WebSocket, returns session_id."""
+        session_id = shortuuid.uuid()
+        
+        # Create a future to wait for the response
+        future = asyncio.Future()
+        self._pending_upload_starts = getattr(self, '_pending_upload_starts', {})
+        self._pending_upload_starts[session_id] = future
+        
+        # Send start upload message via WebSocket
+        start_message = json.dumps({
+            "type": "start_large_message_upload",
+            "total_size": total_size,
+            "total_parts": total_parts,
+            "workspace": self._workspace,
+            "session_id": session_id
+        })
+        
+        self._websocket.send(to_js(start_message))
+        
+        # Wait for response
+        return await future
+
+    async def complete_large_message_upload_via_websocket(self, session_id: str) -> str:
+        """Complete large message upload via WebSocket, returns encrypted_id."""
+        # Create a future to wait for the response
+        future = asyncio.Future()
+        self._pending_upload_completions = getattr(self, '_pending_upload_completions', {})
+        self._pending_upload_completions[session_id] = future
+        
+        # Send complete upload message via WebSocket
+        complete_message = json.dumps({
+            "type": "complete_large_message_upload",
+            "session_id": session_id
+        })
+        
+        self._websocket.send(to_js(complete_message))
+        
+        # Wait for response
+        return await future
+
+    async def upload_large_message_via_http(self, data: bytes, part_size: int = 5 * 1024 * 1024) -> str:
+        """Upload large message via HTTP multipart upload using js.fetch."""
+        import math
+        
+        total_size = len(data)
+        total_parts = math.ceil(total_size / part_size)
+        
+        # 1. Start upload via WebSocket
+        upload_session_id = await self.start_large_message_upload_via_websocket(total_size, total_parts)
+        
+        # 2. Upload parts in parallel via HTTP using js.fetch
+        base_url = self.connection_info.get('public_base_url') or self.connection_info.get('local_base_url')
+        if not base_url:
+            raise RuntimeError("No base URL available for HTTP uploads")
+        
+        async def upload_part(part_num: int, part_data: bytes):
+            url = f"{base_url}/ws/messages/{upload_session_id}/part/{part_num}"
+            
+            # Prepare headers
+            headers = {}
+            if self._token:
+                headers["Authorization"] = f"Bearer {self._token}"
+            
+            # Convert headers to JS object
+            js_headers = js.Object.new()
+            for key, value in headers.items():
+                js_headers[key] = value
+            
+            # Create fetch options
+            fetch_options = js.Object.new()
+            fetch_options.method = "PUT"
+            fetch_options.headers = js_headers
+            fetch_options.body = to_js(part_data)
+            
+            # Make the request
+            response = await js.fetch(url, fetch_options)
+            if response.status >= 400:
+                error_text = await response.text()
+                raise Exception(f"HTTP {response.status}: {error_text}")
+            
+            return await response.json()
+        
+        # Upload parts in parallel
+        tasks = []
+        for i in range(total_parts):
+            start = i * part_size
+            end = min(start + part_size, total_size)
+            part_data = data[start:end]
+            tasks.append(upload_part(i + 1, part_data))
+        
+        await asyncio.gather(*tasks)
+        
+        # 3. Complete upload via WebSocket
+        encrypted_id = await self.complete_large_message_upload_via_websocket(upload_session_id)
+        return encrypted_id
+
+    async def download_large_message_via_http(self, encrypted_id: str, total_size: int = None, part_size: int = 5 * 1024 * 1024) -> bytes:
+        """Download large message via HTTP with optional range requests using js.fetch."""
+        import math
+        
+        base_url = self.connection_info.get('public_base_url') or self.connection_info.get('local_base_url')
+        if not base_url:
+            raise RuntimeError("No base URL available for HTTP downloads")
+        
+        url = f"{base_url}/ws/messages/{encrypted_id}"
+        
+        # Prepare headers
+        headers = {}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        
+        # If total_size is not provided or it's small, download in one request
+        if not total_size or total_size <= part_size:
+            js_headers = js.Object.new()
+            for key, value in headers.items():
+                js_headers[key] = value
+            
+            fetch_options = js.Object.new()
+            fetch_options.method = "GET" 
+            fetch_options.headers = js_headers
+            
+            response = await js.fetch(url, fetch_options)
+            if response.status >= 400:
+                error_text = await response.text()
+                raise Exception(f"HTTP {response.status}: {error_text}")
+            
+            array_buffer = await response.arrayBuffer()
+            return array_buffer.to_py().tobytes()
+        
+        # Use range requests for large files
+        num_parts = math.ceil(total_size / part_size)
+        
+        async def download_range(start: int, end: int):
+            range_headers = headers.copy()
+            range_headers["Range"] = f"bytes={start}-{end}"
+            
+            js_headers = js.Object.new()
+            for key, value in range_headers.items():
+                js_headers[key] = value
+            
+            fetch_options = js.Object.new()
+            fetch_options.method = "GET"
+            fetch_options.headers = js_headers
+            
+            response = await js.fetch(url, fetch_options)
+            if response.status >= 400:
+                error_text = await response.text()
+                raise Exception(f"HTTP {response.status}: {error_text}")
+            
+            array_buffer = await response.arrayBuffer()
+            return array_buffer.to_py().tobytes()
+        
+        # Download parts in parallel
+        tasks = []
+        for i in range(num_parts):
+            start = i * part_size
+            end = min(start + part_size - 1, total_size - 1)
+            tasks.append(download_range(start, end))
+        
+        parts = await asyncio.gather(*tasks)
+        return b''.join(parts)
+
     def on_message(self, handler):
         """Register a message handler."""
         self._handle_message = handler
@@ -313,6 +478,21 @@ class PyodideWebsocketRPCConnection:
                     if data.get("type") == "reconnection_token":
                         self._reconnection_token = data["reconnection_token"]
                         logger.info("Reconnection token received")
+                    elif data.get("type") == "large_message_upload_started":
+                        # Handle upload start response
+                        session_id = data.get("session_id")
+                        if hasattr(self, '_pending_upload_starts') and session_id in self._pending_upload_starts:
+                            future = self._pending_upload_starts.pop(session_id)
+                            if not future.done():
+                                future.set_result(session_id)
+                    elif data.get("type") == "large_message_upload_completed":
+                        # Handle upload complete response
+                        session_id = data.get("session_id")
+                        encrypted_id = data.get("encrypted_id")
+                        if hasattr(self, '_pending_upload_completions') and session_id in self._pending_upload_completions:
+                            future = self._pending_upload_completions.pop(session_id)
+                            if not future.done():
+                                future.set_result(encrypted_id)
                     else:
                         logger.info("Received message from the server: %s", data)
                 elif self._handle_message:

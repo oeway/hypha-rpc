@@ -300,6 +300,11 @@ class RPC(MessageEmitter):
         self._server_base_url = server_base_url
         self.loop = loop or asyncio.get_event_loop()
         self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
+
+        # HTTP large message configuration
+        self._http_large_message_enabled = True
+        self._http_large_message_threshold = 1024 * 1024  # 1MB
+
         super().__init__(self._remote_logger)
 
         self._services = {}
@@ -583,13 +588,71 @@ class RPC(MessageEmitter):
                 main.update(extra)
             except msgpack.exceptions.OutOfData:
                 pass
+            
+            # Handle large message references
+            if main.get("type") == "large_message_ref":
+                self._handle_large_message_ref(main)
+                return
+                
             self._fire(main["type"], main)
         elif isinstance(message, dict):
             # Add trusted context to the method call
             message = self._add_context_to_message(message)
+            
+            # Handle large message references
+            if message.get("type") == "large_message_ref":
+                self._handle_large_message_ref(message)
+                return
+                
             self._fire(message["type"], message)
         else:
             raise Exception(f"Invalid message type: {type(message)}")
+
+    def _handle_large_message_ref(self, ref_message):
+        """Handle large message reference by downloading the actual content."""
+        async def download_and_process():
+            try:
+                encrypted_id = ref_message.get("encrypted_id")
+                size = ref_message.get("size")
+                server_url = ref_message.get("server_url")
+                
+                if not encrypted_id:
+                    logger.error("No encrypted_id in large message reference")
+                    return
+                
+                # Download the actual message content
+                if hasattr(self._connection, 'download_large_message_via_http'):
+                    actual_data = await self._connection.download_large_message_via_http(
+                        encrypted_id, size
+                    )
+                else:
+                    logger.error("Connection does not support HTTP download")
+                    return
+                
+                # Process the downloaded data as a normal message
+                unpacker = msgpack.Unpacker(
+                    io.BytesIO(actual_data),
+                    max_buffer_size=max(512000, self._long_message_chunk_size * 2),
+                )
+                main = unpacker.unpack()
+                # Add trusted context to the method call
+                main = self._add_context_to_message(main)
+                try:
+                    extra = unpacker.unpack()
+                    main.update(extra)
+                except msgpack.exceptions.OutOfData:
+                    pass
+                
+                # Fire the actual message
+                self._fire(main["type"], main)
+                
+            except Exception as e:
+                logger.error(f"Failed to download and process large message reference: {e}")
+        
+        # Create background task to download and process
+        task = self.loop.create_task(download_and_process())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
 
     def reset(self):
         """Reset."""
@@ -1111,6 +1174,31 @@ class RPC(MessageEmitter):
         return encoded
 
     async def _send_chunks(self, package, target_id, session_id):
+        # Check if we should use HTTP upload
+        use_http = (
+            len(package) > self._http_large_message_threshold 
+            and self._http_large_message_enabled
+            and hasattr(self._connection, 'upload_large_message_via_http')
+        )
+        
+        if use_http:
+            try:
+                logger.info(f"Using HTTP upload for large message (size={len(package)})")
+                encrypted_id = await self._connection.upload_large_message_via_http(package)
+                
+                # Send reference message via websocket
+                ref_message = {
+                    "type": "large_message_ref",
+                    "encrypted_id": encrypted_id,
+                    "size": len(package),
+                    "server_url": self._server_base_url
+                }
+                return await self._emit_message(msgpack.packb(ref_message))
+            except Exception as error:
+                logger.warning(f"HTTP upload failed, falling back to websocket chunking: {error}")
+                # Fall through to websocket chunking
+        
+        # Original websocket chunking logic
         remote_services = await self.get_remote_service(f"{target_id}:built-in")
         assert (
             remote_services.message_cache

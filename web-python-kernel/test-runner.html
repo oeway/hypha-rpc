@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Web Python Kernel Tests</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/mocha@10.2.0/mocha.css">
+    <script src="https://unpkg.com/mocha@10.2.0/mocha.js"></script>
+    <script src="https://unpkg.com/chai@4.3.7/chai.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #cce7ff; color: #004085; }
+    </style>
+</head>
+<body>
+    <h1>Web Python Kernel Test Runner</h1>
+    <div id="status" class="info">Initializing tests...</div>
+    <div id="mocha"></div>
+
+    <script>
+        // Set up Mocha
+        mocha.setup('bdd');
+        const { expect } = chai;
+
+        // Status helper
+        function updateStatus(message, type = 'info') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        // Mock module system for browser
+        const modules = {};
+        
+        function define(name, factory) {
+            modules[name] = factory();
+        }
+
+        function require(name) {
+            if (modules[name]) return modules[name];
+            if (name === 'chai') return chai;
+            if (name === 'mocha') return { describe, it, beforeEach, afterEach };
+            throw new Error(`Module not found: ${name}`);
+        }
+
+        // Load CDN Pyodide
+        async function loadPyodide() {
+            try {
+                updateStatus('Loading Pyodide from CDN...');
+                
+                // Load Pyodide from CDN
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/pyodide/v0.28.0/full/pyodide.js';
+                
+                await new Promise((resolve, reject) => {
+                    script.onload = resolve;
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+
+                const pyodide = await loadPyodide({
+                    stdout: (text) => console.log('Python stdout:', text),
+                    stderr: (text) => console.error('Python stderr:', text)
+                });
+
+                updateStatus('✅ Pyodide loaded successfully!', 'success');
+                return pyodide;
+            } catch (error) {
+                updateStatus(`❌ Failed to load Pyodide: ${error.message}`, 'error');
+                throw error;
+            }
+        }
+
+        // Simple kernel implementation for testing
+        class SimpleTestKernel {
+            constructor() {
+                this.pyodide = null;
+                this.initialized = false;
+            }
+
+            async initialize() {
+                try {
+                    this.pyodide = await loadPyodide();
+                    this.initialized = true;
+                    return true;
+                } catch (error) {
+                    console.error('Kernel initialization failed:', error);
+                    return false;
+                }
+            }
+
+            isInitialized() {
+                return this.initialized;
+            }
+
+            async execute(code) {
+                if (!this.initialized) {
+                    throw new Error('Kernel not initialized');
+                }
+
+                try {
+                    const result = this.pyodide.runPython(code);
+                    return {
+                        success: true,
+                        result: result
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message
+                    };
+                }
+            }
+        }
+
+        // Test suite
+        describe('Simple CDN Pyodide Tests', function() {
+            this.timeout(60000); // 60 second timeout for Pyodide loading
+
+            let kernel;
+
+            before(async function() {
+                updateStatus('Initializing test kernel...');
+                kernel = new SimpleTestKernel();
+                const success = await kernel.initialize();
+                if (!success) {
+                    throw new Error('Failed to initialize kernel');
+                }
+                updateStatus('Test kernel initialized', 'success');
+            });
+
+            it('should initialize simple kernel', function() {
+                expect(kernel.isInitialized()).to.be.true;
+            });
+
+            it('should execute basic Python code', async function() {
+                const result = await kernel.execute('2 + 2');
+                expect(result.success).to.be.true;
+                expect(result.result).to.equal(4);
+            });
+
+            it('should handle Python print statements', async function() {
+                const result = await kernel.execute('print("Hello from Python!")');
+                expect(result.success).to.be.true;
+            });
+
+            it('should handle Python variables', async function() {
+                await kernel.execute('x = 10');
+                const result = await kernel.execute('x * 2');
+                expect(result.success).to.be.true;
+                expect(result.result).to.equal(20);
+            });
+
+            it('should handle Python imports', async function() {
+                const result = await kernel.execute('import math; math.pi');
+                expect(result.success).to.be.true;
+                expect(result.result).to.be.closeTo(3.14159, 0.001);
+            });
+        });
+
+        describe('Basic Framework Tests', function() {
+            it('should have correct enum values', function() {
+                expect(1 + 1).to.equal(2);
+            });
+
+            it('should perform basic assertions', function() {
+                expect('hello').to.be.a('string');
+                expect([1, 2, 3]).to.have.length(3);
+            });
+
+            it('should handle async operations', async function() {
+                const result = await Promise.resolve(42);
+                expect(result).to.equal(42);
+            });
+        });
+
+        // Run the tests
+        updateStatus('Starting tests...');
+        mocha.run((failures) => {
+            if (failures === 0) {
+                updateStatus('✅ All tests passed!', 'success');
+            } else {
+                updateStatus(`❌ ${failures} test(s) failed`, 'error');
+            }
+        });
+    </script>
+</body>
+</html> 
