@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Python Kernel Playground</title>
+    <!-- Note: TailwindCSS CDN used for demo purposes. For production, install locally -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/codemirror.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/codemirror.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/mode/python/python.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/theme/monokai.min.css">
+    <style>
+        .CodeMirror {
+            height: 400px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+        }
+        .output-line {
+            padding: 4px 8px;
+            margin: 2px 0;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 12px;
+        }
+        .output-stdout {
+            background-color: #f0f9ff;
+            border-left: 3px solid #0ea5e9;
+        }
+        .output-stderr {
+            background-color: #fef2f2;
+            border-left: 3px solid #ef4444;
+        }
+        .output-result {
+            background-color: #f0fdf4;
+            border-left: 3px solid #22c55e;
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-idle { background-color: #64748b; }
+        .status-busy { background-color: #f59e0b; animation: pulse 1.5s infinite; }
+        .status-ready { background-color: #10b981; }
+        .status-error { background-color: #ef4444; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        'mono': ['Monaco', 'Menlo', 'Ubuntu Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-900 mb-2">
+                        🐍 Web Python Kernel Playground
+                    </h1>
+                    <p class="text-gray-600">
+                        Run Python code with visualization support - matplotlib, plotly, seaborn, pandas & more!
+                    </p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center">
+                        <span class="status-indicator" id="kernelStatus"></span>
+                        <span class="text-sm font-medium" id="kernelStatusText">Initializing...</span>
+                    </div>
+                    <button 
+                        id="initBtn"
+                        class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200"
+                    >
+                        Initialize Kernel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Code Editor Panel -->
+            <div class="bg-white rounded-lg shadow-lg">
+                <div class="p-4 border-b border-gray-200">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-lg font-semibold text-gray-900">Python Code Editor</h2>
+                        <div class="flex space-x-2">
+                            <button 
+                                id="runBtn"
+                                class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled
+                            >
+                                ▶ Run Code
+                            </button>
+                            <button 
+                                id="clearBtn"
+                                class="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="p-4">
+                    <textarea id="codeEditor" placeholder="Enter your Python code here...">
+# 🐍 Welcome to the Web Python Kernel Playground!
+# Click "Initialize Kernel" above to start
+# Try the visualization examples below! 📊
+
+print("🚀 Web Python Kernel ready!")
+
+# Basic Python operations
+print("\n📊 Basic Data Analysis:")
+data = [1, 4, 9, 16, 25, 36, 49, 64, 81, 100]
+mean = sum(data) / len(data)
+print(f"Data: {data}")
+print(f"Mean: {mean:.2f}")
+
+# Quick matplotlib example (after initialization)
+print("\n🎯 Quick Visualization Test:")
+try:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # Set backend for web display
+    import matplotlib
+
+    
+    # Simple line plot
+    x = np.linspace(0, 6, 50)
+    y = np.sin(x)
+    
+    plt.figure(figsize=(8, 4))
+    plt.plot(x, y, 'b-', linewidth=2)
+    plt.title("Sample Sine Wave")
+    plt.grid(True, alpha=0.3)
+    
+    print("✅ Matplotlib is working! Check examples below for more.")
+    plt.show()  # This will automatically display the plot via display_data
+    
+except ImportError:
+    print("📦 Matplotlib will be available after initialization")
+except Exception as e:
+    print(f"Note: {e}")
+
+print("\n🎨 Try the example buttons below for advanced plotting!")
+</textarea>
+                </div>
+            </div>
+
+            <!-- Output Panel -->
+            <div class="bg-white rounded-lg shadow-lg">
+                <div class="p-4 border-b border-gray-200">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-lg font-semibold text-gray-900">Output</h2>
+                        <button 
+                            id="clearOutputBtn"
+                            class="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-3 rounded-lg transition-colors duration-200 text-sm"
+                        >
+                            Clear Output
+                        </button>
+                    </div>
+                </div>
+                <div class="p-4">
+                    <div 
+                        id="output" 
+                        class="h-96 overflow-y-auto bg-gray-50 rounded-lg p-4 font-mono text-sm border"
+                    >
+                        <div class="text-gray-500 italic">
+                            Click "Initialize Kernel" to start running Python code...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Examples Section -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mt-6">
+            <h2 class="text-lg font-semibold text-gray-900 mb-4">Example Code Snippets</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <button 
+                    class="example-btn p-4 text-left bg-gray-50 hover:bg-gray-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Data manipulation
+data = [1, 2, 3, 4, 5]
+filtered = [x for x in data if x % 2 == 0]
+print(f"Even numbers: {filtered}")
+
+# Dictionary operations
+person = {"name": "Alice", "age": 30}
+print(f"Person: {person}")'>
+                    <h3 class="font-medium text-gray-900">Data Operations</h3>
+                    <p class="text-sm text-gray-600 mt-1">List comprehensions and dictionaries</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-gray-50 hover:bg-gray-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Function definition
+def fibonacci(n):
+    if n <= 1:
+        return n
+    return fibonacci(n-1) + fibonacci(n-2)
+
+# Calculate fibonacci numbers
+for i in range(8):
+    print(f"F({i}) = {fibonacci(i)}")'>
+                    <h3 class="font-medium text-gray-900">Functions</h3>
+                    <p class="text-sm text-gray-600 mt-1">Recursive fibonacci calculation</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-gray-50 hover:bg-gray-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Error handling
+def safe_divide(a, b):
+    try:
+        result = a / b
+        print(f"{a} / {b} = {result}")
+        return result
+    except ZeroDivisionError:
+        print("Error: Cannot divide by zero!")
+        return None
+
+safe_divide(10, 2)
+safe_divide(10, 0)'>
+                    <h3 class="font-medium text-gray-900">Error Handling</h3>
+                    <p class="text-sm text-gray-600 mt-1">Try-catch blocks and exceptions</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-gray-50 hover:bg-gray-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Working with packages 
+import json
+
+# Create some data
+data = {
+    "name": "Python",
+    "version": "3.8+",
+    "features": ["list comprehensions", "f-strings", "async/await"]
+}
+
+# Convert to JSON and back
+json_string = json.dumps(data, indent=2)
+print("JSON representation:")
+print(json_string)
+
+# Parse back from JSON
+parsed = json.loads(json_string)
+print(f"\\nParsed name: {parsed["name"]}")'>
+                    <h3 class="font-medium text-gray-900">JSON Processing</h3>
+                    <p class="text-sm text-gray-600 mt-1">Working with JSON data</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-gray-50 hover:bg-gray-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Working with iterators and generators
+def countdown(n):
+    while n > 0:
+        yield n
+        n -= 1
+    print("Blast off! 🚀")
+
+# Use the generator
+print("Countdown:")
+for num in countdown(5):
+    print(f"T-minus {num}")'>
+                    <h3 class="font-medium text-gray-900">Generators</h3>
+                    <p class="text-sm text-gray-600 mt-1">Python generators and yield</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-gray-50 hover:bg-gray-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Numpy example (if available)
+try:
+    import numpy as np
+    
+    # Create array
+    arr = np.array([1, 2, 3, 4, 5])
+    print(f"Array: {arr}")
+    print(f"Mean: {np.mean(arr)}")
+    print(f"Sum: {np.sum(arr)}")
+    print(f"Squared: {arr**2}")
+except ImportError:
+    print("NumPy not available in this mode")
+    # Alternative without numpy
+    arr = [1, 2, 3, 4, 5]
+    print(f"List: {arr}")
+    print(f"Mean: {sum(arr)/len(arr)}")
+    print(f"Sum: {sum(arr)}")'>
+                    <h3 class="font-medium text-gray-900">NumPy Operations</h3>
+                    <p class="text-sm text-gray-600 mt-1">Array operations (when available)</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-blue-50 hover:bg-blue-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Matplotlib basic plotting with browser display
+try:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # Set up for web display
+    import matplotlib
+  # Use non-interactive backend
+    
+    # Create sample data
+    x = np.linspace(0, 10, 100)
+    y = np.sin(x)
+    
+    # Create plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(x, y, "b-", linewidth=2, label="sin(x)")
+    plt.plot(x, np.cos(x), "r--", linewidth=2, label="cos(x)")
+    plt.title("Trigonometric Functions")
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Display in browser - plt.show() will automatically generate display_data
+    plt.show()
+    
+except ImportError as e:
+    print(f"Matplotlib not available: {e}")
+    print("Matplotlib should be automatically loaded after initialization.")
+except Exception as e:
+    print(f"Error creating plot: {e}")'>
+                    <h3 class="font-medium text-gray-900">📊 Matplotlib Plotting</h3>
+                    <p class="text-sm text-gray-600 mt-1">Basic line plots with browser display</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-green-50 hover:bg-green-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Advanced matplotlib - multiple subplots
+try:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import matplotlib
+
+    
+    # Create data
+    x = np.linspace(0, 2*np.pi, 100)
+    
+    # Create subplots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+    
+    # Plot 1: Sine wave
+    ax1.plot(x, np.sin(x), "b-")
+    ax1.set_title("Sine Wave")
+    ax1.grid(True)
+    
+    # Plot 2: Histogram
+    data = np.random.randn(1000)
+    ax2.hist(data, bins=30, alpha=0.7, color="green")
+    ax2.set_title("Random Distribution")
+    
+    # Plot 3: Scatter plot
+    x_scatter = np.random.randn(100)
+    y_scatter = 2 * x_scatter + np.random.randn(100) * 0.5
+    ax3.scatter(x_scatter, y_scatter, alpha=0.6, color="red")
+    ax3.set_title("Scatter Plot")
+    
+    # Plot 4: Bar chart
+    categories = ["A", "B", "C", "D"]
+    values = [23, 45, 56, 78]
+    ax4.bar(categories, values, color=["red", "green", "blue", "orange"])
+    ax4.set_title("Bar Chart")
+    
+    plt.tight_layout()
+    
+    # Display the plot - plt.show() will automatically generate display_data
+    print("Multiple subplot figure created!")
+    plt.show()
+    
+except ImportError:
+    print("Matplotlib not available")
+except Exception as e:
+    print(f"Error: {e}")'>
+                    <h3 class="font-medium text-gray-900">📈 Advanced Matplotlib</h3>
+                    <p class="text-sm text-gray-600 mt-1">Multiple subplots: line, histogram, scatter, bar</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-purple-50 hover:bg-purple-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Plotly interactive plotting
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    import numpy as np
+    
+    # Create sample data
+    x = np.linspace(0, 10, 50)
+    y1 = np.sin(x)
+    y2 = np.cos(x)
+    
+    # Create interactive line plot
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=y1, mode="lines+markers", 
+                           name="sin(x)", line=dict(color="blue")))
+    fig.add_trace(go.Scatter(x=x, y=y2, mode="lines+markers", 
+                           name="cos(x)", line=dict(color="red")))
+    
+    fig.update_layout(
+        title="Interactive Trigonometric Functions",
+        xaxis_title="x",
+        yaxis_title="y",
+        hovermode="x unified"
+    )
+    
+    # Generate HTML
+    html_str = fig.to_html(include_plotlyjs="cdn", div_id="plotly-div")
+    print("Plotly interactive plot created!")
+    print("HTML snippet (truncated):")
+    print(html_str[:200] + "...")
+    
+    # Alternative: JSON representation
+    import json
+    fig_dict = fig.to_dict()
+    print(f'\nPlot data structure has {len(fig_dict["data"])} traces')
+    
+except ImportError:
+    print("Plotly not available - installing...")
+    try:
+        import micropip
+        await micropip.install("plotly")
+        print("Plotly installed! Please run this example again.")
+    except:
+        print("Could not install Plotly automatically")
+except Exception as e:
+    print(f"Error creating Plotly chart: {e}")'>
+                    <h3 class="font-medium text-gray-900">🎯 Plotly Interactive</h3>
+                    <p class="text-sm text-gray-600 mt-1">Interactive web-based plotting</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-yellow-50 hover:bg-yellow-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Data analysis with pandas and visualization
+try:
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import matplotlib
+
+    
+    # Create sample dataset
+    np.random.seed(42)
+    dates = pd.date_range("2023-01-01", periods=100)
+    data = {
+        "date": dates,
+        "sales": np.random.normal(1000, 200, 100) + np.sin(np.arange(100) * 0.1) * 300,
+        "customers": np.random.poisson(50, 100) + 20,
+        "category": np.random.choice(["A", "B", "C"], 100)
+    }
+    df = pd.DataFrame(data)
+    
+    print("Dataset created:")
+    print(df.head())
+    print(f"\\nDataset shape: {df.shape}")
+    print(f"\\nSummary statistics:")
+    print(df.describe())
+    
+    # Create visualization
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+    
+    # Time series plot
+    ax1.plot(df["date"], df["sales"], linewidth=2)
+    ax1.set_title("Sales Over Time")
+    ax1.set_ylabel("Sales ($)")
+    ax1.grid(True, alpha=0.3)
+    
+    # Category distribution
+    category_counts = df["category"].value_counts()
+    ax2.bar(category_counts.index, category_counts.values, 
+           color=["skyblue", "lightcoral", "lightgreen"])
+    ax2.set_title("Category Distribution")
+    ax2.set_ylabel("Count")
+    
+                        plt.tight_layout()
+                    
+                    # Display the plot - plt.show() will automatically generate display_data
+                    print(f"\\nVisualization created!")
+                    plt.show()
+    
+except ImportError as e:
+    print(f"Required packages not available: {e}")
+    print('Try: import micropip; await micropip.install(["pandas", "matplotlib"])')
+except Exception as e:
+    print(f"Error in data analysis: {e}")'>
+                    <h3 class="font-medium text-gray-900">🔍 Data Analysis</h3>
+                    <p class="text-sm text-gray-600 mt-1">Pandas dataframes with matplotlib plots</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-indigo-50 hover:bg-indigo-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Seaborn statistical visualization
+try:
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import matplotlib
+
+    
+    # Set seaborn style
+    sns.set_style("whitegrid")
+    
+    # Create sample data
+    np.random.seed(42)
+    data = {
+        "group": np.repeat(["A", "B", "C"], 100),
+        "value": np.concatenate([
+            np.random.normal(10, 2, 100),  # Group A
+            np.random.normal(15, 3, 100),  # Group B  
+            np.random.normal(12, 2.5, 100)  # Group C
+        ]),
+        "category": np.tile(["X", "Y"], 150)
+    }
+    df = pd.DataFrame(data)
+    
+    # Create a figure with multiple seaborn plots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # Box plot
+    sns.boxplot(data=df, x="group", y="value", ax=ax1)
+    ax1.set_title("Box Plot by Group")
+    
+    # Violin plot
+    sns.violinplot(data=df, x="group", y="value", hue="category", ax=ax2)
+    ax2.set_title("Violin Plot with Categories")
+    
+    # Histogram with KDE
+    sns.histplot(data=df, x="value", hue="group", kde=True, ax=ax3)
+    ax3.set_title("Distribution with KDE")
+    
+    # Scatter plot with regression
+    sns.scatterplot(data=df, x="value", y=np.random.randn(300), 
+                   hue="group", ax=ax4)
+    ax4.set_title("Scatter Plot by Group")
+    ax4.set_ylabel("Random Y")
+    
+                        plt.tight_layout()
+                    
+                    # Display the plot - plt.show() will automatically generate display_data
+                    print("Seaborn statistical plots created!")
+                    plt.show()
+    
+except ImportError:
+    print("Seaborn not available - trying to install...")
+    try:
+        import micropip
+        await micropip.install("seaborn")
+        print("Seaborn installed! Please run again.")
+    except:
+        print("Could not install seaborn automatically")
+except Exception as e:
+    print(f"Error creating seaborn plots: {e}")'>
+                    <h3 class="font-medium text-gray-900">📊 Seaborn Statistical</h3>
+                    <p class="text-sm text-gray-600 mt-1">Advanced statistical visualizations</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-red-50 hover:bg-red-100 rounded-lg border transition-colors duration-200"
+                    data-code='# 3D plotting with matplotlib
+try:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpl_toolkits.mplot3d import Axes3D
+    import matplotlib
+
+    
+    # Create 3D data
+    fig = plt.figure(figsize=(12, 9))
+    
+    # 3D Surface plot
+    ax1 = fig.add_subplot(221, projection="3d")
+    x = np.linspace(-5, 5, 50)
+    y = np.linspace(-5, 5, 50)
+    X, Y = np.meshgrid(x, y)
+    Z = np.sin(np.sqrt(X**2 + Y**2))
+    surf = ax1.plot_surface(X, Y, Z, cmap="viridis", alpha=0.8)
+    ax1.set_title("3D Surface")
+    
+    # 3D Scatter plot
+    ax2 = fig.add_subplot(222, projection="3d")
+    n = 100
+    xs = np.random.randn(n)
+    ys = np.random.randn(n)
+    zs = np.random.randn(n)
+    ax2.scatter(xs, ys, zs, c=zs, cmap="plasma")
+    ax2.set_title("3D Scatter")
+    
+    # 3D Line plot
+    ax3 = fig.add_subplot(223, projection="3d")
+    t = np.linspace(0, 20, 100)
+    x = np.sin(t)
+    y = np.cos(t)
+    z = t
+    ax3.plot(x, y, z, linewidth=2)
+    ax3.set_title("3D Spiral")
+    
+    # 3D Bar plot
+    ax4 = fig.add_subplot(224, projection="3d")
+    xpos = [1, 2, 3, 4]
+    ypos = [1, 2, 3, 4]
+    xposM, yposM = np.meshgrid(xpos, ypos)
+    xpos = xposM.flatten()
+    ypos = yposM.flatten()
+    zpos = np.zeros(16)
+    dx = dy = 0.8
+    dz = np.random.randint(1, 10, 16)
+    ax4.bar3d(xpos, ypos, zpos, dx, dy, dz, 
+             color=plt.cm.viridis(dz/10.0), alpha=0.8)
+    ax4.set_title("3D Bars")
+    
+                        plt.tight_layout()
+                    
+                    # Display the plot - plt.show() will automatically generate display_data
+                    print("3D plots created successfully!")
+                    plt.show()
+    
+except ImportError:
+    print("3D plotting not available")
+except Exception as e:
+    print(f"Error creating 3D plots: {e}")'>
+                    <h3 class="font-medium text-gray-900">🌐 3D Visualization</h3>
+                    <p class="text-sm text-gray-600 mt-1">3D surface, scatter, line and bar plots</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-teal-50 hover:bg-teal-100 rounded-lg border transition-colors duration-200"
+                    data-code='# Package installation and management
+try:
+    # Check available packages
+    import sys
+    print("Python version:", sys.version)
+    print("\\nInstalled packages:")
+    
+    # List some common packages
+    packages_to_check = [
+        "numpy", "matplotlib", "pandas", "scipy", 
+        "plotly", "seaborn", "requests", "json"
+    ]
+    
+    available = []
+    missing = []
+    
+    for pkg in packages_to_check:
+        try:
+            __import__(pkg)
+            available.append(pkg)
+        except ImportError:
+            missing.append(pkg)
+    
+    print(f"✓ Available: {available}")
+    print(f"✗ Missing: {missing}")
+    
+    # Try to install missing packages (in Pyodide)
+    if missing:
+        print("\\nTrying to install missing packages...")
+        try:
+            import micropip
+            for pkg in missing[:3]:  # Limit to first 3 to avoid long waits
+                try:
+                    print(f"Installing {pkg}...")
+                    await micropip.install(pkg)
+                    print(f"✓ {pkg} installed successfully")
+                except Exception as e:
+                    print(f"✗ Failed to install {pkg}: {e}")
+        except ImportError:
+            print("micropip not available for package installation")
+    
+    # Show memory usage info
+    import gc
+    gc.collect()
+    print(f"\\nGarbage collection completed")
+    
+    # Show system info
+    import platform
+    print(f"Platform: {platform.platform()}")
+    
+except Exception as e:
+    print(f"Error checking packages: {e}")'>
+                    <h3 class="font-medium text-gray-900">📦 Package Management</h3>
+                    <p class="text-sm text-gray-600 mt-1">Check and install Python packages</p>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Web Python Kernel Manager
+        class WebPythonKernelManager {
+            constructor() {
+                this.kernelManager = null;
+                this.currentKernelId = null;
+                this.isReady = false;
+            }
+
+            async initialize() {
+                await this.initializeWebPythonKernel();
+            }
+
+            async initializeWebPythonKernel() {
+                try {
+                    this.updateStatus('busy', 'Loading web-python-kernel...');
+                    
+                    // Try to load the web-python-kernel bundle
+                    let kernelModule;
+                    try {
+                        // Try loading from the local build first
+                        const script = document.createElement('script');
+                        script.src = './web-python-kernel.js';
+                        document.head.appendChild(script);
+                        
+                        await new Promise((resolve, reject) => {
+                            script.onload = () => {
+                                if (window.WebPythonKernel) {
+                                    kernelModule = window.WebPythonKernel;
+                                    resolve();
+                                } else {
+                                    reject(new Error('WebPythonKernel not found in global scope'));
+                                }
+                            };
+                            script.onerror = reject;
+                        });
+                    } catch (error) {
+                        throw new Error(`Web-python-kernel bundle not found: ${error.message}`);
+                    }
+                    
+                    const { KernelManager, KernelMode, KernelLanguage, KernelEvents } = kernelModule;
+                    
+                    this.kernelManager = new KernelManager({
+                        allowedKernelTypes: [
+                            { mode: KernelMode.MAIN_THREAD, language: KernelLanguage.PYTHON }
+                        ],
+                        pool: {
+                            enabled: false,
+                            poolSize: 1,
+                            autoRefill: false,
+                            preloadConfigs: []
+                        }
+                    });
+
+                    this.updateStatus('busy', 'Creating Python kernel...');
+
+                    // Check if pyodide-lock.json is available for faster loading
+                    let kernelOptions = {
+                        mode: KernelMode.MAIN_THREAD,
+                        lang: KernelLanguage.PYTHON
+                    };
+                    
+                    try {
+                        const lockFileResponse = await fetch('./pyodide-lock.json');
+                        if (lockFileResponse.ok) {
+                            const baseUrl = window.location.origin + window.location.pathname.replace(/\/[^\/]*$/, '/');
+                            kernelOptions.lockFileURL = baseUrl + 'pyodide-lock.json';
+                            this.addOutput('🔒 Using pyodide-lock.json for faster loading', 'result');
+                        }
+                    } catch (error) {
+                        // Lock file not available, continue with normal initialization
+                        console.log('Lock file not available, using standard initialization');
+                    }
+
+                    this.currentKernelId = await this.kernelManager.createKernel(kernelOptions);
+
+                    // Listen for kernel events
+                    this.kernelManager.onKernelEvent(this.currentKernelId, KernelEvents.KERNEL_BUSY, () => {
+                        this.updateStatus('busy', 'Kernel busy...');
+                    });
+
+                    this.kernelManager.onKernelEvent(this.currentKernelId, KernelEvents.KERNEL_IDLE, () => {
+                        this.updateStatus('ready', 'Kernel ready');
+                    });
+
+                    this.kernelManager.onKernelEvent(this.currentKernelId, KernelEvents.STREAM, (data) => {
+                        if (data.name === 'stdout') {
+                            this.addOutput(data.text, 'stdout');
+                        } else if (data.name === 'stderr') {
+                            this.addOutput(data.text, 'stderr');
+                        }
+                    });
+
+                    // Listen for display_data events (plots, HTML, etc.)
+                    this.kernelManager.onKernelEvent(this.currentKernelId, KernelEvents.DISPLAY_DATA, (data) => {
+                        this.handleDisplayData(data);
+                    });
+
+                    this.isReady = true;
+                    this.updateStatus('ready', 'Python kernel ready!');
+                    this.enableButton('runBtn');
+                    this.addOutput('✓ Web-python-kernel ready with full features!', 'result');
+
+                } catch (error) {
+                    console.error('Failed to initialize web-python-kernel:', error);
+                    this.updateStatus('error', `Kernel initialization failed: ${error.message}`);
+                    this.addOutput(`Failed to initialize: ${error.message}`, 'stderr');
+                }
+            }
+
+            async executeCode(code) {
+                if (!this.isReady) {
+                    this.addOutput('Kernel not ready. Please initialize first.', 'stderr');
+                    return;
+                }
+
+                try {
+                    this.disableButton('runBtn');
+                    this.addOutput(`>>> Executing:\\n${code}`, 'result');
+
+                    // Execute using web-python-kernel
+                    const result = await this.kernelManager.execute(this.currentKernelId, code);
+                    if (result.success) {
+                        this.addOutput('✓ Execution completed successfully', 'result');
+                    } else {
+                        this.addOutput(`✗ Execution failed: ${result.error?.message || 'Unknown error'}`, 'stderr');
+                    }
+
+                } catch (error) {
+                    console.error('Execution error:', error);
+                    this.addOutput(`Error: ${error.message}`, 'stderr');
+                    this.updateStatus('ready', 'Ready');
+                } finally {
+                    this.enableButton('runBtn');
+                }
+            }
+
+            updateStatus(status, text) {
+                const indicator = document.getElementById('kernelStatus');
+                const statusText = document.getElementById('kernelStatusText');
+                
+                indicator.className = `status-indicator status-${status}`;
+                statusText.textContent = text;
+            }
+
+            addOutput(text, type = 'stdout') {
+                const output = document.getElementById('output');
+                const line = document.createElement('div');
+                line.className = `output-line output-${type}`;
+                
+                // Check if text looks like HTML (contains img tags with data: URLs)
+                if (text.includes('<img src="data:image/') && text.includes('base64,')) {
+                    line.innerHTML = text; // Render as HTML for images
+                } else {
+                    line.textContent = text; // Safe text rendering for everything else
+                }
+                
+                // Remove the placeholder text
+                if (output.children.length === 1 && output.children[0].classList.contains('text-gray-500')) {
+                    output.innerHTML = '';
+                }
+                
+                output.appendChild(line);
+                output.scrollTop = output.scrollHeight;
+            }
+
+            handleDisplayData(displayData) {
+                const output = document.getElementById('output');
+                const line = document.createElement('div');
+                line.className = 'output-line output-result';
+                
+                // Remove the placeholder text
+                if (output.children.length === 1 && output.children[0].classList.contains('text-gray-500')) {
+                    output.innerHTML = '';
+                }
+                
+                if (displayData.data) {
+                    // Handle image/png data (matplotlib plots)
+                    if (displayData.data['image/png']) {
+                        const img = document.createElement('img');
+                        img.src = `data:image/png;base64,${displayData.data['image/png']}`;
+                        img.alt = 'Generated plot';
+                        img.style.maxWidth = '100%';
+                        img.style.height = 'auto';
+                        img.style.borderRadius = '4px';
+                        img.style.border = '1px solid #e5e7eb';
+                        line.appendChild(img);
+                    }
+                    // Handle HTML data
+                    else if (displayData.data['text/html']) {
+                        line.innerHTML = displayData.data['text/html'];
+                    }
+                    // Handle plain text fallback
+                    else if (displayData.data['text/plain']) {
+                        line.textContent = displayData.data['text/plain'];
+                    }
+                    // Handle other formats
+                    else {
+                        line.textContent = `[Display data: ${Object.keys(displayData.data).join(', ')}]`;
+                    }
+                } else {
+                    line.textContent = '[Invalid display data]';
+                }
+                
+                output.appendChild(line);
+                output.scrollTop = output.scrollHeight;
+            }
+
+            clearOutput() {
+                const output = document.getElementById('output');
+                output.innerHTML = '<div class="text-gray-500 italic">Output cleared.</div>';
+            }
+
+            enableButton(id) {
+                const btn = document.getElementById(id);
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+
+            disableButton(id) {
+                const btn = document.getElementById(id);
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        // Initialize the playground
+        const kernelManager = new WebPythonKernelManager();
+
+        // Initialize CodeMirror
+        const editor = CodeMirror.fromTextArea(document.getElementById('codeEditor'), {
+            mode: 'python',
+            theme: 'monokai',
+            lineNumbers: true,
+            indentUnit: 4,
+            lineWrapping: true,
+            matchBrackets: true,
+            autoCloseBrackets: true
+        });
+
+        // Event listeners
+        document.getElementById('initBtn').addEventListener('click', () => {
+            kernelManager.initialize();
+            document.getElementById('initBtn').style.display = 'none';
+        });
+
+        document.getElementById('runBtn').addEventListener('click', () => {
+            const code = editor.getValue().trim();
+            if (code) {
+                kernelManager.executeCode(code);
+            } else {
+                kernelManager.addOutput('No code to execute', 'stderr');
+            }
+        });
+
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            editor.setValue('');
+        });
+
+        document.getElementById('clearOutputBtn').addEventListener('click', () => {
+            kernelManager.clearOutput();
+        });
+
+        // Example buttons
+        document.querySelectorAll('.example-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const code = btn.getAttribute('data-code');
+                editor.setValue(code);
+            });
+        });
+
+        // Keyboard shortcuts
+        editor.setOption("extraKeys", {
+            "Ctrl-Enter": () => {
+                if (kernelManager.isReady) {
+                    const code = editor.getValue().trim();
+                    if (code) kernelManager.executeCode(code);
+                }
+            },
+            "Cmd-Enter": () => {
+                if (kernelManager.isReady) {
+                    const code = editor.getValue().trim();
+                    if (code) kernelManager.executeCode(code);
+                }
+            }
+        });
+
+        // Set initial status
+        kernelManager.updateStatus('idle', 'Ready to initialize');
+    </script>
+</body>
+</html> 
