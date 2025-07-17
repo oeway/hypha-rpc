@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hypha_rpc"
-version = "0.20.66"
+version = "0.20.67"
 description = "Hypha RPC client for connecting to Hypha server for data management and AI model serving"
 readme = "README.md"
 requires-python = ">=3.6"
-dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets>=14.0; platform_system != 'Emscripten'", "munch", "httpx>=0.23.0"]
+dependencies = [ "numpy", "msgpack>=1.0.2", "shortuuid>=1.0.8", "websockets>=14.0; platform_system != 'Emscripten'", "munch", "httpx>=0.23.0",]
 [[project.authors]]
 name = "Wei Ouyang"
 email = "oeway007@gmail.com"

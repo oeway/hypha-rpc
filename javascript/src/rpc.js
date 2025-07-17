@@ -679,7 +679,10 @@ export class RPC extends MessageEmitter {
 
     service.config["workspace"] = context["ws"];
     // allow access for the same workspace
-    if (service.config.visibility == "public") {
+    if (
+      service.config.visibility == "public" ||
+      service.config.visibility == "unlisted"
+    ) {
       return service;
     }
 
@@ -832,7 +835,7 @@ export class RPC extends MessageEmitter {
       require_context = api.config.require_context;
     if (api.config.run_in_executor) run_in_executor = true;
     const visibility = api.config.visibility || "protected";
-    assert(["protected", "public"].includes(visibility));
+    assert(["protected", "public", "unlisted"].includes(visibility));
     this._annotate_service_methods(
       api,
       api["id"],
