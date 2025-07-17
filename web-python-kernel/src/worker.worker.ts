@@ -6,7 +6,7 @@ import { Kernel } from "./index";
 
 // Use a browser-compatible EventEmitter
 class EventEmitter {
-  private events: { [key: string]: Function[] } = {};
+  public events: { [key: string]: Function[] } = {};
 
   on(eventName: string, listener: Function) {
     if (!this.events[eventName]) {
