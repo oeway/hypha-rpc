@@ -213,7 +213,7 @@ class PyodideWebsocketRPCConnection:
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
                 self._websocket.send(to_js(refresh_message))
-                logger.info("Requested refresh token")
+                # logger.info("Requested refresh token")
                 # Wait for the next refresh interval
                 await asyncio.sleep(token_refresh_interval)
         except asyncio.CancelledError:
@@ -312,7 +312,7 @@ class PyodideWebsocketRPCConnection:
                     data = json.loads(data)
                     if data.get("type") == "reconnection_token":
                         self._reconnection_token = data["reconnection_token"]
-                        logger.info("Reconnection token received")
+                        # logger.info("Reconnection token received")
                     else:
                         logger.info("Received message from the server: %s", data)
                 elif self._handle_message:

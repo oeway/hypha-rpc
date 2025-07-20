@@ -41,6 +41,8 @@ function indexObject(obj, is) {
   else return indexObject(obj[is[0]], is.slice(1));
 }
 
+// Simple fallback schema generation - no docstring parsing for JS
+
 function _get_schema(obj, name = null, skipContext = false) {
   if (Array.isArray(obj)) {
     return obj.map((v, i) => _get_schema(v, null, skipContext));
@@ -61,10 +63,23 @@ function _get_schema(obj, name = null, skipContext = false) {
         if (schema.parameters && schema.parameters.properties) {
           delete schema.parameters.properties["context"];
         }
+        if (schema.parameters && schema.parameters.required) {
+          const contextIndex = schema.parameters.required.indexOf("context");
+          if (contextIndex > -1) {
+            schema.parameters.required.splice(contextIndex, 1);
+          }
+        }
       }
       return { type: "function", function: schema };
     } else {
-      return { type: "function" };
+      // Simple fallback for JavaScript - just return basic function schema with name
+      const funcName = name || obj.name || "function";
+      return {
+        type: "function",
+        function: {
+          name: funcName,
+        },
+      };
     }
   } else if (typeof obj === "number") {
     return { type: "number" };
@@ -679,7 +694,10 @@ export class RPC extends MessageEmitter {
 
     service.config["workspace"] = context["ws"];
     // allow access for the same workspace
-    if (service.config.visibility == "public") {
+    if (
+      service.config.visibility == "public" ||
+      service.config.visibility == "unlisted"
+    ) {
       return service;
     }
 
@@ -832,7 +850,7 @@ export class RPC extends MessageEmitter {
       require_context = api.config.require_context;
     if (api.config.run_in_executor) run_in_executor = true;
     const visibility = api.config.visibility || "protected";
-    assert(["protected", "public"].includes(visibility));
+    assert(["protected", "public", "unlisted"].includes(visibility));
     this._annotate_service_methods(
       api,
       api["id"],

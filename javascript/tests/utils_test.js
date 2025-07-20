@@ -4,6 +4,7 @@ import {
   isGenerator,
   isAsyncGenerator,
 } from "../src/utils/index.js";
+import { schemaFunction, z } from "../src/utils/schema.js";
 
 describe("Test utilities", async () => {
   it("parse service url", async () => {
@@ -133,4 +134,72 @@ describe("Test utilities", async () => {
     };
     expect(isAsyncGenerator(fakeAsyncGenerator)).to.be.true; // Note: This is true because it matches the interface
   }).timeout(20000);
+
+  it("test Zod-like schema builder", async () => {
+    // Test basic types
+    expect(z.string()).to.deep.include({ type: "string", _optional: false });
+    expect(z.number()).to.deep.include({ type: "number", _optional: false });
+    expect(z.integer()).to.deep.include({ type: "integer", _optional: false });
+    expect(z.boolean()).to.deep.include({ type: "boolean", _optional: false });
+
+    // Test optional
+    const optionalString = z.optional(z.string());
+    expect(optionalString._optional).to.be.true;
+
+    // Test object schema
+    const userSchema = z.object({
+      name: z.string(),
+      age: z.optional(z.number()),
+      active: z.boolean(),
+    });
+
+    expect(userSchema.type).to.equal("object");
+    expect(userSchema.properties.name).to.deep.include({
+      type: "string",
+      _optional: false,
+    });
+    expect(userSchema.properties.age).to.deep.include({
+      type: "number",
+      _optional: true,
+    });
+    expect(userSchema.properties.active).to.deep.include({
+      type: "boolean",
+      _optional: false,
+    });
+    expect(userSchema.required).to.deep.equal(["name", "active"]);
+  }).timeout(5000);
+
+  it("test schemaFunction with Zod-like API", async () => {
+    function processUser(name, age = 25, active = true) {
+      /* Process user data
+       * Args:
+       *   name: User's full name
+       *   age: User's age in years
+       *   active: Whether user is active
+       */
+      return { name, age, active };
+    }
+
+    const schema = z.object({
+      name: z.string().describe("User's full name"),
+      age: z.optional(z.number().describe("User's age in years")),
+      active: z.optional(z.boolean().describe("Whether user is active")),
+    });
+
+    const schemaFunc = schemaFunction(processUser, {
+      name: "processUser",
+      description: "Process user data",
+      parameters: schema,
+    });
+
+    expect(schemaFunc.__schema__).to.exist;
+    expect(schemaFunc.__schema__.name).to.equal("processUser");
+    expect(schemaFunc.__schema__.description).to.equal("Process user data");
+    expect(schemaFunc.__schema__.parameters.type).to.equal("object");
+    expect(schemaFunc.__schema__.parameters.properties.name).to.deep.include({
+      type: "string",
+      description: "User's full name",
+    });
+    expect(schemaFunc.__schema__.parameters.required).to.deep.equal(["name"]);
+  }).timeout(5000);
 });
