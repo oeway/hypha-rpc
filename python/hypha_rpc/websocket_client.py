@@ -342,7 +342,7 @@ class WebsocketRPCConnection:
             # Handle unexpected disconnection or disconnection caused by the server
             if not self._closed and self._websocket.state == State.CLOSED:
                 # normal closure, means no need to recover
-                if self._websocket.close_code in [1000, 1001]:
+                if hasattr(self._websocket, "close_code") and self._websocket.close_code in [1000, 1001]:
                     logger.info(
                         "Websocket connection closed (code: %s): %s",
                         self._websocket.close_code,
