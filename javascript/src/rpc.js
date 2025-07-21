@@ -1657,6 +1657,9 @@ export class RPC extends MessageEmitter {
   }
 
   _get_session_store(session_id, create) {
+    if (!session_id) {
+      return null;
+    }
     let store = this._object_store;
     const levels = session_id.split(".");
     if (create) {
