@@ -9,14 +9,13 @@ from starlette.middleware import Middleware
 from hypha_rpc.utils.serve import register_asgi_service
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from fastmcp.tools import Tool
 import inspect
 from fastmcp.prompts.prompt import (
     Prompt,
     PromptArgument,
     compress_schema,
-    validate_call,
 )
+from pydantic import validate_call
 
 
 logger = logging.getLogger("hypha_rpc.utils.mcp")
@@ -31,50 +30,122 @@ def create_fn(read: Callable):
 
 def create_prompt(prompt_data: dict):
     """
-    Create a prompt from prompt data.
+    Create a prompt from prompt data using the new fastmcp API.
 
     Args:
         prompt_data: Dictionary containing prompt information including read function
 
     Returns:
-        Prompt instance
+        FunctionPrompt instance
     """
-    # extract the original read function and its schema
+    # extract the original read function
     orig_fn = prompt_data.get("read")
     schema = getattr(orig_fn, "__schema__", {}) or {}
-    parameters = schema.get("parameters", {})
-    # convert to JSON schema for arguments
-    parameters = compress_schema(parameters, prune_params=None)
 
-    # build PromptArgument list
-    arguments: list[PromptArgument] = []
-    if "properties" in parameters:
-        for param_name, param in parameters["properties"].items():
-            arguments.append(
-                PromptArgument(
-                    name=param_name,
-                    description=param.get("description"),
-                    required=param_name in parameters.get("required", []),
-                )
-            )
+    # Create a typed wrapper for the prompt function
+    wrapper_fn = create_typed_prompt_wrapper(
+        orig_fn, prompt_data.get("name", "unnamed_prompt"), schema
+    )
 
-    # wrap the read function to ensure it is awaited if needed
-    async def fn(**kwargs: Any):
-        result = orig_fn(**kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
-        # ensure the arguments are properly cast
-
-    fn = validate_call(fn)
-    # create the Prompt with wrapped function
-    return Prompt(
+    # Use the new from_function API
+    return Prompt.from_function(
+        wrapper_fn,
         name=prompt_data.get("name", "unnamed_prompt"),
         description=prompt_data.get("description"),
         tags=prompt_data.get("tags", set()),
-        arguments=arguments,
-        fn=fn,
     )
+
+
+def create_typed_prompt_wrapper(
+    original_fn: Callable, name: str, schema: dict
+) -> Callable:
+    """
+    Create a typed wrapper function for RPC remote methods used as prompts.
+
+    Args:
+        original_fn: The original RPC remote method
+        name: Name of the function
+        schema: Schema information from the function
+
+    Returns:
+        A wrapper function with proper typing for prompts
+    """
+    import inspect
+    from typing import Any, Annotated
+    from pydantic import Field
+
+    # Extract parameters from schema
+    parameters = schema.get("parameters", {})
+    properties = parameters.get("properties", {})
+    required = set(parameters.get("required", []))
+
+    # Build the parameter list with Pydantic Field annotations
+    param_list = []
+    annotations = {}
+
+    for param_name, param_info in properties.items():
+        # Skip context parameter if it exists
+        if param_name == "context":
+            continue
+
+        # Determine parameter type
+        param_type = Any  # Default type
+        if "type" in param_info:
+            type_map = {
+                "string": str,
+                "integer": int,
+                "number": float,
+                "boolean": bool,
+                "array": list,
+                "object": dict,
+            }
+            param_type = type_map.get(param_info["type"], Any)
+
+        # Create Pydantic Field with description
+        param_description = param_info.get("description", "")
+
+        if param_name in required:
+            # Required parameter with Field annotation
+            field_annotation = Annotated[
+                param_type, Field(description=param_description)
+            ]
+            param = inspect.Parameter(
+                param_name,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=field_annotation,
+            )
+        else:
+            # Optional parameter with Field annotation and default
+            field_annotation = Annotated[
+                param_type, Field(default=None, description=param_description)
+            ]
+            param = inspect.Parameter(
+                param_name,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=None,
+                annotation=field_annotation,
+            )
+
+        param_list.append(param)
+        annotations[param_name] = field_annotation
+
+    # Create new signature
+    new_signature = inspect.Signature(param_list)
+
+    # Create wrapper function that calls the original and returns proper format
+    async def wrapper(*args, **kwargs):
+        result = await original_fn(*args, **kwargs)
+        # Return the result as a string (fastmcp will convert to PromptMessage)
+        return str(result)
+
+    # Set the new signature and other attributes
+    wrapper.__signature__ = new_signature
+    wrapper.__name__ = name
+    wrapper.__doc__ = getattr(original_fn, "__doc__", "")
+    wrapper.__schema__ = schema
+    wrapper.__annotations__ = annotations
+
+    return wrapper
 
 
 async def create_mcp_from_service(service: dict) -> FastMCP:
@@ -131,49 +202,38 @@ async def create_mcp_from_service(service: dict) -> FastMCP:
     else:
         tools = service
 
-    tools_list = extract_tools(tools)
-    for tool in tools_list:
-        try:
-            mcp._tool_manager.add_tool(tool)
-            logger.debug(f"Added tool {tool.name} from service {name}")
-        except Exception as e:
-            logger.error(f"Failed to add tool {tool.name} from service {name}: {e}")
-            logger.exception(e)
+    register_tools(mcp, tools)
     return mcp
 
 
-def extract_tools(obj: Any, prefix: str = "") -> List[Tool]:
+def register_tools(mcp: FastMCP, obj: Any, prefix: str = "") -> None:
     """
-    Recursively convert functions from an object into MCP tools.
+    Recursively register functions from an object as MCP tools.
 
     Handles nested dictionaries and lists.
 
     Args:
+        mcp: FastMCP server instance to register tools with
         obj: Object containing tool functions, can be nested dict/list
         prefix: Prefix for nested tool names
-
-    Returns:
-        List of Tool objects
     """
-    tool_list = []
     if isinstance(obj, dict):
         for key, value in obj.items():
             new_prefix = f"{prefix}_{key}" if prefix else key
             if callable(value):
-                tool_list.append(create_tool(value, new_prefix))
+                register_single_tool(mcp, value, new_prefix)
             elif isinstance(value, (dict, list)):
-                tool_list.extend(extract_tools(value, new_prefix))
+                register_tools(mcp, value, new_prefix)
     elif isinstance(obj, list):
         for i, value in enumerate(obj):
-
             if callable(value):
                 new_prefix = (
                     f"{prefix}_{value.__name__}" if prefix else str(value.__name__)
                 )
-                tool_list.append(create_tool(value, new_prefix))
+                register_single_tool(mcp, value, new_prefix)
             elif isinstance(value, (dict, list)):
                 new_prefix = f"{prefix}_{i}" if prefix else str(i)
-                tool_list.extend(extract_tools(value, new_prefix))
+                register_tools(mcp, value, new_prefix)
     else:
         for member_name in dir(obj):
             if member_name.startswith("_"):
@@ -181,35 +241,142 @@ def extract_tools(obj: Any, prefix: str = "") -> List[Tool]:
             member = getattr(obj, member_name)
             new_prefix = f"{prefix}_{member_name}" if prefix else member_name
             if callable(member):
-                tool_list.append(create_tool(member, new_prefix))
+                register_single_tool(mcp, member, new_prefix)
             elif isinstance(member, (dict, list)):
-                tool_list.extend(extract_tools(member, new_prefix))
-    return tool_list
+                register_tools(mcp, member, new_prefix)
 
 
-def create_tool(fn: Callable, name: str) -> Tool:
+def register_single_tool(mcp: FastMCP, fn: Callable, name: str) -> None:
     """
-    Create a Tool object from a function.
+    Register a single function as an MCP tool.
 
     Args:
-        fn: Function to convert to tool
+        mcp: FastMCP server instance
+        fn: Function to register
         name: Name for the tool
+    """
+    try:
+        description = getattr(fn, "__doc__", "") or ""
+        schema = getattr(fn, "__schema__", {}) or {}
+        if not description and "description" in schema:
+            description = schema["description"]
+
+        # Create a wrapper function with proper signature for fastmcp compatibility
+        wrapper_fn = create_typed_wrapper(fn, name, schema)
+
+        # Extract parameters schema for fastmcp
+        parameters_schema = schema.get("parameters", {})
+
+        # Register the tool using the new API
+        mcp.tool(
+            wrapper_fn,
+            name=name,
+            description=description.strip() if description else None,
+            annotations=ToolAnnotations(title=name, readOnlyHint=True),
+        )
+
+        logger.debug(f"Added tool {name}")
+    except Exception as e:
+        logger.error(f"Failed to add tool {name}: {e}")
+        logger.exception(e)
+
+
+def create_typed_wrapper(original_fn: Callable, name: str, schema: dict) -> Callable:
+    """
+    Create a typed wrapper function for RPC remote methods using Pydantic Field annotations.
+
+    This is needed because fastmcp doesn't support *args, but RPC remote methods
+    use *args, **kwargs. We create a wrapper with proper parameter types and descriptions.
+
+    Args:
+        original_fn: The original RPC remote method
+        name: Name of the function
+        schema: Schema information from the function
 
     Returns:
-        Tool object
+        A wrapper function with proper typing and Pydantic annotations
     """
-    description = getattr(fn, "__doc__", "") or ""
-    schema = getattr(fn, "__schema__", {}) or {}
-    if not description and "description" in schema:
-        description = schema["description"]
+    import inspect
+    from typing import Any, Annotated
+    from pydantic import Field
 
-    return Tool(
-        fn=fn,
-        name=name,
-        description=description.strip(),
-        parameters=schema.get("parameters", {}),
-        annotations=ToolAnnotations(title=name, readOnlyHint=True),
-    )
+    # Extract parameters from schema
+    parameters = schema.get("parameters", {})
+    properties = parameters.get("properties", {})
+    required = set(parameters.get("required", []))
+
+    # Build the parameter list with Pydantic Field annotations
+    param_list = []
+    annotations = {}
+
+    for param_name, param_info in properties.items():
+        # Skip context parameter if it exists
+        if param_name == "context":
+            continue
+
+        # Determine parameter type
+        param_type = Any  # Default type
+        if "type" in param_info:
+            type_map = {
+                "string": str,
+                "integer": int,
+                "number": float,
+                "boolean": bool,
+                "array": list,
+                "object": dict,
+            }
+            param_type = type_map.get(param_info["type"], Any)
+
+        # Create Pydantic Field with description
+        param_description = param_info.get("description", "")
+
+        if param_name in required:
+            # Required parameter with Field annotation
+            field_annotation = Annotated[
+                param_type, Field(description=param_description)
+            ]
+            param = inspect.Parameter(
+                param_name,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=field_annotation,
+            )
+        else:
+            # Optional parameter with Field annotation and default
+            field_annotation = Annotated[
+                param_type, Field(default=None, description=param_description)
+            ]
+            param = inspect.Parameter(
+                param_name,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=None,
+                annotation=field_annotation,
+            )
+
+        param_list.append(param)
+        annotations[param_name] = field_annotation
+
+    # Create new signature
+    new_signature = inspect.Signature(param_list)
+
+    # Create wrapper function that calls the original
+    if inspect.iscoroutinefunction(original_fn):
+
+        async def wrapper(*args, **kwargs):
+            return await original_fn(*args, **kwargs)
+
+    else:
+
+        def wrapper(*args, **kwargs):
+            return original_fn(*args, **kwargs)
+
+    # Set the new signature and other attributes
+    wrapper.__signature__ = new_signature
+    wrapper.__name__ = name
+    wrapper.__doc__ = getattr(original_fn, "__doc__", "")
+    wrapper.__schema__ = schema
+    wrapper.__annotations__ = annotations
+
+    return wrapper
 
 
 async def create_mcp_from_workspace(server) -> FastMCP:
@@ -329,4 +496,4 @@ async def serve_mcp(server, service_id: str = None, mcp_service_id: str = None):
     )
     logger.info(f"MCP server running at {mcp_url}")
 
-    return {"mcpServers": {"url": mcp_url}}
+    return {"mcpServers": {mcp_service_id: {"url": mcp_url, "transport": "sse"}}}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hypha_rpc"
-version = "0.20.66"
+version = "0.20.67"
 description = "Hypha RPC client for connecting to Hypha server for data management and AI model serving"
 readme = "README.md"
 requires-python = ">=3.6"
@@ -14,7 +14,7 @@ name = "Wei Ouyang"
 email = "oeway007@gmail.com"
 
 [project.optional-dependencies]
-full = [ "aiortc; platform_system != 'Emscripten'", "zarr", "fastapi", "sse-starlette", "openai", "simpervisor", "fastmcp>=2.3.4",]
+full = [ "aiortc; platform_system != 'Emscripten'", "zarr", "fastapi", "sse-starlette", "openai", "simpervisor", "fastmcp>=2.10.6", "mcp>=1.12.0",]
 
 [tool.setuptools]
 include-package-data = true

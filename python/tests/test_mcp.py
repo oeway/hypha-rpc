@@ -226,9 +226,22 @@ async def workspace_mcp(hypha_server_with_services):
     # Use the create_mcp_from_workspace function directly
     mcp = await create_mcp_from_workspace(server)
 
-    # Make sure we've properly set up the MCP server
-    assert "calculator" in mcp._mounted_servers
-    assert "interpreter" in mcp._mounted_servers
+    # Make sure we've properly set up the MCP server by checking available tools
+    # The new fastmcp version doesn't expose _mounted_servers, so we check tools instead
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+        tool_names = [tool.name for tool in tools]
+        # Check that we have calculator and interpreter tools available
+        has_calculator = any(
+            "add" in name
+            or "subtract" in name
+            or "multiply" in name
+            or "divide" in name
+            for name in tool_names
+        )
+        has_interpreter = any("execute" in name for name in tool_names)
+        assert has_calculator, f"Calculator tools not found in {tool_names}"
+        assert has_interpreter, f"Interpreter tools not found in {tool_names}"
 
     yield mcp
 
@@ -297,8 +310,11 @@ async def test_service_mcp_client(service_mcp):
         # Test add tool
         add_result = await client.call_tool("add", {"a": a_value, "b": b_value})
 
-        # Handle both object with text attribute and list result formats
-        if hasattr(add_result, "text"):
+        # Handle different result formats - new fastmcp returns CallToolResult
+        if hasattr(add_result, "content") and add_result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = add_result.content[0].text
+        elif hasattr(add_result, "text"):
             # Single result object with text attribute
             result_text = add_result.text
         elif isinstance(add_result, list) and len(add_result) > 0:
@@ -324,10 +340,22 @@ async def test_workspace_mcp_creation(workspace_mcp):
     # Assert that the MCP server has been created
     assert isinstance(workspace_mcp, FastMCP)
 
-    # Check that the workspace MCP has both calculator and interpreter tools via mounted MCPs
-    mounted_servers = workspace_mcp._mounted_servers
-    assert "calculator" in mounted_servers
-    assert "interpreter" in mounted_servers
+    # Check that the workspace MCP has both calculator and interpreter tools
+    # The new fastmcp version doesn't expose _mounted_servers, so we check tools instead
+    async with Client(workspace_mcp) as client:
+        tools = await client.list_tools()
+        tool_names = [tool.name for tool in tools]
+        # Check that we have calculator and interpreter tools available
+        has_calculator = any(
+            "add" in name
+            or "subtract" in name
+            or "multiply" in name
+            or "divide" in name
+            for name in tool_names
+        )
+        has_interpreter = any("execute" in name for name in tool_names)
+        assert has_calculator, f"Calculator tools not found in {tool_names}"
+        assert has_interpreter, f"Interpreter tools not found in {tool_names}"
 
 
 @pytest.mark.asyncio
@@ -349,8 +377,11 @@ async def test_workspace_mcp_calculator_client(workspace_mcp):
         # Test calculator tools
         add_result = await client.call_tool("calculator_add", {"a": 5, "b": 3})
 
-        # Extract result text
-        if hasattr(add_result, "text"):
+        # Extract result text - handle new fastmcp CallToolResult format
+        if hasattr(add_result, "content") and add_result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = add_result.content[0].text
+        elif hasattr(add_result, "text"):
             result_text = add_result.text
         elif isinstance(add_result, list) and len(add_result) > 0:
             first_result = add_result[0]
@@ -369,8 +400,11 @@ async def test_workspace_mcp_calculator_client(workspace_mcp):
             "calculator_subtract", {"a": 10, "b": 4}
         )
 
-        # Extract result text
-        if hasattr(subtract_result, "text"):
+        # Extract result text - handle new fastmcp CallToolResult format
+        if hasattr(subtract_result, "content") and subtract_result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = subtract_result.content[0].text
+        elif hasattr(subtract_result, "text"):
             result_text = subtract_result.text
         elif isinstance(subtract_result, list) and len(subtract_result) > 0:
             first_result = subtract_result[0]
@@ -398,8 +432,11 @@ async def test_workspace_mcp_interpreter_client(workspace_mcp):
         code = "__result__ = 2 + 2"
         result = await client.call_tool("interpreter_execute", {"code": code})
 
-        # Extract result text
-        if hasattr(result, "text"):
+        # Extract result text - handle new fastmcp CallToolResult format
+        if hasattr(result, "content") and result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = result.content[0].text
+        elif hasattr(result, "text"):
             result_text = result.text
         elif isinstance(result, list) and len(result) > 0:
             first_result = result[0]
@@ -425,8 +462,11 @@ __result__ = factorial(5)
 """
         result = await client.call_tool("interpreter_execute", {"code": code})
 
-        # Extract result text
-        if hasattr(result, "text"):
+        # Extract result text - handle new fastmcp CallToolResult format
+        if hasattr(result, "content") and result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = result.content[0].text
+        elif hasattr(result, "text"):
             result_text = result.text
         elif isinstance(result, list) and len(result) > 0:
             first_result = result[0]
@@ -500,8 +540,11 @@ async def test_workspace_mcp_interpreter_tool_schema(workspace_mcp):
         code = "__result__ = 'Hello from the test!'"
         result = await client.call_tool("interpreter_execute", {"code": code})
 
-        # Extract result text
-        if hasattr(result, "text"):
+        # Extract result text - handle new fastmcp CallToolResult format
+        if hasattr(result, "content") and result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = result.content[0].text
+        elif hasattr(result, "text"):
             result_text = result.text
         elif isinstance(result, list) and len(result) > 0:
             first_result = result[0]
@@ -571,8 +614,11 @@ async def test_serve_mcp_calculator(hypha_server_with_services):
         # Test add tool
         add_result = await client.call_tool("add", {"a": 7, "b": 3})
 
-        # Extract result text
-        if hasattr(add_result, "text"):
+        # Extract result text - handle new fastmcp CallToolResult format
+        if hasattr(add_result, "content") and add_result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = add_result.content[0].text
+        elif hasattr(add_result, "text"):
             result_text = add_result.text
         elif isinstance(add_result, list) and len(add_result) > 0:
             first_result = add_result[0]
@@ -615,7 +661,11 @@ async def test_mcp_service_with_all_features(mcp_service_with_all_features):
 
         # Test the tool
         result = await client.call_tool("simple_tool", {"text": "Hello world"})
-        if hasattr(result, "text"):
+        # Handle different result formats - new fastmcp returns CallToolResult
+        if hasattr(result, "content") and result.content:
+            # New fastmcp format: CallToolResult with content array
+            result_text = result.content[0].text
+        elif hasattr(result, "text"):
             result_text = result.text
         elif isinstance(result, list) and len(result) > 0:
             first_result = result[0]

@@ -462,6 +462,124 @@ async def test_schema_artibrary_types(websocket_server):
 
     assert register_user.__schema__
 
+
+@pytest.mark.asyncio
+async def test_unlisted_visibility(websocket_server):
+    """Test unlisted visibility type - same as public but not discoverable."""
+    from hypha_rpc.rpc import _get_schema, _convert_function_to_schema
+
+    ws = await connect_to_server({"name": "test app", "server_url": WS_SERVER_URL})
+
+    def test_function(param1: str, param2: int = 42):
+        """A test function.
+
+        Args:
+            param1: First parameter
+            param2: Second parameter with default value
+        """
+        return {"param1": param1, "param2": param2}
+
+    # Test service with unlisted visibility
+    svc = await ws.register_service(
+        {
+            "id": "unlisted-service",
+            "name": "Unlisted Service",
+            "description": "Service with unlisted visibility",
+            "config": {
+                "visibility": "unlisted",  # New visibility type
+                "require_context": False,
+                "singleton": False,  # Add missing singleton field
+            },
+            "test_function": test_function,
+        }
+    )
+
+    # Should work like public service (accessible)
+    test_service = await ws.get_service("unlisted-service")
+    result = await test_service.test_function("hello", param2=100)
+    assert result == {"param1": "hello", "param2": 100}
+
+    # Verify schema generation with enhanced function converter
+    schema = _get_schema(test_function, "test_function")
+    assert schema["type"] == "function"
+    assert schema["function"]["name"] == "test_function"
+    assert schema["function"]["description"] == "A test function."
+    assert "param1" in schema["function"]["parameters"]["properties"]
+    assert "param2" in schema["function"]["parameters"]["properties"]
+    assert (
+        schema["function"]["parameters"]["properties"]["param1"]["description"]
+        == "First parameter"
+    )
+    assert (
+        schema["function"]["parameters"]["properties"]["param2"]["description"]
+        == "Second parameter with default value"
+    )
+
+
+@pytest.mark.asyncio
+async def test_enhanced_schema_generation():
+    """Test enhanced schema generation from function signatures and docstrings."""
+    from hypha_rpc.rpc import _convert_function_to_schema, _parse_docstring
+
+    def example_function(name: str, age: int = 25, active: bool = True):
+        """Process user information.
+
+        Args:
+            name: User's full name
+            age: User's age in years
+            active: Whether user is active
+
+        Returns:
+            Processed user data
+        """
+        return {"name": name, "age": age, "active": active}
+
+    # Test docstring parsing
+    docstring = example_function.__doc__
+    parsed = _parse_docstring(docstring)
+    assert "name" in parsed
+    assert "age" in parsed
+    assert "active" in parsed
+    assert parsed["name"] == "User's full name"
+    assert parsed["age"] == "User's age in years"
+    assert parsed["active"] == "Whether user is active"
+
+    # Test function to schema conversion
+    schema = _convert_function_to_schema(example_function)
+    assert schema["name"] == "example_function"
+    assert "Process user information." in schema["description"]
+    assert schema["parameters"]["type"] == "object"
+
+    properties = schema["parameters"]["properties"]
+    assert properties["name"]["type"] == "string"
+    assert properties["name"]["description"] == "User's full name"
+    assert properties["age"]["type"] == "integer"
+    assert properties["age"]["description"] == "User's age in years"
+    assert properties["active"]["type"] == "boolean"
+    assert properties["active"]["description"] == "Whether user is active"
+
+    # Required parameters (those without defaults)
+    assert schema["parameters"]["required"] == ["name"]
+
+
+@pytest.mark.asyncio
+async def test_schema_generation_fallback():
+    """Test that schema generation gracefully falls back when function parsing fails."""
+    from hypha_rpc.rpc import _get_schema
+
+    class MyUserInfo:
+        pass
+
+    # Function without docstring or type hints
+    def simple_function(x, y=10):
+        return x + y
+
+    schema = _get_schema(simple_function, "simple_function")
+    assert schema["type"] == "function"
+    assert schema["function"]["name"] == "simple_function"
+    # Should still generate basic structure even without rich info
+    assert "parameters" in schema["function"]
+
     with pytest.raises(Exception, match=r".*arbitrary_types_allowed=True.*"):
 
         @schema_function(schema_type="native:strict", arbitrary_types_allowed=False)

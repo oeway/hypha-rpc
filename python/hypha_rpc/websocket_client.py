@@ -212,7 +212,7 @@ class WebsocketRPCConnection:
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
                 await self._websocket.send(refresh_message)
-                logger.info("Requested refresh token")
+                # logger.info("Requested refresh token")
                 # Wait for the next refresh interval
                 await asyncio.sleep(token_refresh_interval)
         except asyncio.CancelledError:
@@ -321,7 +321,7 @@ class WebsocketRPCConnection:
                     data = json.loads(data)
                     if data.get("type") == "reconnection_token":
                         self._reconnection_token = data.get("reconnection_token")
-                        logger.info("Reconnection token received")
+                        # logger.info("Reconnection token received")
                     else:
                         logger.info("Received message from the server: %s", data)
                 elif self._handle_message:

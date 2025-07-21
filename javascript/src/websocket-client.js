@@ -238,7 +238,7 @@ class WebsocketRPCConnection {
           // Check if the message is a reconnection token
           if (parsedData.type === "reconnection_token") {
             this._reconnection_token = parsedData.reconnection_token;
-            console.log("Reconnection token received");
+            // console.log("Reconnection token received");
           } else {
             console.log("Received message from the server:", parsedData);
           }
@@ -275,7 +275,7 @@ class WebsocketRPCConnection {
     if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
       const refreshMessage = JSON.stringify({ type: "refresh_token" });
       this._websocket.send(refreshMessage);
-      console.log("Requested refresh token");
+      // console.log("Requested refresh token");
     }
   }
 
