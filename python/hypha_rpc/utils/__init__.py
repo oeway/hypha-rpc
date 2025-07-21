@@ -77,6 +77,14 @@ class ObjectProxy(Munch):
         # If not, proceed with the usual attribute access
         return super().__getattribute__(k)
 
+    def __repr__(self):
+        """Return a string representation like a dictionary."""
+        return str(self.toDict())
+
+    def __str__(self):
+        """Return a string representation like a dictionary."""
+        return repr(self.toDict())
+
     @classmethod
     def fromDict(cls, d):
         if isinstance(d, cls):
