@@ -1746,6 +1746,8 @@ class RPC(MessageEmitter):
         )
 
     def _get_session_store(self, session_id, create=False):
+        if session_id is None:
+            return None
         store = self._object_store
         levels = session_id.split(".")
         if create:

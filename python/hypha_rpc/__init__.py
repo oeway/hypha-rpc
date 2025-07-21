@@ -1,6 +1,8 @@
 """Provide hypha-rpc to connecting to Hypha server."""
 
 import shortuuid
+import os
+import json
 
 from .rpc import RPC
 from .utils import ObjectProxy
@@ -16,6 +18,10 @@ from .websocket_client import (
     login,
     setup_local_client,
 )
+
+# read the version from the VERSION file; but get the path from the __file__
+with open(os.path.join(os.path.dirname(__file__), "VERSION"), "r") as f:
+    __version__ = json.load(f)["version"]
 
 
 class API(ObjectProxy):
@@ -43,6 +49,7 @@ class API(ObjectProxy):
 api = API()
 
 __all__ = [
+    "__version__",
     "api",
     "RPC",
     "login",
