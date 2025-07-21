@@ -1566,52 +1566,22 @@ export class RPC extends MessageEmitter {
       } else {
         args = [];
       }
-      let kwargs = {};
-      if (data.with_kwargs) {
-        kwargs = args.pop();
-      }
-
       if (
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
       ) {
-        // Create context from data.ctx if available, otherwise from default_context + message fields
-        let context = data.ctx;
-        if (!context) {
-          // For local service calls, create context from default_context and message fields
-          context = JSON.parse(JSON.stringify(this.default_context));
-          context.from = data.from;
-          context.to = data.to;
-          if (data.ws) context.ws = data.ws;
-        }
-
-        // NEW JS-KWARGS PATTERN: Check if first argument has ._rkwargs=true
-        if (
-          args.length > 0 &&
-          args[0] &&
-          typeof args[0] === "object" &&
-          args[0]._rkwargs === true
-        ) {
-          // Inject context into the kwargs object instead of appending
-          args[0].context = context;
-          // Remove the _rkwargs flag as it's just for detection
-          delete args[0]._rkwargs;
-        } else if (data.with_kwargs) {
-          // Standard kwargs handling
-          kwargs.context = context;
-        } else {
-          // Backward compatibility: append context as last argument
-          // For functions expecting context, we need to inject context at the right position
-          // to avoid breaking parameter ordering when some parameters are optional
-          const expectedParams = method.length; // Number of parameters the function expects
-          if (expectedParams > 0 && args.length < expectedParams - 1) {
-            // Pad with undefined to ensure context goes to the right position
-            while (args.length < expectedParams - 1) {
-              args.push(undefined);
-            }
+        // if args.length + 1 is less than the required number of arguments we will pad with undefined
+        // so we make sure the last argument is the context
+        if (args.length + 1 < method.length) {
+          for (let i = args.length; i < method.length - 1; i++) {
+            args.push(undefined);
           }
-          args.push(context);
         }
+        args.push(data.ctx);
+        assert(
+          args.length === method.length,
+          `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
+        );
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
@@ -1633,12 +1603,6 @@ export class RPC extends MessageEmitter {
       } else {
         method.apply(null, args);
         clearInterval(heartbeat_task);
-      }
-      if (data.session) {
-        const session_store = this._get_session_store(data.session, false);
-        if (session_store) {
-          delete session_store.heartbeat_task;
-        }
       }
     } catch (err) {
       if (reject) {
