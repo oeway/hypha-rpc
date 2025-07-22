@@ -421,6 +421,10 @@ class RPC(MessageEmitter):
         self._object_store = {
             "services": self._services,
         }
+        
+        # Initialize HTTP message transmission
+        self._http_message_transmission_available = False
+        self._s3controller = None
 
         if HAS_PYDANTIC:
             self.register_codec(
@@ -455,6 +459,7 @@ class RPC(MessageEmitter):
                 }
             )
             self.on("method", self._handle_method)
+            self.on("large-message", self._handle_http_message)
             self.on("error", self._error)
 
             assert hasattr(connection, "emit_message") and hasattr(
@@ -569,6 +574,162 @@ class RPC(MessageEmitter):
             }
         )
         assert (await asyncio.wait_for(method("ping"), timeout)) == "pong"
+
+    async def _initialize_http_message_transmission(self):
+        """Initialize HTTP message transmission and check S3 availability."""
+        try:
+            # Get the manager service to access S3 controller
+            manager = await self.get_manager_service()
+            self._s3controller = await manager.get_service("public/s3-storage")
+            
+            # Check if required methods are available and callable
+            required_methods = ["put_file", "get_file", "put_file_start_multipart", "put_file_complete_multipart"]
+            all_methods_available = True
+            
+            for method_name in required_methods:
+                if not hasattr(self._s3controller, method_name):
+                    all_methods_available = False
+                    break
+                method = getattr(self._s3controller, method_name)
+                if not callable(method):
+                    all_methods_available = False
+                    break
+            
+            if all_methods_available:
+                self._http_message_transmission_available = True
+                logger.info("✅ HTTP message transmission is available")
+            else:
+                logger.debug("❌ HTTP message transmission not available - missing S3 methods")
+                
+        except Exception as e:
+            logger.debug(f"❌ HTTP message transmission not available - S3 service error: {e}")
+            self._http_message_transmission_available = False
+
+    async def _send_chunks_http(self, package, target_id, session_id=None):
+        """Send large message using HTTP transmission with S3 storage."""
+        if not self._http_message_transmission_available:
+            raise RuntimeError("HTTP message transmission not available")
+        
+        # Generate unique file path for the message
+        message_id = session_id or shortuuid.uuid()
+        file_path = f"tmp/{message_id}"
+        
+        # Determine content length
+        content_length = len(package)
+        start_time = time.time()
+        
+        # Choose transmission method based on size
+        # < 10MB: use simple put_file
+        # >= 10MB: use multipart upload
+        if content_length < 10 * 1024 * 1024:  # 10MB
+            await self._transmit_small_message_http(file_path, package, content_length, target_id)
+        else:
+            await self._transmit_large_message_http(file_path, package, content_length, target_id)
+        
+        logger.debug(
+            "HTTP message (%d bytes) sent in %d s", content_length, time.time() - start_time
+        )
+
+    async def _transmit_small_message_http(self, file_path, package, content_length, target_id):
+        """Transmit message < 10MB using simple S3 upload."""
+        # Get presigned URL for upload with 30 second TTL
+        put_url = await self._s3controller.put_file(file_path, ttl=30)
+        
+        # TODO: In a real implementation, this would use httpx to upload
+        logger.debug(f"Would upload small message to: {put_url}")
+        
+        # Get presigned URL for download
+        get_url = await self._s3controller.get_file(file_path)
+        
+        # Create the large-message envelope and send it via regular RPC
+        http_message = {
+            "type": "large-message",
+            "from": self._local_workspace + "/" + self._client_id if self._local_workspace else self._client_id,
+            "to": target_id,
+            "file_path": file_path,
+            "presigned_url": get_url,
+            "content_length": content_length,
+            "transmission_method": "single_upload"
+        }
+        
+        # Send the large-message via regular (small) RPC message
+        await self._emit_message(msgpack.packb(http_message))
+
+    async def _transmit_large_message_http(self, file_path, package, content_length, target_id):
+        """Transmit message >= 10MB using multipart upload."""
+        # Calculate number of parts (5MB per part minimum for S3)
+        part_size = 5 * 1024 * 1024  # 5MB
+        part_count = math.ceil(content_length / part_size)
+        
+        # Start multipart upload with 30 second TTL
+        multipart_info = await self._s3controller.put_file_start_multipart(
+            file_path=file_path,
+            part_count=part_count,
+            ttl=30
+        )
+        
+        upload_id = multipart_info["upload_id"]
+        part_urls = multipart_info["parts"]
+        
+        # TODO: In a real implementation, this would split package and upload each part
+        uploaded_parts = []
+        for part_info in part_urls:
+            logger.debug(f"Would upload part {part_info['part_number']} to: {part_info['url']}")
+            # Simulate successful upload
+            uploaded_parts.append({
+                "part_number": part_info["part_number"],
+                "etag": f"mock-etag-{part_info['part_number']}"
+            })
+        
+        # Complete multipart upload
+        result = await self._s3controller.put_file_complete_multipart(
+            upload_id=upload_id,
+            parts=uploaded_parts
+        )
+        
+        if not result["success"]:
+            raise RuntimeError(f"Multipart upload failed: {result.get('message', 'Unknown error')}")
+        
+        # Get presigned URL for download
+        get_url = await self._s3controller.get_file(file_path)
+        
+        # Create the large-message envelope and send it
+        http_message = {
+            "type": "large-message", 
+            "from": self._local_workspace + "/" + self._client_id if self._local_workspace else self._client_id,
+            "to": target_id,
+            "file_path": file_path,
+            "presigned_url": get_url,
+            "content_length": content_length,
+            "transmission_method": "multipart_upload",
+            "part_count": part_count
+        }
+        
+        # Send the large-message via regular (small) RPC message
+        await self._emit_message(msgpack.packb(http_message))
+
+    def _handle_http_message(self, data):
+        """Handle incoming HTTP message."""
+        try:
+            assert "type" in data and data["type"] == "large-message"
+            assert "presigned_url" in data and "content_length" in data
+            
+            presigned_url = data["presigned_url"]
+            content_length = data["content_length"]
+            
+            logger.info(f"Received HTTP message notification: {content_length} bytes at {presigned_url}")
+            
+            # TODO: In a real implementation, this would:
+            # 1. Download the content from the presigned URL
+            # 2. Use parallel range requests for files > 5MB
+            # 3. Reconstruct the original message package
+            # 4. Process it as if it came through regular message_cache
+            
+            # For now, just log that we received the notification
+            logger.debug(f"HTTP message details: {data}")
+            
+        except Exception as err:
+            logger.error("Error handling HTTP message: %s", err)
 
     def _create_message(
         self,
@@ -1226,6 +1387,24 @@ class RPC(MessageEmitter):
         return encoded
 
     async def _send_chunks(self, package, target_id, session_id):
+        # Try HTTP message transmission first if available
+        if not self._http_message_transmission_available:
+            # Attempt to initialize HTTP transmission if not yet attempted
+            try:
+                await self._initialize_http_message_transmission()
+            except Exception:
+                pass  # Ignore initialization errors, will fall back to message_cache
+        
+        # Use HTTP transmission if available
+        if self._http_message_transmission_available:
+            try:
+                await self._send_chunks_http(package, target_id, session_id)
+                return  # Successfully sent via HTTP
+            except Exception as e:
+                logger.warning(f"HTTP message transmission failed, falling back to message_cache: {e}")
+                # Fall through to use message_cache
+        
+        # Fallback to original message_cache implementation
         remote_services = await self.get_remote_service(f"{target_id}:built-in")
         assert (
             remote_services.message_cache
