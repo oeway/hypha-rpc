@@ -2,13 +2,14 @@
 
 import asyncio
 import contextlib
-import copy
 import inspect
 import io
 import re
 import secrets
 import string
 import traceback
+import html
+import uuid
 from functools import partial
 from inspect import Parameter, Signature
 from collections.abc import Mapping
@@ -78,11 +79,9 @@ class ObjectProxy(Munch):
         return super().__getattribute__(k)
 
     def __repr__(self):
-        """Return a string representation like a dictionary."""
         return str(self.toDict())
 
     def __str__(self):
-        """Return a string representation like a dictionary."""
         return repr(self.toDict())
 
     @classmethod
@@ -93,6 +92,57 @@ class ObjectProxy(Munch):
 
     def toDict(self):
         return unmunchify(self)
+
+    def _repr_html_(self):
+        obj_id = f"object-proxy-{uuid.uuid4().hex}"
+        html_content = self._render_html(self.toDict(), level=0, label=f"{type(self).__name__} at {hex(id(self))}")
+        style = f"""
+    <style>
+    #{obj_id} ul {{
+        list-style-type: none;
+        padding-left: 1em;
+        margin: 0;
+        font-family: monospace;
+    }}
+    #{obj_id} details {{
+        padding-left: 1em;
+        margin: 0.2em 0;
+    }}
+    #{obj_id} summary {{
+        font-weight: bold;
+        cursor: pointer;
+        user-select: none;
+    }}
+    #{obj_id} li {{
+        margin: 2px 0;
+    }}
+    </style>
+    """
+        return f'{style}<div id="{obj_id}" class="object-proxy">{html_content}</div>'
+
+    def _render_html(self, data, level=0, label="dict"):
+        parts = [f'<details><summary>{html.escape(label)}</summary><ul>']
+        for key, value in data.items():
+            key_str = html.escape(str(key))
+            if isinstance(value, dict):
+                nested_label = f"{type(value).__name__} at {hex(id(value))}"
+                nested = self._render_html(value, level + 1, label=nested_label)
+                parts.append(f"<li><strong>{key_str}</strong>: {nested}</li>")
+            elif isinstance(value, list):
+                nested_label = f"list at {hex(id(value))}"
+                nested_items = ""
+                for item in value:
+                    if isinstance(item, (dict, list)):
+                        item_label = f"{type(item).__name__} at {hex(id(item))}"
+                        nested_items += f"<li>{self._render_html(item, level + 2, label=item_label)}</li>"
+                    else:
+                        nested_items += f"<li>{html.escape(str(item))}</li>"
+                parts.append(f"<li><strong>{key_str}</strong>: <details><summary>{html.escape(nested_label)}</summary><ul>{nested_items}</ul></details></li>")
+            else:
+                val_str = html.escape(str(value))
+                parts.append(f"<li><strong>{key_str}</strong>: {val_str}</li>")
+        parts.append("</ul></details>")
+        return "\n".join(parts)
 
 
 class DefaultObjectProxy(ObjectProxy):

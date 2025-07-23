@@ -658,6 +658,25 @@ class ServerContextManager:
     def __init__(self, config=None, service_id=None, **kwargs):
         self.config = config or {}
         self.config.update(kwargs)
+        
+        if not self.config:
+            # try to load from env
+            if not os.environ.get("HYPHA_SERVER_URL"):
+                try:
+                    from dotenv import load_dotenv, find_dotenv
+                    load_dotenv(dotenv_path=find_dotenv(usecwd=True))
+                    # use info from .env file
+                    print("✅ Loaded connection configuration from .env file.")
+                except ImportError:
+                    pass
+            self.config = {
+                "server_url": os.getenv("HYPHA_SERVER_URL"),
+                "token": os.getenv("HYPHA_TOKEN"),
+                "client_id": os.getenv("HYPHA_CLIENT_ID"),
+                "workspace": os.getenv("HYPHA_WORKSPACE"),
+            }
+            if not self.config["server_url"]:
+                raise ValueError("Please set the HYPHA_SERVER_URL, HYPHA_TOKEN, HYPHA_CLIENT_ID, and HYPHA_WORKSPACE environment variables")
         self._service_id = service_id
         self.wm = None
 

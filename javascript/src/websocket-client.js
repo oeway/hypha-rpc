@@ -559,6 +559,27 @@ export async function connectToServer(config) {
     clientId = randId();
     config.client_id = clientId;
   }
+  if (Object.keys(config).length === 0) {
+    if (typeof process !== "undefined" && process.env) {
+      // Node.js
+      config.server_url = process.env.HYPHA_SERVER_URL;
+      config.token = process.env.HYPHA_TOKEN;
+      config.client_id = process.env.HYPHA_CLIENT_ID;
+      config.workspace = process.env.HYPHA_WORKSPACE;
+    } else if (typeof self !== "undefined" && self.env) {
+      // WebWorker (only if you inject self.env manually)
+      config.server_url = self.env.HYPHA_SERVER_URL;
+      config.token = self.env.HYPHA_TOKEN;
+      config.client_id = self.env.HYPHA_CLIENT_ID;
+      config.workspace = self.env.HYPHA_WORKSPACE;
+    } else if (typeof globalThis !== "undefined" && globalThis.env) {
+      // Browser (only if you define globalThis.env beforehand)
+      config.server_url = globalThis.env.HYPHA_SERVER_URL;
+      config.token = globalThis.env.HYPHA_TOKEN;
+      config.client_id = globalThis.env.HYPHA_CLIENT_ID;
+      config.workspace = globalThis.env.HYPHA_WORKSPACE;
+    }
+  }
 
   let server_url = normalizeServerUrl(config.server_url);
 

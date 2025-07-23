@@ -1871,7 +1871,7 @@ export class RPC extends MessageEmitter {
       aObject instanceof String ||
       aObject instanceof Date ||
       aObject instanceof RegExp ||
-      aObject instanceof ImageData ||
+      (typeof ImageData !== "undefined" && aObject instanceof ImageData) ||
       (typeof FileList !== "undefined" && aObject instanceof FileList) ||
       (typeof FileSystemDirectoryHandle !== "undefined" &&
         aObject instanceof FileSystemDirectoryHandle) ||
