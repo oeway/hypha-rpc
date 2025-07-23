@@ -125,6 +125,7 @@ async def test_service_with_builtin_key(websocket_server):
                 "pop": lambda k: data.pop(k),
                 "keys": lambda: list(data.keys()),
                 "values": lambda: list(data.values()),
+                "items": lambda: [("key1", "value1"), ("key2", "value2")],
             }
         )
         assert "/" in info["id"] and ":" in info["id"], "Service id should be absolute"
@@ -135,6 +136,7 @@ async def test_service_with_builtin_key(websocket_server):
         assert await svc.values() == ["value"]
         assert await svc.pop("key") == "value"
         assert await svc.get("key") == None
+        assert await svc.items() == [["key1", "value1"], ["key2", "value2"]]
 
 
 @pytest.mark.asyncio

@@ -72,10 +72,10 @@ class ObjectProxy(Munch):
     """Object proxy with dot attribute access."""
 
     def __getattribute__(self, k):
-        if k.startswith("_") or k in dir(Munch):
-            return super().__getattribute__(k)
-        if k in self:
+        # Check if the attribute is in the dictionary
+        if not k.startswith("_") and k in self:
             return self[k]
+        # If not, proceed with the usual attribute access
         return super().__getattribute__(k)
 
     def __repr__(self):
