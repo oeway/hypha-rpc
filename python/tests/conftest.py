@@ -18,70 +18,23 @@ os.environ["JWT_SECRET"] = JWT_SECRET
 test_env = os.environ.copy()
 
 
-@pytest.fixture(name="minio_server", scope="session")
-def minio_server_fixture():
-    """Start minio server as test fixture and tear down after test."""
-    try:
-        from hypha.minio import start_minio_server
-        
-        proc, server_url, workdir = start_minio_server(
-            executable_path="./bin",
-            workdir=tempfile.mkdtemp(),
-            port=MINIO_PORT,
-            console_port=MINIO_PORT + 1,
-            root_user=MINIO_ROOT_USER,
-            root_password=MINIO_ROOT_PASSWORD,
-            timeout=10,
-        )
-
-        if not proc:
-            raise RuntimeError(f"Failed to start Minio server at {MINIO_SERVER_URL}")
-
-        print(f"Minio server started successfully at {server_url}")
-        print(f"Minio data directory: {workdir}")
-
-        yield server_url
-
-        print("Stopping Minio server...")
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-            print("Minio server stopped.")
-        except subprocess.TimeoutExpired:
-            print("Minio server did not terminate gracefully, killing...")
-            proc.kill()
-        finally:
-            if workdir and os.path.exists(workdir):
-                print(f"Cleaning up Minio data directory: {workdir}")
-                try:
-                    shutil.rmtree(workdir, ignore_errors=True)
-                except Exception as e:
-                    print(f"Error removing Minio workdir {workdir}: {e}")
-    except ImportError:
-        print("Warning: hypha.minio not available, skipping Minio server fixture")
-        yield None
-
-
 @pytest.fixture(name="fastapi_server", scope="session")
-def fastapi_server_fixture(minio_server):
+def fastapi_server_fixture():
     """Start server with S3 support as test fixture and tear down after test."""
-    if minio_server is None:
-        print("Warning: Minio server not available, starting server without S3")
-        server_args = [
-            sys.executable, "-m", "hypha.server", f"--port={WS_PORT}"
-        ]
-    else:
-        server_args = [
-            sys.executable,
-            "-m", "hypha.server",
-            f"--port={WS_PORT}",
-            "--enable-s3",
-            f"--endpoint-url={MINIO_SERVER_URL}",
-            f"--access-key-id={MINIO_ROOT_USER}",
-            f"--secret-access-key={MINIO_ROOT_PASSWORD}",
-            "--workspace-bucket=test-workspaces",
-            "--s3-admin-type=minio",
-        ]
+
+    server_args = [
+        sys.executable,
+        "-m", "hypha.server",
+        f"--port={WS_PORT}",
+        "--workspace-bucket=test-workspaces",
+        "--start-minio-server",
+        "--minio-workdir=./minio_data",
+        "--minio-port=9002",
+        "--minio-root-user=myuser",
+        "--minio-root-password=mypassword",
+        "--minio-file-system-mode",
+        "--s3-cleanup-period=3"
+    ]
     
     with subprocess.Popen(server_args, env=test_env) as proc:
         timeout = 20

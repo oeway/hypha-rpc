@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import copy
 import inspect
 import io
 import re
