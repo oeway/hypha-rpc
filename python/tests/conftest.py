@@ -28,7 +28,7 @@ def fastapi_server_fixture():
         f"--port={WS_PORT}",
         "--workspace-bucket=test-workspaces",
         "--start-minio-server",
-        "--minio-workdir=./minio_data",
+        "--minio-workdir=/tmp/minio_data",
         "--minio-port=9002",
         "--minio-root-user=myuser",
         "--minio-root-password=mypassword",

@@ -15,7 +15,7 @@
     "clean": "rimraf dist/*",
     "format": "prettier --write \"{src,tests}/**/**\"",
     "check-format": "prettier --check \"{src,tests}/**/**\"",
-    "start-hypha-server": "python -m hypha.server --port 9394 --workspace-bucket test-workspaces --start-minio-server --minio-workdir ./minio_data --minio-port 9007 --minio-root-user myuser --minio-root-password mypassword --minio-file-system-mode --s3-cleanup-period 3",
+    "start-hypha-server": "python -m hypha.server --port 9394 --workspace-bucket test-workspaces --start-minio-server --minio-workdir /tmp/minio_data --minio-port 9007 --minio-root-user myuser --minio-root-password mypassword --minio-file-system-mode --s3-cleanup-period 3",
     "test": "concurrently --kill-others --success first \"npm run start-hypha-server\" \"sleep 5 && karma start --single-run --browsers ChromeHeadless,FirefoxHeadless karma.conf.js\"",
     "test-watch": "concurrently --kill-others \"npm run start-hypha-server\" \"sleep 5 && karma start --auto-watch --browsers ChromeDebugging karma.conf.js --debug\""
   },
