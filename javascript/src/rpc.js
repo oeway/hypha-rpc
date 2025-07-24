@@ -916,7 +916,7 @@ export class RPC extends MessageEmitter {
           Object.assign(main["ctx"], this.default_context);
           
           // Fire the event
-          this.fire(main.type, main);
+          this._fire(main.type, main);
           
         } catch (e) {
           console.error(`Error downloading/processing HTTP message: ${e}`);
@@ -1475,6 +1475,30 @@ export class RPC extends MessageEmitter {
   }
 
   async _send_chunks(data, target_id, session_id) {
+    // Try HTTP message transmission first if available and message is large enough
+    if (this._enable_http_transmission && data.length >= this._http_transmission_threshold) {
+      if (!this._http_message_transmission_available) {
+        // Attempt to initialize HTTP transmission if not yet attempted
+        try {
+          await this._initialize_http_message_transmission();
+        } catch (e) {
+          console.debug("Failed to initialize HTTP transmission:", e.message);
+          // Fall through to use message_cache
+        }
+      }
+      
+      // Use HTTP transmission if available
+      if (this._http_message_transmission_available) {
+        try {
+          await this._send_chunks_http(data, target_id, session_id);
+          return; // Successfully sent via HTTP
+        } catch (e) {
+          console.warn("HTTP message transmission failed, falling back to message_cache:", e.message);
+          // Fall through to use message_cache
+        }
+      }
+    }
+
     // 1) Get the remote service
     const remote_services = await this.get_remote_service(
       `${target_id}:built-in`,
