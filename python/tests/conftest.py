@@ -112,8 +112,8 @@ def fastapi_server_fixture():
         "--minio-port=9002",
         "--minio-root-user=myuser",
         "--minio-root-password=mypassword",
-        "--minio-file-system-mode",
-        "--s3-cleanup-period=3"
+        "--s3-cleanup-period=3",
+        "--enable-s3-for-anonymous-users"
     ]
     
     with subprocess.Popen(server_args, env=test_env) as proc:
