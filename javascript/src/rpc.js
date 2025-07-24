@@ -908,12 +908,24 @@ export class RPC extends MessageEmitter {
           // Process the downloaded content as if it came through regular message_cache
           console.debug(`Processing downloaded HTTP message: ${content.byteLength} bytes`);
           
-          // Unpack the message and fire the event
-          const main = decodeMulti(new Uint8Array(content)).next().value;
+          // Unpack the message and fire the event (same as Python implementation)
+          const decoder = decodeMulti(new Uint8Array(content));
+          const main = decoder.next().value;
           
           // Add trusted context
           main["ctx"] = JSON.parse(JSON.stringify(main));
           Object.assign(main["ctx"], this.default_context);
+          
+          // Try to unpack extra data (contains method parameters)
+          try {
+            const extraResult = decoder.next();
+            if (!extraResult.done) {
+              const extra = extraResult.value;
+              Object.assign(main, extra);
+            }
+          } catch (e) {
+            // No extra data, this is normal
+          }
           
           // Fire the event
           this._fire(main.type, main);
