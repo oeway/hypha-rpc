@@ -1,0 +1,30 @@
+# Binary files and executables
+bin/
+
+# Development dependencies
+node_modules/
+
+# Test files and reports
+tests/
+report.html
+.pytest_cache/
+.tox/
+
+# Development configuration
+karma.conf.js
+webpack.config.js
+wait-for-server.js
+
+# OS files
+.DS_Store
+
+# Prettier configuration
+.prettierignore
+.eslintrc
+
+# Git files
+.gitignore
+
+# Development scripts and stats
+stats.json
+stats-prod.json
