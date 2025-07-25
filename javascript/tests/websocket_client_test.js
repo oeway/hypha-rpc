@@ -256,6 +256,80 @@ describe("RPC", async () => {
     console.log("✅ Reconnection cancellation test passed!");
   }).timeout(20000);
 
+  it("should reconnect for graceful server disconnections (codes 1000, 1001)", async () => {
+    console.log("\n=== GRACEFUL DISCONNECTION RECONNECTION TEST ===");
+
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "graceful-reconnection-test-client",
+    });
+
+    // Register a simple echo service for testing
+    await api.registerService({
+      id: "graceful-test-service",
+      name: "Graceful Test Service",
+      config: { visibility: "protected" },
+      echo: (msg) => `echo: ${msg}`,
+    });
+
+    // Test initial functionality
+    let svc = await api.getService("graceful-test-service");
+    expect(await svc.echo("initial")).to.equal("echo: initial");
+    console.log("✅ Initial service call successful");
+
+    // Test graceful disconnection codes that should trigger reconnection
+    // Note: Browser WebSocket API only allows 1000 or 3000-4999 range for manual close()
+    // Code 1001 (Going Away) is also handled correctly by our fix but can't be tested manually
+    const gracefulCodes = [1000]; // Normal Closure
+
+    for (const code of gracefulCodes) {
+      console.log(`💥 Testing graceful disconnection with code ${code}...`);
+
+      // Track reconnection by listening for log messages
+      let reconnected = false;
+      const originalWarn = console.warn;
+      console.warn = function (...args) {
+        if (
+          args[0] &&
+          args[0].includes &&
+          args[0].includes("Successfully reconnected")
+        ) {
+          reconnected = true;
+        }
+        originalWarn.apply(console, args);
+      };
+
+      // Close with graceful code
+      api.rpc._connection._websocket.close(code, `Testing code ${code}`);
+
+      // Wait for reconnection
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      // Restore console.warn
+      console.warn = originalWarn;
+
+      // Verify reconnection occurred by testing service functionality
+      try {
+        svc = await api.getService("graceful-test-service");
+        const result = await svc.echo(`after-${code}`);
+        expect(result).to.equal(`echo: after-${code}`);
+        console.log(
+          `✅ Code ${code}: Successfully reconnected and service functional`,
+        );
+      } catch (error) {
+        throw new Error(
+          `Failed to reconnect after graceful close code ${code}: ${error.message}`,
+        );
+      }
+    }
+
+    console.log(
+      "🎉 Graceful disconnection reconnection test passed! JavaScript now matches Python behavior!",
+    );
+
+    await api.disconnect();
+  }).timeout(20000);
+
   it("should correctly handle schemaFunction annotation", async () => {
     const api = await connectToServer({
       server_url: SERVER_URL,

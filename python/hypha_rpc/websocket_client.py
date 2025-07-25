@@ -336,31 +336,31 @@ class WebsocketRPCConnection:
                         )
         except asyncio.CancelledError:
             logger.info("Listen task was cancelled.")
+        except websockets.exceptions.ConnectionClosedOK as e:
+            logger.info("Websocket connection closed gracefully")
+            # Don't set self._closed = True here - let the finally block 
+            # decide whether to reconnect based on whether this was user-initiated
         except websockets.exceptions.ConnectionClosedError as e:
             logger.info("Websocket connection closed: %s", e)
         finally:
             # Handle unexpected disconnection or disconnection caused by the server
             if not self._closed and self._websocket.state == State.CLOSED:
-                # normal closure, means no need to recover
-                if hasattr(
-                    self._websocket, "close_code"
-                ) and self._websocket.close_code in [1000, 1001]:
-                    logger.info(
-                        "Websocket connection closed (code: %s): %s",
-                        self._websocket.close_code,
-                        self._websocket.close_reason,
-                    )
-                    if self._handle_disconnected:
-                        self._handle_disconnected(str(e))
-                    # make it as closed
-                    self._closed = True
-                elif self._enable_reconnect:
+                # Even if it's a normal closure (codes 1000, 1001), if it wasn't user-initiated,
+                # we should attempt to reconnect (e.g., server restart, k8s upgrade)
+                if self._enable_reconnect:
                     if hasattr(self._websocket, "close_code"):
-                        logger.warning(
-                            "Websocket connection closed unexpectedly (code: %s): %s",
-                            self._websocket.close_code,
-                            self._websocket.close_reason,
-                        )
+                        if self._websocket.close_code in [1000, 1001]:
+                            logger.warning(
+                                "Websocket connection closed gracefully by server (code: %s): %s - attempting reconnect",
+                                self._websocket.close_code,
+                                self._websocket.close_reason,
+                            )
+                        else:
+                            logger.warning(
+                                "Websocket connection closed unexpectedly (code: %s): %s",
+                                self._websocket.close_code,
+                                self._websocket.close_reason,
+                            )
                     else:
                         logger.warning(
                             "Websocket connection closed unexpectedly (no close code)"
