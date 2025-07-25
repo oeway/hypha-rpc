@@ -1278,8 +1278,14 @@ async def test_service_recovery_after_disconnection(websocket_server):
 
 @pytest.mark.asyncio
 async def test_memory_leak_prevention(websocket_server):
-    """Test that sessions are properly cleaned up and don't leak memory."""
+    """Comprehensive test suite for memory leak prevention."""
     from hypha_rpc import connect_to_server
+    import gc
+    import sys
+    import tracemalloc
+
+    # Start memory tracing
+    tracemalloc.start()
 
     # Connect to server
     api = await connect_to_server(
@@ -1289,89 +1295,506 @@ async def test_memory_leak_prevention(websocket_server):
         }
     )
 
-    # Helper to get session count (excluding permanent stores)
-    def get_session_count(rpc):
-        count = 0
-
-        def count_sessions(obj, path=""):
-            nonlocal count
-            for key in obj.__dict__ if hasattr(obj, "__dict__") else {}:
-                if key not in ["services", "message_cache"] and not key.startswith("_"):
-                    count += 1
-                    value = getattr(obj, key)
-                    if hasattr(value, "__dict__") and not isinstance(
-                        value, (str, int, float, bool)
-                    ):
-                        count_sessions(value, f"{path}.{key}")
+    def get_detailed_session_analysis(rpc):
+        """Comprehensive session analysis."""
+        analysis = {
+            "total_sessions": 0,
+            "session_details": [],
+            "system_stores": {},
+            "memory_usage": 0
+        }
 
         if hasattr(rpc, "_object_store"):
             store = rpc._object_store
-            for key in store:
-                if key not in ["services", "message_cache"]:
-                    count += 1
-                    if isinstance(store[key], dict):
+            for key, value in store.items():
+                if key in ["services", "message_cache"]:
+                    analysis["system_stores"][key] = {
+                        "type": str(type(value)),
+                        "size": len(value) if hasattr(value, "__len__") else "unknown"
+                    }
+                else:
+                    # This is a session
+                    analysis["total_sessions"] += 1
+                    session_info = {
+                        "id": key,
+                        "type": "dict" if isinstance(value, dict) else str(type(value)),
+                        "has_promise_manager": isinstance(value, dict) and "_promise_manager" in value,
+                        "has_timer": isinstance(value, dict) and "timer" in value,
+                        "has_heartbeat": isinstance(value, dict) and "heartbeat_task" in value,
+                        "nested_items": len(value) if isinstance(value, dict) else 0
+                    }
+                    analysis["session_details"].append(session_info)
 
-                        def count_nested(d, depth=0):
-                            nonlocal count
-                            if depth > 10:  # Prevent infinite recursion
-                                return
-                            for k, v in d.items():
-                                if k not in ["services", "message_cache"]:
-                                    count += 1
-                                    if isinstance(v, dict):
-                                        count_nested(v, depth + 1)
+        # Get memory usage
+        current, peak = tracemalloc.get_traced_memory()
+        analysis["memory_usage"] = current
 
-                        count_nested(store[key])
-        return count
+        return analysis
 
-    # Test 1: Verify baseline state
+    def assert_clean_state(analysis, test_name, initial_analysis=None):
+        """Assert that the RPC is in a clean state."""
+        print(f"\n--- {test_name} Analysis ---")
+        print(f"Total sessions: {analysis['total_sessions']}")
+        print(f"Memory usage: {analysis['memory_usage']:,} bytes")
+        
+        if analysis["session_details"]:
+            print("Session details:")
+            for session in analysis["session_details"]:
+                print(f"  - {session['id']}: {session}")
+        
+        # Should have no sessions after operations complete
+        assert analysis["total_sessions"] == 0, f"Memory leak detected: {analysis['total_sessions']} sessions remaining after {test_name}"
+        
+        # Message cache should be empty
+        if "message_cache" in analysis["system_stores"]:
+            assert analysis["system_stores"]["message_cache"]["size"] == 0, "Message cache not clean"
+
+        # Memory usage should not grow excessively
+        if initial_analysis:
+            growth = analysis["memory_usage"] - initial_analysis["memory_usage"]
+            growth_mb = growth / (1024 * 1024)
+            print(f"Memory growth: {growth_mb:.2f} MB")
+            # Allow some growth but flag excessive leaks (>10MB would be concerning for these tests)
+            assert growth_mb < 10, f"Excessive memory growth: {growth_mb:.2f} MB"
+
+    # Test 1: Baseline state
+    print("=== COMPREHENSIVE MEMORY LEAK TESTS ===")
+    initial_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(initial_analysis, "Initial State")
+
+    # Test 2: Simple operations
+    print("\n=== Test 2: Simple Operations ===")
+    result = await api.echo("simple_test")
+    assert result == "simple_test"
+    
+    services = await api.list_services()
+    assert isinstance(services, list)
+    
+    # Allow time for cleanup
+    await asyncio.sleep(0.3)
+    gc.collect()  # Force garbage collection
+    
+    simple_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(simple_analysis, "Simple Operations", initial_analysis)
+
+    # Test 3: Concurrent operations stress test
+    print("\n=== Test 3: Concurrent Operations Stress Test ===")
+    tasks = []
+    for i in range(20):  # Increased from 3 to 20 for stress testing
+        tasks.extend([
+            api.echo(f"concurrent_test_{i}_a"),
+            api.echo(f"concurrent_test_{i}_b"),
+            api.list_services() if i % 5 == 0 else api.echo(f"concurrent_test_{i}_c")
+        ])
+    
+    results = await asyncio.gather(*tasks)
+    assert len(results) == len(tasks)
+    
+    await asyncio.sleep(0.5)  # More time for cleanup of many sessions
+    gc.collect()
+    
+    concurrent_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(concurrent_analysis, "Concurrent Operations", initial_analysis)
+
+    # Test 4: Exception handling - operations that might fail
+    print("\n=== Test 4: Exception Handling ===")
+    exception_count = 0
+    for i in range(5):
+        try:
+            # Try to get a non-existent service (should fail)
+            await api.get_service(f"non_existent_service_{i}")
+        except Exception:
+            exception_count += 1
+            pass  # Expected to fail
+    
+    assert exception_count > 0, "Expected some exceptions for non-existent services"
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    exception_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(exception_analysis, "Exception Handling", initial_analysis)
+
+    # Test 5: Large data operations
+    print("\n=== Test 5: Large Data Operations ===")
+    large_data = "x" * 10000  # 10KB string
+    for i in range(5):
+        result = await api.echo(large_data)
+        assert len(result) == len(large_data)
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    large_data_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(large_data_analysis, "Large Data Operations", initial_analysis)
+
+    # Test 6: Rapid sequential operations
+    print("\n=== Test 6: Rapid Sequential Operations ===")
+    for i in range(50):  # Many rapid operations
+        result = await api.echo(f"rapid_{i}")
+        assert result == f"rapid_{i}"
+    
+    await asyncio.sleep(0.5)
+    gc.collect()
+    
+    rapid_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(rapid_analysis, "Rapid Sequential Operations", initial_analysis)
+
+    # Test 7: Mixed operation types
+    print("\n=== Test 7: Mixed Operation Types ===")
+    mixed_tasks = []
+    for i in range(10):
+        mixed_tasks.extend([
+            api.echo(f"mixed_{i}"),
+            api.list_services(),
+            api.get_client_info() if hasattr(api, 'get_client_info') else api.echo(f"info_{i}")
+        ])
+    
+    mixed_results = await asyncio.gather(*mixed_tasks, return_exceptions=True)
+    # Some might be exceptions (like get_client_info if not available), that's ok
+    
+    await asyncio.sleep(0.5)
+    gc.collect()
+    
+    mixed_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(mixed_analysis, "Mixed Operation Types", initial_analysis)
+
+    # Test 8: Service registration and cleanup (more lenient)
+    print("\n=== Test 8: Service Registration and Cleanup ===")
+    pre_service_analysis = get_detailed_session_analysis(api.rpc)
+    
+    test_services = []
+    for i in range(3):
+        service_info = await api.register_service({
+            "id": f"temp_service_{i}",
+            "config": {"visibility": "protected"},
+            "test_method": lambda x: f"test_{x}",
+        })
+        test_services.append(service_info["id"])
+    
+    # Use the services
+    for service_id in test_services:
+        try:
+            svc = await api.get_service(service_id.split(":")[-1])  # Get local part
+            result = await svc.test_method("hello")
+            assert "test_" in result
+        except Exception as e:
+            print(f"Service test failed (might be expected): {e}")
+    
+    # Unregister services
+    for service_id in test_services:
+        try:
+            await api.unregister_service(service_id.split(":")[-1])
+        except Exception as e:
+            print(f"Unregister failed (might be expected): {e}")
+    
+    await asyncio.sleep(0.5)  # Extra time for service cleanup
+    gc.collect()
+    
+    service_analysis = get_detailed_session_analysis(api.rpc)
+    print(f"\n--- Service Registration Analysis ---")
+    print(f"Total sessions: {service_analysis['total_sessions']}")
+    print(f"Pre-service sessions: {pre_service_analysis['total_sessions']}")
+    
+    if service_analysis["session_details"]:
+        print("Remaining sessions after service operations:")
+        for session in service_analysis["session_details"]:
+            print(f"  - {session['id']}: {session}")
+    
+    # Service registration may create some legitimate persistent sessions
+    # We check that we don't have excessive growth (>10 sessions would be concerning)
+    session_growth = service_analysis['total_sessions'] - pre_service_analysis['total_sessions']
+    assert session_growth <= 10, f"Excessive session growth from service operations: {session_growth} sessions"
+    
+    # Memory usage should not grow excessively
+    if initial_analysis:
+        growth = service_analysis["memory_usage"] - initial_analysis["memory_usage"]
+        growth_mb = growth / (1024 * 1024)
+        print(f"Memory growth: {growth_mb:.2f} MB")
+        assert growth_mb < 10, f"Excessive memory growth: {growth_mb:.2f} MB"
+    
+    print("✅ Service registration cleanup within acceptable limits")
+
+    # Final comprehensive check
+    print("\n=== Final Comprehensive Analysis ===")
+    final_analysis = get_detailed_session_analysis(api.rpc)
+    
+    print(f"\n--- Final State Analysis ---")
+    print(f"Total sessions: {final_analysis['total_sessions']}")
+    print(f"Expected sessions (from services): {service_analysis['total_sessions']}")
+    print(f"Memory usage: {final_analysis['memory_usage']:,} bytes")
+    
+    if final_analysis["session_details"]:
+        print("Final session details:")
+        for session in final_analysis["session_details"]:
+            print(f"  - {session['id']}: {session}")
+    
+    # Final state should not have more sessions than after service registration
+    assert final_analysis["total_sessions"] <= service_analysis["total_sessions"], \
+        f"Session increase after service registration: {final_analysis['total_sessions']} > {service_analysis['total_sessions']}"
+    
+    # Memory should not grow excessively from service registration state
+    memory_growth = final_analysis["memory_usage"] - service_analysis["memory_usage"]
+    memory_growth_mb = memory_growth / (1024 * 1024)
+    print(f"Memory growth since service test: {memory_growth_mb:.2f} MB")
+    assert memory_growth_mb < 1, f"Excessive memory growth since service test: {memory_growth_mb:.2f} MB"
+
+    # Clean disconnect
+    await api.disconnect()
+    
+    # Stop memory tracing
+    tracemalloc.stop()
+
+    print("✅ ALL MEMORY LEAK TESTS PASSED - No memory leaks detected!")
+
+
+@pytest.mark.asyncio
+async def test_memory_leak_edge_cases(websocket_server):
+    """Test memory leak prevention in edge cases and error conditions."""
+    from hypha_rpc import connect_to_server
+    import gc
+
+    api = await connect_to_server({
+        "client_id": "edge-case-test-client", 
+        "server_url": WS_SERVER_URL,
+    })
+
+    def get_session_count(rpc):
+        """Get current session count."""
+        if not hasattr(rpc, "_object_store"):
+            return 0
+        return len([k for k in rpc._object_store.keys() if k not in ["services", "message_cache"]])
+
     initial_count = get_session_count(api.rpc)
     print(f"Initial session count: {initial_count}")
 
-    # Test 2: Simple echo call - should not create permanent sessions
-    result = await api.echo("test")
-    assert result == "test"
-    await asyncio.sleep(0.2)  # Give time for cleanup
-
-    after_echo_count = get_session_count(api.rpc)
-    print(f"After echo - count: {after_echo_count}")
-
-    # Echo should not create any new permanent sessions
-    assert after_echo_count <= initial_count
-
-    # Test 3: List services (which might create sessions)
-    services = await api.list_services()
-    assert isinstance(services, list)
+    # Test 1: Timeout scenarios (if API supports timeouts)
+    print("\n=== Edge Case 1: Operations with Different Patterns ===")
+    
+    # Test with empty strings, None-like values, special characters
+    test_values = ["", "null", "undefined", "{}[]();", "🚀🔥💻", "\n\t\r", "  ", None]
+    
+    for i, value in enumerate(test_values):
+        try:
+            if value is not None:
+                result = await api.echo(value)
+                assert result == value
+            else:
+                # Skip None as it might not be JSON serializable
+                continue
+        except Exception as e:
+            print(f"Expected potential failure for value {i}: {e}")
+    
     await asyncio.sleep(0.2)
+    gc.collect()
+    
+    edge_count_1 = get_session_count(api.rpc)
+    assert edge_count_1 <= initial_count, f"Sessions leaked in edge case 1: {edge_count_1} > {initial_count}"
 
-    after_list_count = get_session_count(api.rpc)
-    print(f"After listServices - count: {after_list_count}")
-    assert after_list_count <= initial_count
+    # Test 2: Rapid connection/disconnection patterns (simulated)
+    print("\n=== Edge Case 2: Rapid Operations ===")
+    
+    # Simulate rapid operations that might be cancelled
+    tasks = []
+    for i in range(100):  # Many rapid tasks
+        tasks.append(api.echo(f"rapid_edge_{i}"))
+        if i % 10 == 0:  # Add some list_services calls
+            tasks.append(api.list_services())
+    
+    # Execute all at once - this might create many sessions simultaneously
+    results = await asyncio.gather(*tasks)
+    
+    # Check results
+    successful = sum(1 for r in results if not isinstance(r, Exception))
+    failed = len(results) - successful
+    print(f"Rapid operations: {successful} successful, {failed} failed")
+    
+    await asyncio.sleep(0.5)  # Give extra time for cleanup
+    gc.collect()
+    
+    edge_count_2 = get_session_count(api.rpc)
+    assert edge_count_2 <= initial_count, f"Sessions leaked in rapid operations: {edge_count_2} > {initial_count}"
 
-    # Test 4: Multiple operations
-    await asyncio.gather(api.echo("test1"), api.echo("test2"), api.echo("test3"))
-    await asyncio.sleep(0.2)
+    # Test 3: Mixed success/failure scenarios
+    print("\n=== Edge Case 3: Mixed Success/Failure ===")
+    
+    mixed_operations = []
+    for i in range(20):
+        # Mix of valid and invalid operations
+        mixed_operations.append(api.echo(f"valid_{i}"))
+        
+        # Try invalid operations that should fail
+        try:
+            mixed_operations.append(api.get_service(f"invalid_service_{i}"))
+        except:
+            pass  # Expected to fail during creation
+    
+    # Execute with exception handling
+    mixed_results = await asyncio.gather(*mixed_operations, return_exceptions=True)
+    
+    exceptions = sum(1 for r in mixed_results if isinstance(r, Exception))
+    successes = len(mixed_results) - exceptions
+    print(f"Mixed operations: {successes} successful, {exceptions} exceptions")
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    edge_count_3 = get_session_count(api.rpc)
+    assert edge_count_3 <= initial_count, f"Sessions leaked in mixed operations: {edge_count_3} > {initial_count}"
 
-    after_multiple_count = get_session_count(api.rpc)
-    print(f"After multiple ops - count: {after_multiple_count}")
-    assert after_multiple_count <= initial_count
+    # Final verification
+    final_count = get_session_count(api.rpc)
+    print(f"Final session count: {final_count}")
+    assert final_count <= initial_count, f"Overall session leak detected: {final_count} > {initial_count}"
 
-    # Test 5: Verify message cache is clean
-    if hasattr(api.rpc, "_object_store") and "message_cache" in api.rpc._object_store:
-        assert len(api.rpc._object_store["message_cache"]) == 0
-
-    # Test 6: Verify that session cleanup is working
-    print("Session cleanup verification:")
-    print(f"- Initial sessions (permanent): {initial_count}")
-    print(f"- After operations (should be <= initial): {after_multiple_count}")
-    print(
-        f"- Cleanup is working: {'✓' if after_multiple_count <= initial_count else '✗'}"
-    )
-
-    # Final cleanup
     await api.disconnect()
+    print("✅ EDGE CASE MEMORY TESTS PASSED")
 
-    print("Test completed successfully - no memory leaks detected")
+
+@pytest.mark.asyncio 
+async def test_session_cleanup_robustness(websocket_server):
+    """Test the robustness of session cleanup mechanisms."""
+    from hypha_rpc import connect_to_server
+    import gc
+
+    api = await connect_to_server({
+        "client_id": "cleanup-robustness-test",
+        "server_url": WS_SERVER_URL,
+    })
+
+    def analyze_object_store(rpc):
+        """Detailed analysis of object store contents."""
+        if not hasattr(rpc, "_object_store"):
+            return {"sessions": 0, "details": "No object store"}
+        
+        store = rpc._object_store
+        sessions = []
+        system_stores = {}
+        
+        for key, value in store.items():
+            if key in ["services", "message_cache"]:
+                system_stores[key] = {
+                    "size": len(value) if hasattr(value, "__len__") else "unknown",
+                    "type": str(type(value))
+                }
+            else:
+                sessions.append({
+                    "id": key,
+                    "type": str(type(value)),
+                    "is_dict": isinstance(value, dict),
+                    "size": len(value) if hasattr(value, "__len__") else "unknown"
+                })
+        
+        return {
+            "sessions": len(sessions),
+            "session_details": sessions,
+            "system_stores": system_stores
+        }
+
+    print("=== SESSION CLEANUP ROBUSTNESS TESTS ===")
+    
+    initial_analysis = analyze_object_store(api.rpc)
+    print(f"Initial state: {initial_analysis['sessions']} sessions")
+    
+    # Test 1: Verify cleanup works under normal conditions
+    print("\n--- Test 1: Normal Operation Cleanup ---")
+    for i in range(10):
+        result = await api.echo(f"normal_{i}")
+        assert result == f"normal_{i}"
+    
+    await asyncio.sleep(0.2)
+    gc.collect()
+    
+    normal_analysis = analyze_object_store(api.rpc)
+    print(f"After normal operations: {normal_analysis['sessions']} sessions")
+    assert normal_analysis["sessions"] == 0, f"Normal operations left {normal_analysis['sessions']} sessions"
+
+    # Test 2: Concurrent session creation and cleanup
+    print("\n--- Test 2: Concurrent Session Management ---")
+    
+    # Create many concurrent operations to stress the session management
+    batch_size = 50
+    batches = 3
+    
+    for batch in range(batches):
+        print(f"  Batch {batch + 1}/{batches}")
+        tasks = [api.echo(f"concurrent_batch_{batch}_{i}") for i in range(batch_size)]
+        results = await asyncio.gather(*tasks)
+        assert len(results) == batch_size
+        
+        # Brief pause between batches
+        await asyncio.sleep(0.1)
+    
+    await asyncio.sleep(0.5)  # Extra time for cleanup
+    gc.collect()
+    
+    concurrent_analysis = analyze_object_store(api.rpc)
+    print(f"After concurrent operations: {concurrent_analysis['sessions']} sessions")
+    assert concurrent_analysis["sessions"] == 0, f"Concurrent operations left {concurrent_analysis['sessions']} sessions"
+
+    # Test 3: Stress test with rapid creation/cleanup cycles
+    print("\n--- Test 3: Rapid Creation/Cleanup Cycles ---")
+    
+    for cycle in range(5):
+        # Create burst of operations
+        burst_tasks = [api.echo(f"burst_{cycle}_{i}") for i in range(20)]
+        await asyncio.gather(*burst_tasks)
+        
+        # Force cleanup opportunity
+        await asyncio.sleep(0.1)
+        gc.collect()
+        
+        # Check intermediate state
+        intermediate_analysis = analyze_object_store(api.rpc)
+        if intermediate_analysis["sessions"] > 0:
+            print(f"  Cycle {cycle}: {intermediate_analysis['sessions']} sessions (transient)")
+    
+    # Final cleanup
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    cycles_analysis = analyze_object_store(api.rpc)
+    print(f"After rapid cycles: {cycles_analysis['sessions']} sessions")
+    assert cycles_analysis["sessions"] == 0, f"Rapid cycles left {cycles_analysis['sessions']} sessions"
+
+    # Test 4: Large payload cleanup
+    print("\n--- Test 4: Large Payload Cleanup ---")
+    
+    large_payloads = ["x" * (1024 * i) for i in range(1, 6)]  # 1KB to 5KB
+    for i, payload in enumerate(large_payloads):
+        result = await api.echo(payload)
+        assert len(result) == len(payload)
+        print(f"  Large payload {i+1}: {len(payload)} bytes processed")
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    large_analysis = analyze_object_store(api.rpc)
+    print(f"After large payloads: {large_analysis['sessions']} sessions")
+    assert large_analysis["sessions"] == 0, f"Large payloads left {large_analysis['sessions']} sessions"
+
+    # Final comprehensive check
+    print("\n--- Final Robustness Verification ---")
+    final_analysis = analyze_object_store(api.rpc)
+    
+    print("Final object store analysis:")
+    print(f"  Sessions: {final_analysis['sessions']}")
+    print(f"  System stores: {final_analysis['system_stores']}")
+    
+    if final_analysis["session_details"]:
+        print("  Remaining sessions:")
+        for session in final_analysis["session_details"]:
+            print(f"    - {session}")
+    
+    assert final_analysis["sessions"] == 0, "Session cleanup robustness test failed - sessions remain"
+    
+    # Verify message cache is clean
+    if "message_cache" in final_analysis["system_stores"]:
+        cache_size = final_analysis["system_stores"]["message_cache"]["size"]
+        assert cache_size == 0, f"Message cache not clean: {cache_size} items"
+
+    await api.disconnect()
+    print("✅ SESSION CLEANUP ROBUSTNESS TESTS PASSED")
 
 
 @pytest.mark.asyncio

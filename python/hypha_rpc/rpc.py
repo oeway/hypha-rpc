@@ -1139,30 +1139,270 @@ class RPC(MessageEmitter):
 
     def _cleanup_session_if_needed(self, session_id, callback_name):
         """Clean session management - all logic in one place."""
-        store = self._get_session_store(session_id, create=False)
-        if not store:
+        if not session_id:
+            logger.debug("Cannot cleanup session: session_id is empty")
             return
 
-        # Promise sessions: let the promise manager decide cleanup
-        if "_promise_manager" in store:
-            if store["_promise_manager"].should_cleanup_on_callback(callback_name):
-                store["_promise_manager"].settle()
-                logger.debug(f"Promise session {session_id} settled and cleaned up")
-                # Clean up the entire session path
-                levels = session_id.split(".")
+        try:
+            store = self._get_session_store(session_id, create=False)
+            if not store:
+                logger.debug(f"Session {session_id} not found for cleanup")
+                return
+
+            should_cleanup = False
+
+            # Promise sessions: let the promise manager decide cleanup
+            if "_promise_manager" in store:
+                try:
+                    promise_manager = store["_promise_manager"]
+                    if hasattr(promise_manager, 'should_cleanup_on_callback') and \
+                       promise_manager.should_cleanup_on_callback(callback_name):
+                        if hasattr(promise_manager, 'settle'):
+                            promise_manager.settle()
+                        should_cleanup = True
+                        logger.debug(f"Promise session {session_id} settled and marked for cleanup")
+                except Exception as e:
+                    logger.warning(f"Error in promise manager cleanup for {session_id}: {e}")
+                    # Still try to cleanup if promise manager fails
+                    should_cleanup = True
+            else:
+                # Regular sessions: cleanup immediately
+                should_cleanup = True
+                logger.debug(f"Regular session {session_id} marked for cleanup")
+
+            if should_cleanup:
+                self._delete_session_completely(session_id)
+
+        except Exception as e:
+            logger.error(f"Unexpected error in session cleanup for {session_id}: {e}")
+            # Try a basic cleanup as fallback
+            try:
+                self._delete_session_safely(session_id)
+            except Exception as fallback_error:
+                logger.error(f"Fallback cleanup also failed for {session_id}: {fallback_error}")
+
+    def _delete_session_completely(self, session_id):
+        """Completely delete a session and clean up empty parent containers."""
+        if not session_id:
+            return
+
+        try:
+            levels = session_id.split(".")
+            
+            # Navigate to the session and delete it safely
+            if len(levels) == 1:
+                # Top-level session - delete directly from object store
+                session_key = levels[0]
+                if session_key in self._object_store:
+                    session_data = self._object_store[session_key]
+                    
+                    # Clear any timers or resources in the session before deletion
+                    self._cleanup_session_resources(session_data)
+                    
+                    # Delete the session
+                    del self._object_store[session_key]
+                    logger.debug(f"Deleted top-level session: {session_id}")
+                else:
+                    logger.debug(f"Top-level session {session_id} already deleted")
+            else:
+                # Nested session - navigate and delete safely
                 current_store = self._object_store
-                for level in levels[:-1]:
+                path_exists = True
+                
+                # Navigate to parent container
+                for i, level in enumerate(levels[:-1]):
+                    if level not in current_store:
+                        path_exists = False
+                        logger.debug(f"Parent path broken at level '{level}' for session {session_id}")
+                        break
+                    if not isinstance(current_store[level], dict):
+                        path_exists = False
+                        logger.debug(f"Non-dict container at level '{level}' for session {session_id}")
+                        break
                     current_store = current_store[level]
-                del current_store[levels[-1]]
-            return
+                
+                if path_exists and levels[-1] in current_store:
+                    session_data = current_store[levels[-1]]
+                    
+                    # Clear resources before deletion
+                    if isinstance(session_data, dict):
+                        self._cleanup_session_resources(session_data)
+                    
+                    # Delete the session
+                    del current_store[levels[-1]]
+                    logger.debug(f"Deleted nested session: {session_id}")
+                    
+                    # Clean up empty parent containers from bottom up
+                    self._cleanup_empty_parent_containers(levels[:-1])
+                else:
+                    logger.debug(f"Nested session {session_id} already deleted or path invalid")
+                    
+        except KeyError as e:
+            logger.debug(f"Session {session_id} already deleted: {e}")
+        except Exception as e:
+            logger.warning(f"Error during session cleanup for {session_id}: {e}")
 
-        # Regular sessions: cleanup immediately
-        logger.debug(f"Regular session {session_id} cleaned up")
-        levels = session_id.split(".")
-        current_store = self._object_store
-        for level in levels[:-1]:
-            current_store = current_store[level]
-        del current_store[levels[-1]]
+    def _delete_session_safely(self, session_id):
+        """Fallback method for basic session deletion without full cleanup."""
+        try:
+            levels = session_id.split(".")
+            if len(levels) == 1 and levels[0] in self._object_store:
+                del self._object_store[levels[0]]
+                logger.debug(f"Fallback cleanup: deleted session {session_id}")
+        except Exception as e:
+            logger.error(f"Fallback cleanup failed for {session_id}: {e}")
+
+    def _cleanup_session_resources(self, session_dict):
+        """Clean up resources within a session (timers, etc.) before deletion."""
+        if not isinstance(session_dict, dict):
+            return
+            
+        cleanup_errors = []
+        
+        try:
+            # Clear any active timers
+            if "timer" in session_dict and session_dict["timer"]:
+                try:
+                    timer = session_dict["timer"]
+                    if hasattr(timer, "clear") and hasattr(timer, "started"):
+                        if timer.started:
+                            timer.clear()
+                            logger.debug("Cleared session timer during cleanup")
+                    elif hasattr(timer, "cancel"):
+                        # Some timers might have a cancel method instead
+                        timer.cancel()
+                        logger.debug("Cancelled session timer during cleanup")
+                except Exception as timer_error:
+                    cleanup_errors.append(f"timer: {timer_error}")
+            
+            # Cancel any heartbeat tasks  
+            if "heartbeat_task" in session_dict and session_dict["heartbeat_task"]:
+                try:
+                    task = session_dict["heartbeat_task"]
+                    if hasattr(task, "cancel") and not task.done():
+                        task.cancel()
+                        logger.debug("Cancelled heartbeat task during cleanup")
+                except Exception as task_error:
+                    cleanup_errors.append(f"heartbeat_task: {task_error}")
+
+            # Clean up any other async tasks that might be stored
+            for key, value in session_dict.items():
+                if key.endswith("_task") and hasattr(value, "cancel"):
+                    try:
+                        if not value.done():
+                            value.cancel()
+                            logger.debug(f"Cancelled {key} during cleanup")
+                    except Exception as cleanup_error:
+                        cleanup_errors.append(f"{key}: {cleanup_error}")
+
+            # Clean up promise manager resources
+            if "_promise_manager" in session_dict:
+                try:
+                    promise_manager = session_dict["_promise_manager"]
+                    if hasattr(promise_manager, 'cleanup'):
+                        promise_manager.cleanup()
+                except Exception as pm_error:
+                    cleanup_errors.append(f"promise_manager: {pm_error}")
+                    
+        except Exception as e:
+            cleanup_errors.append(f"general: {e}")
+
+        if cleanup_errors:
+            logger.debug(f"Some resource cleanup errors (non-critical): {cleanup_errors}")
+
+    def _cleanup_empty_parent_containers(self, parent_levels):
+        """Clean up empty parent containers from bottom up."""
+        if not parent_levels:
+            return
+            
+        try:
+            # Work backwards through the path to clean up empty containers
+            for i in range(len(parent_levels), 0, -1):
+                path = parent_levels[:i]
+                container = self._object_store
+                
+                # Navigate to the container
+                for level in path[:-1]:
+                    if level not in container:
+                        logger.debug(f"Parent container path broken at '{level}', stopping cleanup")
+                        return  # Path doesn't exist, nothing to clean
+                    if not isinstance(container[level], dict):
+                        logger.debug(f"Non-dict parent container at '{level}', stopping cleanup")
+                        return
+                    container = container[level]
+                
+                target_key = path[-1]
+                if target_key in container and isinstance(container[target_key], dict):
+                    # Only delete if the container is empty (excluding system keys)
+                    remaining_keys = [k for k in container[target_key].keys() 
+                                    if k not in ["services", "message_cache"]]
+                    if not remaining_keys:
+                        del container[target_key]
+                        logger.debug(f"Cleaned up empty parent container: {'.'.join(path)}")
+                    else:
+                        # Container has content, stop cleanup
+                        logger.debug(f"Parent container {'.'.join(path)} has content, stopping cleanup")
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"Error cleaning empty parent containers: {e}")
+
+    def _force_cleanup_all_sessions(self):
+        """Emergency cleanup method to remove all sessions (for testing/debugging)."""
+        if not hasattr(self, "_object_store"):
+            return
+            
+        sessions_to_remove = []
+        for key in self._object_store.keys():
+            if key not in ["services", "message_cache"]:
+                sessions_to_remove.append(key)
+        
+        for session_key in sessions_to_remove:
+            try:
+                session_data = self._object_store[session_key]
+                self._cleanup_session_resources(session_data)
+                del self._object_store[session_key]
+                logger.debug(f"Force cleaned session: {session_key}")
+            except Exception as e:
+                logger.warning(f"Error in force cleanup of session {session_key}: {e}")
+
+    def get_session_stats(self):
+        """Get statistics about current sessions (for debugging/monitoring)."""
+        if not hasattr(self, "_object_store"):
+            return {"error": "No object store"}
+        
+        stats = {
+            "total_sessions": 0,
+            "promise_sessions": 0,
+            "regular_sessions": 0,
+            "sessions_with_timers": 0,
+            "sessions_with_heartbeat": 0,
+            "system_stores": {},
+            "session_ids": []
+        }
+        
+        for key, value in self._object_store.items():
+            if key in ["services", "message_cache"]:
+                stats["system_stores"][key] = {
+                    "size": len(value) if hasattr(value, "__len__") else "unknown"
+                }
+            else:
+                stats["total_sessions"] += 1
+                stats["session_ids"].append(key)
+                
+                if isinstance(value, dict):
+                    if "_promise_manager" in value:
+                        stats["promise_sessions"] += 1
+                    else:
+                        stats["regular_sessions"] += 1
+                    
+                    if "timer" in value:
+                        stats["sessions_with_timers"] += 1
+                    
+                    if "heartbeat_task" in value:
+                        stats["sessions_with_heartbeat"] += 1
+        
+        return stats
 
     def _encode_promise(
         self,
