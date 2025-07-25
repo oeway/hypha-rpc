@@ -1729,7 +1729,7 @@ async def test_persistent_service_across_multiple_restarts(restartable_server):
         
         # Check persistent state
         stats = await svc.get_stats()
-        expected_operations = 2 + (restart_cycle + 1) * 2  # initial + 2 per cycle
+        expected_operations = 1 + 2 * restart_cycle + 1  # initial + 2*completed_cycles + current_pre_restart
         assert stats["operation_count"] == expected_operations, f"Expected {expected_operations} operations, got {stats['operation_count']}"
         
         # Add post-restart message
@@ -1749,8 +1749,8 @@ async def test_persistent_service_across_multiple_restarts(restartable_server):
     print(f"\n📈 Final stats after all restarts: {final_stats}")
     
     assert final_stats["startup_count"] == 1
-    assert final_stats["operation_count"] == 8  # 1 initial + 6 from cycles + 1 extra
-    assert final_stats["message_count"] == 8
+    assert final_stats["operation_count"] == 7  # 1 initial + 6 from 3 cycles (2 per cycle)
+    assert final_stats["message_count"] == 7
     
     print("✅ PERSISTENT SERVICE ACROSS RESTARTS TEST PASSED!")
 
