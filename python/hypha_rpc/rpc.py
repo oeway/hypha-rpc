@@ -466,6 +466,19 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
+                # Clean up object store to prevent memory leaks during reconnections
+                # Keep essential stores but clear session data
+                if hasattr(self, '_object_store'):
+                    # Close any existing sessions properly
+                    self._close_sessions(self._object_store)
+                    
+                    # Reset object store but preserve services and message cache structure
+                    services_backup = self._object_store.get("services", {})
+                    self._object_store.clear()
+                    self._object_store["services"] = services_backup
+                    self._object_store["message_cache"] = {}
+                    logger.debug("Cleaned up RPC object store for reconnection")
+                
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     try:
