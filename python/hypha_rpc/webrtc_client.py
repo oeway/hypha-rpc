@@ -133,13 +133,15 @@ async def _setup_rpc(config):
         channel,
         logger=config.get("logger"),
     )
-    config["context"] = config.get("context") or {}
-    config["context"]["connection_type"] = "webrtc"
-    config["context"]["ws"] = config.get("workspace")
+    # Preserve existing context and add WebRTC-specific fields
+    context = config.get("context", {}).copy()  # Make a copy to avoid modifying original
+    context["connection_type"] = "webrtc"
+    context["ws"] = config.get("workspace")
+    
     rpc = RPC(
         connection,
         client_id=client_id,
-        default_context=config["context"],
+        default_context=context,
         name=config.get("name"),
         method_timeout=config.get("method_timeout", 10.0),
         loop=config.get("loop"),
@@ -167,26 +169,24 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
 
         @pc.on("datachannel")
         async def on_datachannel(channel):
+            # Minimal context for WebRTC - just enough to satisfy require_context services
             ctx = {"connection_type": "webrtc"}
-            if context:
-                # Copy all relevant context information
-                if context.get("user"):
-                    ctx["user"] = context["user"]
-                if context.get("ws"):
-                    ctx["ws"] = context["ws"]
-                # Also merge any other context properties
-                ctx.update({k: v for k, v in context.items() if k not in ctx})
-            # Ensure connection_type is always set for WebRTC
-            ctx["connection_type"] = "webrtc"
+            if context and "user" in context:
+                ctx["user"] = context["user"]
             
-            rpc = await _setup_rpc(
-                {
-                    "channel": channel,
-                    "client_id": channel.label,
-                    "workspace": server.config["workspace"],
-                    "context": ctx,
-                }
-            )
+            print(f"WebRTC context setup: {ctx}")
+
+            rpc = await _setup_rpc({
+                "channel": channel,
+                "client_id": channel.label,
+                "workspace": server.config["workspace"],
+                "context": ctx,
+                "logger": config.get("logger"),
+                "on_init": on_init
+            })
+            
+            print(f"WebRTC RPC default_context: {rpc.default_context}")
+            
             # Map all the local services to the webrtc client
             rpc._services = server.rpc._services
 
@@ -238,18 +238,11 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
             config["channel"] = dc
             config["workspace"] = server.config["workspace"]
             
-            # Pass the server's context (including user info) to the WebRTC RPC setup
-            # Extract context from the server config which should contain authentication info
+            # Minimal context for WebRTC client - just enough to satisfy require_context services
             webrtc_context = {"connection_type": "webrtc"}
-            if hasattr(server, 'config') and server.config:
-                # Copy relevant context from server config
-                for key in ["user", "client_id", "workspace", "token"]:
-                    if key in server.config:
-                        webrtc_context[key] = server.config[key]
-            
-            # Also merge any existing RPC context from the server
             if hasattr(server, 'rpc') and hasattr(server.rpc, 'default_context'):
-                webrtc_context.update(server.rpc.default_context)
+                if "user" in server.rpc.default_context:
+                    webrtc_context["user"] = server.rpc.default_context["user"]
             
             config["context"] = webrtc_context
             

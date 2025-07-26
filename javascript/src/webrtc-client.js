@@ -105,23 +105,23 @@ async function _createOffer(params, server, config, onInit, context) {
   if (server) {
     pc.addEventListener("datachannel", async (event) => {
       const channel = event.channel;
+      // Minimal context for WebRTC server - just enough to satisfy require_context services
       let ctx = { connection_type: "webrtc" };
-      if (context) {
-        // Copy all relevant context information
-        if (context.user) ctx.user = context.user;
-        if (context.ws) ctx.ws = context.ws;
-        // Also merge any other context properties
-        Object.assign(ctx, context);
+      if (context && context.user) {
+        ctx.user = context.user;
       }
-      // Ensure connection_type is always set for WebRTC
-      ctx.connection_type = "webrtc";
 
       const rpc = await _setupRPC({
         channel: channel,
-        client_id: channel.label,
-        workspace: server.config.workspace,
+        client_id: config.peer_id,
+        workspace: config.workspace,
         context: ctx,
       });
+
+      console.log(
+        "WebRTC RPC default_context:",
+        JSON.stringify(rpc.default_context, null, 2),
+      );
       // Map all the local services to the webrtc client
       rpc._services = server.rpc._services;
     });
@@ -254,23 +254,20 @@ async function getRTCService(server, service_id, config) {
         config.channel = channel;
         config.workspace = answer.workspace;
 
-        // Pass the server's context (including user info) to the WebRTC RPC setup
-        // Extract context from the server config which should contain authentication info
+        // Minimal context for WebRTC - just enough to satisfy require_context services
         const webrtcContext = { connection_type: "webrtc" };
-        if (server.config) {
-          // Copy relevant context from server config
-          for (const key of ["user", "client_id", "workspace", "token"]) {
-            if (server.config[key]) {
-              webrtcContext[key] = server.config[key];
-            }
-          }
+        if (
+          server.rpc &&
+          server.rpc.default_context &&
+          server.rpc.default_context.user
+        ) {
+          webrtcContext.user = server.rpc.default_context.user;
         }
 
-        // Also merge any existing RPC context from the server
-        if (server.rpc && server.rpc.default_context) {
-          Object.assign(webrtcContext, server.rpc.default_context);
-        }
-
+        console.log(
+          "WebRTC context setup:",
+          JSON.stringify(webrtcContext, null, 2),
+        );
         config.context = webrtcContext;
 
         // Increase timeout for Firefox compatibility
@@ -279,6 +276,12 @@ async function getRTCService(server, service_id, config) {
             try {
               const rpc = await _setupRPC(config);
               pc.rpc = rpc;
+
+              console.log(
+                "WebRTC RPC default_context:",
+                JSON.stringify(rpc.default_context, null, 2),
+              );
+
               async function get_service(name, ...args) {
                 assert(
                   !name.includes(":"),
