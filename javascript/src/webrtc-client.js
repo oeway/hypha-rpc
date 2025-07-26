@@ -253,6 +253,8 @@ async function getRTCService(server, service_id, config) {
       channel.onopen = () => {
         config.channel = channel;
         config.workspace = answer.workspace;
+        // Fix: Set client_id to peer_id to match what server expects
+        config.client_id = config.peer_id;
 
         // Minimal context for WebRTC - just enough to satisfy require_context services
         const webrtcContext = { connection_type: "webrtc" };
