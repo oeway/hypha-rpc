@@ -122,16 +122,6 @@ async function _createOffer(params, server, config, onInit, context) {
         "WebRTC RPC default_context:",
         JSON.stringify(rpc.default_context, null, 2),
       );
-      
-      // Register all server services to the WebRTC RPC
-      // This makes them accessible as remote services from the peer's perspective
-      for (const [serviceId, service] of Object.entries(server.rpc._services)) {
-        // Skip built-in services as they should be local to each RPC instance
-        if (serviceId === "built-in") continue;
-        
-        // Register the service to the WebRTC RPC
-        await rpc.register_service(service, { overwrite: true });
-      }
     });
   }
 
@@ -301,8 +291,11 @@ async function getRTCService(server, service_id, config) {
                   !name.includes("/"),
                   "WebRTC service name should not contain '/'",
                 );
+                // Use the server's client_id to access its services
+                const serverClientId =
+                  server.config.client_id || server.rpc._client_id;
                 return await rpc.get_remote_service(
-                  config.workspace + "/" + config.peer_id + ":" + name,
+                  config.workspace + "/" + serverClientId + ":" + name,
                   ...args,
                 );
               }

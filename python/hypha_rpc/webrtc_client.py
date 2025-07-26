@@ -186,16 +186,6 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
             })
             
             print(f"WebRTC RPC default_context: {rpc.default_context}")
-            
-            # Register all server services to the WebRTC RPC
-            # This makes them accessible as remote services from the peer's perspective
-            for service_id, service in server.rpc._services.items():
-                # Skip built-in services as they should be local to each RPC instance
-                if service_id == "built-in":
-                    continue
-                
-                # Register the service to the WebRTC RPC
-                await rpc.register_service(service, {"overwrite": True})
 
     if on_init:
         await on_init(pc)
@@ -259,8 +249,10 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
             async def get_service(name, *args, **kwargs):
                 assert ":" not in name, "Service name cannot contain ':'"
                 assert "/" not in name, "Service name cannot contain '/'"
+                # Use the server's client_id to access its services
+                server_client_id = server.config.get("client_id", server.rpc._client_id)
                 return await rpc.get_remote_service(
-                    config["workspace"] + "/" + config["peer_id"] + ":" + name,
+                    config["workspace"] + "/" + server_client_id + ":" + name,
                     *args,
                     **kwargs,
                 )
