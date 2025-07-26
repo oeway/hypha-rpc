@@ -319,6 +319,33 @@ export class RPC extends MessageEmitter {
       services: this._services,
     };
 
+    // Set up global unhandled promise rejection handler for RPC-related errors
+    const handleUnhandledRejection = (event) => {
+      const reason = event.reason;
+      if (reason && typeof reason === 'object') {
+        // Check if this is a "Method not found" or "Session not found" error that we can ignore
+        const reasonStr = reason.toString();
+        if (reasonStr.includes("Method not found") || reasonStr.includes("Session not found") || 
+            reasonStr.includes("Method expired") || reasonStr.includes("Session not found")) {
+          console.debug("Ignoring expected method/session not found error:", reason);
+          event.preventDefault(); // Prevent the default unhandled rejection behavior
+          return;
+        }
+      }
+      console.warn("Unhandled RPC promise rejection:", reason);
+    };
+    
+    // Only set the handler if we haven't already set one for this RPC instance
+    if (typeof window !== 'undefined' && !window._hypha_rejection_handler_set) {
+      window.addEventListener('unhandledrejection', handleUnhandledRejection);
+      window._hypha_rejection_handler_set = true;
+    } else if (typeof process !== 'undefined' && !process._hypha_rejection_handler_set) {
+      process.on('unhandledRejection', (reason, promise) => {
+        handleUnhandledRejection({ reason, promise, preventDefault: () => {} });
+      });
+      process._hypha_rejection_handler_set = true;
+    }
+
     if (connection) {
       this.add_service({
         id: "built-in",
@@ -1624,8 +1651,13 @@ export class RPC extends MessageEmitter {
               }
             })
             .catch(function (err) {
-              console.error("Failed to send message", err);
-              reject(err);
+              const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
+              if (reject) {
+                reject(new Error(error_msg));
+              } else {
+                // No reject callback available, log the error to prevent unhandled promise rejections
+                console.warn("Unhandled RPC method call error:", error_msg);
+              }
               if (timer) {
                 timer.clear();
               }
@@ -1641,8 +1673,13 @@ export class RPC extends MessageEmitter {
               }
             })
             .catch(function (err) {
-              console.error("Failed to send message", err);
-              reject(err);
+              const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
+              if (reject) {
+                reject(new Error(error_msg));
+              } else {
+                // No reject callback available, log the error to prevent unhandled promise rejections
+                console.warn("Unhandled RPC method call error:", error_msg);
+              }
               if (timer) {
                 timer.clear();
               }
@@ -1748,17 +1785,51 @@ export class RPC extends MessageEmitter {
       try {
         method = indexObject(this._object_store, data["method"]);
       } catch (e) {
-        // Simplified error handling like Python - just check if method exists
-        if (!this._object_store[data["method"].split(".")[0]]) {
+        // Clean promise method detection - TYPE-BASED, not string-based
+        if (this._is_promise_method_call(data["method"])) {
           console.debug(
-            `Method ${data["method"]} not available (session cleaned up), ignoring: ${method_name}`,
+            `Promise method ${data["method"]} not available (detected by session type), ignoring: ${method_name}`,
           );
           return;
         }
 
-        throw new Error(
-          `Method not found: ${method_name} at ${this._client_id}`,
+        // Check if this is a session-based method call that might have expired
+        const method_parts = data["method"].split(".");
+        if (method_parts.length > 1) {
+          const session_id = method_parts[0];
+          // Check if the session exists but the specific method doesn't
+          if (session_id in this._object_store) {
+            console.debug(
+              `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
+            );
+            // For expired callbacks, don't throw an exception, just log and return
+            if (typeof reject === 'function') {
+              reject(new Error(`Method expired or not found: ${method_name}`));
+            }
+            return;
+          } else {
+            console.debug(
+              `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
+            );
+            // For cleaned up sessions, just log and return without throwing
+            if (typeof reject === 'function') {
+              reject(new Error(`Session not found: ${method_name}`));
+            }
+            return;
+          }
+        }
+
+        console.debug(
+          `Failed to find method ${method_name} at ${this._client_id}`,
         );
+        const error = new Error(`Method not found: ${method_name} at ${this._client_id}`);
+        if (typeof reject === 'function') {
+          reject(error);
+        } else {
+          // Log the error instead of throwing to prevent unhandled exceptions
+          console.warn("Method not found and no reject callback:", error.message);
+        }
+        return;
       }
 
       assert(

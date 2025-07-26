@@ -16,7 +16,7 @@ import msgpack
 from .rpc import RPC
 from .utils.schema import schema_function
 from .utils import ObjectProxy, parse_service_url
-from .utils import ensure_event_loop
+from .utils import ensure_event_loop, safe_create_future
 
 try:
     import js  # noqa: F401
@@ -1160,10 +1160,7 @@ async def _connect_to_server(config):
 
 def setup_local_client(enable_execution=False, on_ready=None):
     """Set up a local client."""
-    # Ensure there's an event loop for this thread
-    ensure_event_loop()
-    
-    fut = asyncio.Future()
+    fut = safe_create_future()
 
     async def message_handler(event):
         data = event.data.to_py()

@@ -26,7 +26,7 @@ from .utils import (
     convert_case,
 )
 from .utils.schema import schema_function
-from .utils import ensure_event_loop
+from .utils import ensure_event_loop, safe_create_future
 
 try:
     from pydantic import BaseModel
@@ -417,6 +417,23 @@ class RPC(MessageEmitter):
         self.loop = loop or asyncio.get_event_loop()
         self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
         super().__init__(self._remote_logger)
+
+        # Set up exception handler for unhandled asyncio futures
+        def handle_exception(loop, context):
+            exception = context.get('exception')
+            if isinstance(exception, Exception):
+                # Check if this is a "Method not found" error that we can ignore
+                if "Method not found" in str(exception) or "Session not found" in str(exception):
+                    logger.debug("Ignoring expected method/session not found error: %s", exception)
+                else:
+                    logger.warning("Unhandled asyncio exception: %s", context)
+            else:
+                logger.warning("Unhandled asyncio exception: %s", context)
+        
+        # Only set the exception handler if we haven't already set one
+        if not hasattr(self.loop, '_hypha_exception_handler_set'):
+            self.loop.set_exception_handler(handle_exception)
+            self.loop._hypha_exception_handler_set = True
 
         self._services = {}
         self._object_store = {
@@ -1572,10 +1589,7 @@ class RPC(MessageEmitter):
             if kwargs:
                 arguments = arguments + [kwargs]
 
-            # Ensure there's an event loop for this thread
-            ensure_event_loop()
-
-            fut = asyncio.Future()
+            fut = safe_create_future()
 
             def resolve(result):
                 if fut.done():
@@ -1696,12 +1710,16 @@ class RPC(MessageEmitter):
             def handle_result(fut):
                 background_tasks.discard(fut)
                 if fut.exception():
-                    reject(
-                        Exception(
-                            "Failed to send the request when calling method "
-                            f"({target_id}:{method_id}), error: {fut.exception()}"
-                        )
+                    error_msg = (
+                        "Failed to send the request when calling method "
+                        f"({target_id}:{method_id}), error: {fut.exception()}"
                     )
+                    if reject:
+                        reject(Exception(error_msg))
+                    else:
+                        # No reject callback available, log the error to prevent 
+                        # "Future exception was never retrieved" warnings
+                        logger.warning("Unhandled RPC method call error: %s", error_msg)
                     if timer:
                         timer.clear()
                 else:
@@ -1886,10 +1904,44 @@ class RPC(MessageEmitter):
                     )
                     return
 
+                # Check if this is a session-based method call that might have expired
+                method_parts = data["method"].split(".")
+                if len(method_parts) > 1:
+                    session_id = method_parts[0]
+                    # Check if the session exists but the specific method doesn't
+                    if session_id in self._object_store:
+                        logger.debug(
+                            "Session %s exists but method %s not found, likely expired callback: %s",
+                            session_id,
+                            data["method"],
+                            method_name,
+                        )
+                        # For expired callbacks, don't raise an exception, just log and return
+                        if callable(reject):
+                            reject(Exception(f"Method expired or not found: {method_name}"))
+                        return
+                    else:
+                        logger.debug(
+                            "Session %s not found for method %s, likely cleaned up: %s",
+                            session_id,
+                            data["method"],
+                            method_name,
+                        )
+                        # For cleaned up sessions, just log and return without raising
+                        if callable(reject):
+                            reject(Exception(f"Session not found: {method_name}"))
+                        return
+
                 logger.debug(
                     "Failed to find method %s at %s", method_name, self._client_id
                 )
-                raise Exception(f"Method not found: {method_name} at {self._client_id}")
+                error = Exception(f"Method not found: {method_name} at {self._client_id}")
+                if callable(reject):
+                    reject(error)
+                else:
+                    # Log the error instead of raising to prevent unhandled exceptions
+                    logger.warning("Method not found and no reject callback: %s", error)
+                return
             assert callable(method), f"Invalid method: {method_name}"
 
             # Check permission

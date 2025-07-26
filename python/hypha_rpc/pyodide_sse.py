@@ -6,7 +6,7 @@ import inspect
 import sys
 import logging
 from js import WebSocket
-from hypha_rpc.utils import ensure_event_loop
+from hypha_rpc.utils import ensure_event_loop, safe_create_future
 
 try:
     from pyodide.ffi import to_js
@@ -55,9 +55,7 @@ class PyodideSSERPCConnection:
 
         self._websocket.onmessage = onmessage
 
-        ensure_event_loop()
-        
-        fut = asyncio.Future()
+        fut = safe_create_future()
 
         def closed(evt):
             """Handle closed event."""
