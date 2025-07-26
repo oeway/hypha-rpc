@@ -23,12 +23,23 @@ describe("Real WebRTC Functionality", () => {
       name: "Connection Detector JS",
       config: { visibility: "public" },
       detectConnection: (config) => {
+        console.log(
+          "detectConnection called with config:",
+          JSON.stringify(config, null, 2),
+        );
         const context = config?.context || {};
-        return {
+        console.log("Extracted context:", JSON.stringify(context, null, 2));
+        const result = {
           connectionType: context.connection_type || "unknown",
           hasContext: context !== null && context !== undefined,
           timestamp: Date.now(),
+          fullContext: context, // Include full context for debugging
         };
+        console.log(
+          "detectConnection returning:",
+          JSON.stringify(result, null, 2),
+        );
+        return result;
       },
     });
 

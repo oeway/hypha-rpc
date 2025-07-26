@@ -105,8 +105,17 @@ async function _createOffer(params, server, config, onInit, context) {
   if (server) {
     pc.addEventListener("datachannel", async (event) => {
       const channel = event.channel;
-      let ctx = null;
-      if (context && context.user) ctx = { user: context.user, ws: context.ws };
+      let ctx = { connection_type: "webrtc" };
+      if (context) {
+        // Copy all relevant context information
+        if (context.user) ctx.user = context.user;
+        if (context.ws) ctx.ws = context.ws;
+        // Also merge any other context properties
+        Object.assign(ctx, context);
+      }
+      // Ensure connection_type is always set for WebRTC
+      ctx.connection_type = "webrtc";
+
       const rpc = await _setupRPC({
         channel: channel,
         client_id: channel.label,

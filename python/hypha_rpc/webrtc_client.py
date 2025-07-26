@@ -167,9 +167,18 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
 
         @pc.on("datachannel")
         async def on_datachannel(channel):
-            ctx = None
-            if context and context.get("user"):
-                ctx = {"user": context["user"], "ws": context["ws"]}
+            ctx = {"connection_type": "webrtc"}
+            if context:
+                # Copy all relevant context information
+                if context.get("user"):
+                    ctx["user"] = context["user"]
+                if context.get("ws"):
+                    ctx["ws"] = context["ws"]
+                # Also merge any other context properties
+                ctx.update({k: v for k, v in context.items() if k not in ctx})
+            # Ensure connection_type is always set for WebRTC
+            ctx["connection_type"] = "webrtc"
+            
             rpc = await _setup_rpc(
                 {
                     "channel": channel,
