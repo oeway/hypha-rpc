@@ -113,7 +113,7 @@ async function _createOffer(params, server, config, onInit, context) {
 
       const rpc = await _setupRPC({
         channel: channel,
-        client_id: config.peer_id,
+        client_id: server.config.client_id || config.peer_id,
         workspace: config.workspace,
         context: ctx,
       });
@@ -122,8 +122,16 @@ async function _createOffer(params, server, config, onInit, context) {
         "WebRTC RPC default_context:",
         JSON.stringify(rpc.default_context, null, 2),
       );
-      // Map all the local services to the webrtc client
-      rpc._services = server.rpc._services;
+      
+      // Register all server services to the WebRTC RPC
+      // This makes them accessible as remote services from the peer's perspective
+      for (const [serviceId, service] of Object.entries(server.rpc._services)) {
+        // Skip built-in services as they should be local to each RPC instance
+        if (serviceId === "built-in") continue;
+        
+        // Register the service to the WebRTC RPC
+        await rpc.register_service(service, { overwrite: true });
+      }
     });
   }
 
@@ -253,7 +261,7 @@ async function getRTCService(server, service_id, config) {
       channel.onopen = () => {
         config.channel = channel;
         config.workspace = answer.workspace;
-        // Fix: Set client_id to peer_id to match what server expects
+        // Use peer_id as client_id for this WebRTC connection
         config.client_id = config.peer_id;
 
         // Minimal context for WebRTC - just enough to satisfy require_context services

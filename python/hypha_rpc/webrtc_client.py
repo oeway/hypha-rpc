@@ -178,7 +178,7 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
 
             rpc = await _setup_rpc({
                 "channel": channel,
-                "client_id": channel.label,
+                "client_id": server.config.get("client_id", channel.label),
                 "workspace": server.config["workspace"],
                 "context": ctx,
                 "logger": config.get("logger"),
@@ -187,8 +187,15 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
             
             print(f"WebRTC RPC default_context: {rpc.default_context}")
             
-            # Map all the local services to the webrtc client
-            rpc._services = server.rpc._services
+            # Register all server services to the WebRTC RPC
+            # This makes them accessible as remote services from the peer's perspective
+            for service_id, service in server.rpc._services.items():
+                # Skip built-in services as they should be local to each RPC instance
+                if service_id == "built-in":
+                    continue
+                
+                # Register the service to the WebRTC RPC
+                await rpc.register_service(service, {"overwrite": True})
 
     if on_init:
         await on_init(pc)
