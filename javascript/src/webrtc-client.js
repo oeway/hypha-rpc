@@ -244,6 +244,26 @@ async function getRTCService(server, service_id, config) {
       channel.onopen = () => {
         config.channel = channel;
         config.workspace = answer.workspace;
+
+        // Pass the server's context (including user info) to the WebRTC RPC setup
+        // Extract context from the server config which should contain authentication info
+        const webrtcContext = { connection_type: "webrtc" };
+        if (server.config) {
+          // Copy relevant context from server config
+          for (const key of ["user", "client_id", "workspace", "token"]) {
+            if (server.config[key]) {
+              webrtcContext[key] = server.config[key];
+            }
+          }
+        }
+
+        // Also merge any existing RPC context from the server
+        if (server.rpc && server.rpc.default_context) {
+          Object.assign(webrtcContext, server.rpc.default_context);
+        }
+
+        config.context = webrtcContext;
+
         // Increase timeout for Firefox compatibility
         setTimeout(async () => {
           if (!resolved) {

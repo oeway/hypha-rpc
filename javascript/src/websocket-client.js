@@ -846,14 +846,29 @@ export async function connectToServer(config) {
     const description = _wm.getService.__schema__.description;
     // TODO: Fix the schema for adding options for webrtc
     const parameters = _wm.getService.__schema__.parameters;
-    wm.getService = schemaFunction(
-      webrtcGetService.bind(null, _wm, `${workspace}/${clientId}-rtc`),
-      {
-        name: "getService",
-        description,
-        parameters,
-      },
-    );
+
+    // Capture connection-level webrtc settings to use as defaults
+    const connectionWebrtc = config.webrtc;
+    const connectionWebrtcConfig = config.webrtc_config;
+
+    // Create wrapper function that applies connection-level defaults
+    const webrtcGetServiceWithDefaults = (query, serviceConfig) => {
+      serviceConfig = serviceConfig || {};
+      // Use connection-level webrtc setting as default if not specified in service call
+      if (serviceConfig.webrtc === undefined) {
+        serviceConfig.webrtc = connectionWebrtc;
+      }
+      if (serviceConfig.webrtc_config === undefined && connectionWebrtcConfig) {
+        serviceConfig.webrtc_config = connectionWebrtcConfig;
+      }
+      return webrtcGetService(_wm, `${clientId}-rtc`, query, serviceConfig);
+    };
+
+    wm.getService = schemaFunction(webrtcGetServiceWithDefaults, {
+      name: "getService",
+      description,
+      parameters,
+    });
 
     wm.getRTCService = schemaFunction(getRTCService.bind(null, wm), {
       name: "getRTCService",

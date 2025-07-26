@@ -228,6 +228,22 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
         async def on_open():
             config["channel"] = dc
             config["workspace"] = server.config["workspace"]
+            
+            # Pass the server's context (including user info) to the WebRTC RPC setup
+            # Extract context from the server config which should contain authentication info
+            webrtc_context = {"connection_type": "webrtc"}
+            if hasattr(server, 'config') and server.config:
+                # Copy relevant context from server config
+                for key in ["user", "client_id", "workspace", "token"]:
+                    if key in server.config:
+                        webrtc_context[key] = server.config[key]
+            
+            # Also merge any existing RPC context from the server
+            if hasattr(server, 'rpc') and hasattr(server.rpc, 'default_context'):
+                webrtc_context.update(server.rpc.default_context)
+            
+            config["context"] = webrtc_context
+            
             rpc = await _setup_rpc(config)
             pc.rpc = rpc
 

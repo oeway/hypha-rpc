@@ -770,26 +770,35 @@ async def webrtc_get_service(wm, rtc_service_id, query, config=None, **kwargs):
 
     from .webrtc_client import AIORTC_AVAILABLE, get_rtc_service
 
-    if ":" in svc.id and "/" in svc.id and AIORTC_AVAILABLE:
-        try:
-            # Assuming that the client registered
-            # a webrtc service with the client_id + "-rtc"
-            peer = await get_rtc_service(
-                wm,
-                rtc_service_id,
-                webrtc_config,
-            )
-            rtc_svc = await peer.get_service(svc.id.split(":")[1], config)
-            rtc_svc._webrtc = True
-            rtc_svc._peer = peer
-            rtc_svc._service = svc
-            return rtc_svc
-        except Exception:
-            logger.warning("Failed to get webrtc service, using websocket connection")
-    if webrtc is True:
-        if not AIORTC_AVAILABLE:
-            raise Exception("aiortc is not available, please install it first.")
-        raise Exception("Failed to get the service via webrtc")
+    # Only try WebRTC if explicitly requested (True or "auto")
+    if webrtc is True or webrtc == "auto":
+        if ":" in svc.id and "/" in svc.id and AIORTC_AVAILABLE:
+            try:
+                # Assuming that the client registered
+                # a webrtc service with the client_id + "-rtc"
+                peer = await get_rtc_service(
+                    wm,
+                    rtc_service_id,
+                    webrtc_config,
+                )
+                rtc_svc = await peer.get_service(svc.id.split(":")[1], config)
+                rtc_svc._webrtc = True
+                rtc_svc._peer = peer
+                rtc_svc._service = svc
+                return rtc_svc
+            except Exception:
+                logger.warning("Failed to get webrtc service, using websocket connection")
+                # If webrtc=True, we should fail; if webrtc="auto", fall back to websocket
+                if webrtc is True:
+                    if not AIORTC_AVAILABLE:
+                        raise Exception("aiortc is not available, please install it first.")
+                    raise Exception("Failed to get the service via webrtc")
+        else:
+            # Service doesn't support WebRTC or aiortc not available
+            if webrtc is True:
+                if not AIORTC_AVAILABLE:
+                    raise Exception("aiortc is not available, please install it first.")
+                raise Exception("Failed to get the service via webrtc")
     return svc
 
 
@@ -1090,8 +1099,23 @@ async def _connect_to_server(config):
         description = _wm.get_service.__schema__.get("description")
         # TODO: add webrtc options to the get_service schema
         parameters = _wm.get_service.__schema__.get("parameters")
+        
+        # Capture the connection-level webrtc setting to use as default
+        connection_webrtc = config.get("webrtc")
+        connection_webrtc_config = config.get("webrtc_config")
+        
+        async def webrtc_get_service_with_defaults(query, service_config=None, **kwargs):
+            service_config = service_config or {}
+            service_config.update(kwargs)
+            # Use connection-level webrtc setting as default if not specified in service call
+            if "webrtc" not in service_config:
+                service_config["webrtc"] = connection_webrtc
+            if "webrtc_config" not in service_config and connection_webrtc_config:
+                service_config["webrtc_config"] = connection_webrtc_config
+            return await webrtc_get_service(_wm, f"{workspace}/{client_id}-rtc", query, service_config)
+        
         wm.get_service = schema_function(
-            partial(webrtc_get_service, _wm, f"{workspace}/{client_id}-rtc"),
+            webrtc_get_service_with_defaults,
             name="get_service",
             description=description,
             parameters=parameters,
