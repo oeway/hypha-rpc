@@ -721,7 +721,7 @@ export class RPC extends MessageEmitter {
     const [ws, client_id] = context["to"].split("/");
     assert(
       client_id === this._client_id,
-      "Services can only be accessed locally",
+      `Services can only be accessed locally, client_id mismatch: ${client_id} != ${this._client_id}`,
     );
 
     const service = this._services[service_id];
