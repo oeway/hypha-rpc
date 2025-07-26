@@ -288,20 +288,20 @@ class WebsocketRPCConnection {
       // Clean up timers when connection closes
       this._cleanup();
 
-      if ([1000, 1001].includes(event.code)) {
-        console.info(
-          `Websocket connection closed (code: ${event.code}): ${event.reason}`,
-        );
-        if (this._handle_disconnected) {
-          this._handle_disconnected(event.reason);
+      // Even if it's a graceful closure (codes 1000, 1001), if it wasn't user-initiated,
+      // we should attempt to reconnect (e.g., server restart, k8s upgrade)
+      if (this._enable_reconnect) {
+        if ([1000, 1001].includes(event.code)) {
+          console.warn(
+            `Websocket connection closed gracefully by server (code: ${event.code}): ${event.reason} - attempting reconnect`,
+          );
+        } else {
+          console.warn(
+            "Websocket connection closed unexpectedly (code: %s): %s",
+            event.code,
+            event.reason,
+          );
         }
-        this._closed = true;
-      } else if (this._enable_reconnect) {
-        console.warn(
-          "Websocket connection closed unexpectedly (code: %s): %s",
-          event.code,
-          event.reason,
-        );
 
         let retry = 0;
         const baseDelay = 1000; // Start with 1 second
@@ -846,14 +846,29 @@ export async function connectToServer(config) {
     const description = _wm.getService.__schema__.description;
     // TODO: Fix the schema for adding options for webrtc
     const parameters = _wm.getService.__schema__.parameters;
-    wm.getService = schemaFunction(
-      webrtcGetService.bind(null, _wm, `${workspace}/${clientId}-rtc`),
-      {
-        name: "getService",
-        description,
-        parameters,
-      },
-    );
+
+    // Capture connection-level webrtc settings to use as defaults
+    const connectionWebrtc = config.webrtc;
+    const connectionWebrtcConfig = config.webrtc_config;
+
+    // Create wrapper function that applies connection-level defaults
+    const webrtcGetServiceWithDefaults = (query, serviceConfig) => {
+      serviceConfig = serviceConfig || {};
+      // Use connection-level webrtc setting as default if not specified in service call
+      if (serviceConfig.webrtc === undefined) {
+        serviceConfig.webrtc = connectionWebrtc;
+      }
+      if (serviceConfig.webrtc_config === undefined && connectionWebrtcConfig) {
+        serviceConfig.webrtc_config = connectionWebrtcConfig;
+      }
+      return webrtcGetService(_wm, `${clientId}-rtc`, query, serviceConfig);
+    };
+
+    wm.getService = schemaFunction(webrtcGetServiceWithDefaults, {
+      name: "getService",
+      description,
+      parameters,
+    });
 
     wm.getRTCService = schemaFunction(getRTCService.bind(null, wm), {
       name: "getRTCService",

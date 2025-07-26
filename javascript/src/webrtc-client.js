@@ -105,14 +105,23 @@ async function _createOffer(params, server, config, onInit, context) {
   if (server) {
     pc.addEventListener("datachannel", async (event) => {
       const channel = event.channel;
-      let ctx = null;
-      if (context && context.user) ctx = { user: context.user, ws: context.ws };
+      // Minimal context for WebRTC server - just enough to satisfy require_context services
+      let ctx = { connection_type: "webrtc" };
+      if (context && context.user) {
+        ctx.user = context.user;
+      }
+
       const rpc = await _setupRPC({
         channel: channel,
-        client_id: channel.label,
-        workspace: server.config.workspace,
+        client_id: config.peer_id,
+        workspace: config.workspace,
         context: ctx,
       });
+
+      console.log(
+        "WebRTC RPC default_context:",
+        JSON.stringify(rpc.default_context, null, 2),
+      );
       // Map all the local services to the webrtc client
       rpc._services = server.rpc._services;
     });
@@ -244,12 +253,35 @@ async function getRTCService(server, service_id, config) {
       channel.onopen = () => {
         config.channel = channel;
         config.workspace = answer.workspace;
+
+        // Minimal context for WebRTC - just enough to satisfy require_context services
+        const webrtcContext = { connection_type: "webrtc" };
+        if (
+          server.rpc &&
+          server.rpc.default_context &&
+          server.rpc.default_context.user
+        ) {
+          webrtcContext.user = server.rpc.default_context.user;
+        }
+
+        console.log(
+          "WebRTC context setup:",
+          JSON.stringify(webrtcContext, null, 2),
+        );
+        config.context = webrtcContext;
+
         // Increase timeout for Firefox compatibility
         setTimeout(async () => {
           if (!resolved) {
             try {
               const rpc = await _setupRPC(config);
               pc.rpc = rpc;
+
+              console.log(
+                "WebRTC RPC default_context:",
+                JSON.stringify(rpc.default_context, null, 2),
+              );
+
               async function get_service(name, ...args) {
                 assert(
                   !name.includes(":"),
