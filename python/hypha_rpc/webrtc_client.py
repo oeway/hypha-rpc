@@ -185,6 +185,21 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
                 "on_init": on_init
             })
             
+            # Override get_local_service to forward requests to the server's RPC
+            original_get_local_service = rpc.get_local_service
+            
+            async def forwarding_get_local_service(service_id):
+                # First try to get it locally
+                try:
+                    return await original_get_local_service(service_id)
+                except Exception as e:
+                    # If not found locally, forward to the server's RPC
+                    if "Service not found" in str(e) and hasattr(server, 'rpc'):
+                        return await server.rpc.get_local_service(service_id)
+                    raise
+            
+            rpc.get_local_service = forwarding_get_local_service
+            
             print(f"WebRTC RPC default_context: {rpc.default_context}")
 
     if on_init:

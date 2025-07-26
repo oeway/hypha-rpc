@@ -118,6 +118,21 @@ async function _createOffer(params, server, config, onInit, context) {
         context: ctx,
       });
 
+      // Override get_local_service to forward requests to the server's RPC
+      const originalGetLocalService = rpc.get_local_service.bind(rpc);
+      rpc.get_local_service = async function(service_id) {
+        // First try to get it locally
+        try {
+          return await originalGetLocalService(service_id);
+        } catch (e) {
+          // If not found locally, forward to the server's RPC
+          if (e.message && e.message.includes("Service not found") && server.rpc) {
+            return await server.rpc.get_local_service(service_id);
+          }
+          throw e;
+        }
+      };
+
       console.log(
         "WebRTC RPC default_context:",
         JSON.stringify(rpc.default_context, null, 2),
