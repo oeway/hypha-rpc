@@ -2365,3 +2365,84 @@ async def test_reconnection_with_server_restart_simple(restartable_server):
     # Cleanup
     await ws.disconnect()
     print("✅ SIMPLE SERVER RESTART TEST PASSED!")
+
+
+def test_rpc_thread_safety_fix(websocket_server):
+    """Test that the RPC thread safety fix works correctly."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from hypha_rpc.rpc import RPC
+    
+    print("\n=== RPC THREAD SAFETY FIX TEST ===")
+    
+    # Create a simple RPC instance (without connection for this test)
+    rpc = RPC(connection=None, client_id="test-client")
+    
+    # Test 1: Call from main thread (should work normally)
+    print("1. Testing call from main thread...")
+    try:
+        result = rpc.get_client_info()
+        print(f"   ✅ Main thread result: {result['id']}")
+        assert result['id'] == "test-client"
+    except Exception as e:
+        print(f"   ❌ Main thread failed: {e}")
+        raise
+    
+    # Test 2: Call from a different thread (this is where the original error occurred)
+    print("2. Testing call from different thread...")
+    result_container = {'result': None, 'exception': None}
+    
+    def call_from_thread():
+        try:
+            # This thread has no event loop - this is where the original error occurred
+            # The fix should now create an event loop automatically when RPC methods are called
+            result = rpc.get_client_info()
+            result_container['result'] = result['id']
+        except Exception as e:
+            result_container['exception'] = e
+    
+    # Create a separate thread pool to simulate the original error condition
+    with ThreadPoolExecutor(max_workers=1) as test_executor:
+        future = test_executor.submit(call_from_thread)
+        future.result(timeout=10)  # Wait for completion
+    
+    if result_container['exception']:
+        print(f"   ❌ Thread call failed: {result_container['exception']}")
+        raise result_container['exception']
+    else:
+        print(f"   ✅ Thread call result: {result_container['result']}")
+        assert result_container['result'] == "test-client"
+    
+    # Test 3: Multiple concurrent calls from different threads
+    print("3. Testing multiple concurrent calls from different threads...")
+    results = []
+    exceptions = []
+    
+    def concurrent_call(thread_id):
+        try:
+            result = rpc.get_client_info()
+            results.append((thread_id, result['id']))
+        except Exception as e:
+            exceptions.append((thread_id, e))
+    
+    # Submit multiple concurrent calls
+    with ThreadPoolExecutor(max_workers=3) as concurrent_executor:
+        futures = [
+            concurrent_executor.submit(concurrent_call, i) 
+            for i in range(1, 4)
+        ]
+        # Wait for all to complete
+        for future in futures:
+            future.result(timeout=10)
+    
+    if exceptions:
+        print(f"   ❌ Concurrent calls failed: {exceptions}")
+        raise exceptions[0][1]
+    else:
+        print(f"   ✅ All concurrent calls succeeded: {results}")
+        assert len(results) == 3
+        for thread_id, result in results:
+            assert result == "test-client"
+    
+    print("\n✅ RPC THREAD SAFETY FIX TEST PASSED!")
+    print("✅ The RPC now properly handles calls from any thread context")

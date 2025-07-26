@@ -26,6 +26,7 @@ from .utils import (
     convert_case,
 )
 from .utils.schema import schema_function
+from .utils import ensure_event_loop
 
 try:
     from pydantic import BaseModel
@@ -1570,6 +1571,9 @@ class RPC(MessageEmitter):
             # encode keywords to a dictionary and pass to the last argument
             if kwargs:
                 arguments = arguments + [kwargs]
+
+            # Ensure there's an event loop for this thread
+            ensure_event_loop()
 
             fut = asyncio.Future()
 
