@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import uuid
+import asyncio
 
 import pytest
 import requests
@@ -16,6 +17,85 @@ from . import WS_PORT, MINIO_PORT, MINIO_SERVER_URL, MINIO_ROOT_USER, MINIO_ROOT
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
 test_env = os.environ.copy()
+
+
+class RestartableServer:
+    """A server that can be restarted during tests."""
+    
+    def __init__(self, port=WS_PORT):
+        self.port = port
+        self.proc = None
+        self.server_args = [
+            sys.executable, 
+            "-m", "hypha.server", 
+            f"--port={self.port}"
+        ]
+    
+    def start(self, timeout=10):
+        """Start the server."""
+        if self.proc is not None:
+            self.stop()
+        
+        self.proc = subprocess.Popen(self.server_args, env=test_env)
+        
+        # Wait for server to be ready
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(f"http://127.0.0.1:{self.port}/health/liveness", timeout=1)
+                if response.ok:
+                    return True
+            except RequestException:
+                pass
+            time.sleep(0.1)
+        
+        raise RuntimeError(f"Failed to start server on port {self.port}")
+    
+    def stop(self):
+        """Stop the server."""
+        if self.proc is not None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+            self.proc = None
+    
+    def restart(self, stop_delay=0.1, start_timeout=10):
+        """Restart the server with optional delay."""
+        self.stop()
+        if stop_delay > 0:
+            time.sleep(stop_delay)
+        self.start(start_timeout)
+    
+    def is_running(self):
+        """Check if server is running."""
+        if self.proc is None:
+            return False
+        try:
+            response = requests.get(f"http://127.0.0.1:{self.port}/health/liveness", timeout=1)
+            return response.ok
+        except RequestException:
+            return False
+    
+    def __enter__(self):
+        self.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
+
+@pytest.fixture(name="restartable_server", scope="function")
+def restartable_server_fixture():
+    """Provide a server that can be restarted during tests."""
+    server = RestartableServer()
+    server.start()
+    try:
+        yield server
+    finally:
+        server.stop()
 
 
 @pytest.fixture(name="fastapi_server", scope="session")

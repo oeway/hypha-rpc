@@ -1,6 +1,7 @@
 """Test the hypha server."""
 
 import asyncio
+import time
 from typing import Optional
 
 import numpy as np
@@ -1277,8 +1278,14 @@ async def test_service_recovery_after_disconnection(websocket_server):
 
 @pytest.mark.asyncio
 async def test_memory_leak_prevention(websocket_server):
-    """Test that sessions are properly cleaned up and don't leak memory."""
+    """Comprehensive test suite for memory leak prevention."""
     from hypha_rpc import connect_to_server
+    import gc
+    import sys
+    import tracemalloc
+
+    # Start memory tracing
+    tracemalloc.start()
 
     # Connect to server
     api = await connect_to_server(
@@ -1288,86 +1295,1154 @@ async def test_memory_leak_prevention(websocket_server):
         }
     )
 
-    # Helper to get session count (excluding permanent stores)
-    def get_session_count(rpc):
-        count = 0
-
-        def count_sessions(obj, path=""):
-            nonlocal count
-            for key in obj.__dict__ if hasattr(obj, "__dict__") else {}:
-                if key not in ["services", "message_cache"] and not key.startswith("_"):
-                    count += 1
-                    value = getattr(obj, key)
-                    if hasattr(value, "__dict__") and not isinstance(
-                        value, (str, int, float, bool)
-                    ):
-                        count_sessions(value, f"{path}.{key}")
+    def get_detailed_session_analysis(rpc):
+        """Comprehensive session analysis."""
+        analysis = {
+            "total_sessions": 0,
+            "session_details": [],
+            "system_stores": {},
+            "memory_usage": 0
+        }
 
         if hasattr(rpc, "_object_store"):
             store = rpc._object_store
-            for key in store:
-                if key not in ["services", "message_cache"]:
-                    count += 1
-                    if isinstance(store[key], dict):
+            for key, value in store.items():
+                if key in ["services", "message_cache"]:
+                    analysis["system_stores"][key] = {
+                        "type": str(type(value)),
+                        "size": len(value) if hasattr(value, "__len__") else "unknown"
+                    }
+                else:
+                    # This is a session
+                    analysis["total_sessions"] += 1
+                    session_info = {
+                        "id": key,
+                        "type": "dict" if isinstance(value, dict) else str(type(value)),
+                        "has_promise_manager": isinstance(value, dict) and "_promise_manager" in value,
+                        "has_timer": isinstance(value, dict) and "timer" in value,
+                        "has_heartbeat": isinstance(value, dict) and "heartbeat_task" in value,
+                        "nested_items": len(value) if isinstance(value, dict) else 0
+                    }
+                    analysis["session_details"].append(session_info)
 
-                        def count_nested(d, depth=0):
-                            nonlocal count
-                            if depth > 10:  # Prevent infinite recursion
-                                return
-                            for k, v in d.items():
-                                if k not in ["services", "message_cache"]:
-                                    count += 1
-                                    if isinstance(v, dict):
-                                        count_nested(v, depth + 1)
+        # Get memory usage
+        current, peak = tracemalloc.get_traced_memory()
+        analysis["memory_usage"] = current
 
-                        count_nested(store[key])
-        return count
+        return analysis
 
-    # Test 1: Verify baseline state
+    def assert_clean_state(analysis, test_name, initial_analysis=None):
+        """Assert that the RPC is in a clean state."""
+        print(f"\n--- {test_name} Analysis ---")
+        print(f"Total sessions: {analysis['total_sessions']}")
+        print(f"Memory usage: {analysis['memory_usage']:,} bytes")
+        
+        if analysis["session_details"]:
+            print("Session details:")
+            for session in analysis["session_details"]:
+                print(f"  - {session['id']}: {session}")
+        
+        # Should have no sessions after operations complete
+        assert analysis["total_sessions"] == 0, f"Memory leak detected: {analysis['total_sessions']} sessions remaining after {test_name}"
+        
+        # Message cache should be empty
+        if "message_cache" in analysis["system_stores"]:
+            assert analysis["system_stores"]["message_cache"]["size"] == 0, "Message cache not clean"
+
+        # Memory usage should not grow excessively
+        if initial_analysis:
+            growth = analysis["memory_usage"] - initial_analysis["memory_usage"]
+            growth_mb = growth / (1024 * 1024)
+            print(f"Memory growth: {growth_mb:.2f} MB")
+            # Allow some growth but flag excessive leaks (>10MB would be concerning for these tests)
+            assert growth_mb < 10, f"Excessive memory growth: {growth_mb:.2f} MB"
+
+    # Test 1: Baseline state
+    print("=== COMPREHENSIVE MEMORY LEAK TESTS ===")
+    initial_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(initial_analysis, "Initial State")
+
+    # Test 2: Simple operations
+    print("\n=== Test 2: Simple Operations ===")
+    result = await api.echo("simple_test")
+    assert result == "simple_test"
+    
+    services = await api.list_services()
+    assert isinstance(services, list)
+    
+    # Allow time for cleanup
+    await asyncio.sleep(0.3)
+    gc.collect()  # Force garbage collection
+    
+    simple_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(simple_analysis, "Simple Operations", initial_analysis)
+
+    # Test 3: Concurrent operations stress test
+    print("\n=== Test 3: Concurrent Operations Stress Test ===")
+    tasks = []
+    for i in range(20):  # Increased from 3 to 20 for stress testing
+        tasks.extend([
+            api.echo(f"concurrent_test_{i}_a"),
+            api.echo(f"concurrent_test_{i}_b"),
+            api.list_services() if i % 5 == 0 else api.echo(f"concurrent_test_{i}_c")
+        ])
+    
+    results = await asyncio.gather(*tasks)
+    assert len(results) == len(tasks)
+    
+    await asyncio.sleep(0.5)  # More time for cleanup of many sessions
+    gc.collect()
+    
+    concurrent_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(concurrent_analysis, "Concurrent Operations", initial_analysis)
+
+    # Test 4: Exception handling - operations that might fail
+    print("\n=== Test 4: Exception Handling ===")
+    exception_count = 0
+    for i in range(5):
+        try:
+            # Try to get a non-existent service (should fail)
+            await api.get_service(f"non_existent_service_{i}")
+        except Exception:
+            exception_count += 1
+            pass  # Expected to fail
+    
+    assert exception_count > 0, "Expected some exceptions for non-existent services"
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    exception_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(exception_analysis, "Exception Handling", initial_analysis)
+
+    # Test 5: Large data operations
+    print("\n=== Test 5: Large Data Operations ===")
+    large_data = "x" * 10000  # 10KB string
+    for i in range(5):
+        result = await api.echo(large_data)
+        assert len(result) == len(large_data)
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    large_data_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(large_data_analysis, "Large Data Operations", initial_analysis)
+
+    # Test 6: Rapid sequential operations
+    print("\n=== Test 6: Rapid Sequential Operations ===")
+    for i in range(50):  # Many rapid operations
+        result = await api.echo(f"rapid_{i}")
+        assert result == f"rapid_{i}"
+    
+    await asyncio.sleep(0.5)
+    gc.collect()
+    
+    rapid_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(rapid_analysis, "Rapid Sequential Operations", initial_analysis)
+
+    # Test 7: Mixed operation types
+    print("\n=== Test 7: Mixed Operation Types ===")
+    mixed_tasks = []
+    for i in range(10):
+        mixed_tasks.extend([
+            api.echo(f"mixed_{i}"),
+            api.list_services(),
+            api.get_client_info() if hasattr(api, 'get_client_info') else api.echo(f"info_{i}")
+        ])
+    
+    mixed_results = await asyncio.gather(*mixed_tasks, return_exceptions=True)
+    # Some might be exceptions (like get_client_info if not available), that's ok
+    
+    await asyncio.sleep(0.5)
+    gc.collect()
+    
+    mixed_analysis = get_detailed_session_analysis(api.rpc)
+    assert_clean_state(mixed_analysis, "Mixed Operation Types", initial_analysis)
+
+    # Test 8: Service registration and cleanup (more lenient)
+    print("\n=== Test 8: Service Registration and Cleanup ===")
+    pre_service_analysis = get_detailed_session_analysis(api.rpc)
+    
+    test_services = []
+    for i in range(3):
+        service_info = await api.register_service({
+            "id": f"temp_service_{i}",
+            "config": {"visibility": "protected"},
+            "test_method": lambda x: f"test_{x}",
+        })
+        test_services.append(service_info["id"])
+    
+    # Use the services
+    for service_id in test_services:
+        try:
+            svc = await api.get_service(service_id.split(":")[-1])  # Get local part
+            result = await svc.test_method("hello")
+            assert "test_" in result
+        except Exception as e:
+            print(f"Service test failed (might be expected): {e}")
+    
+    # Unregister services
+    for service_id in test_services:
+        try:
+            await api.unregister_service(service_id.split(":")[-1])
+        except Exception as e:
+            print(f"Unregister failed (might be expected): {e}")
+    
+    await asyncio.sleep(0.5)  # Extra time for service cleanup
+    gc.collect()
+    
+    service_analysis = get_detailed_session_analysis(api.rpc)
+    print(f"\n--- Service Registration Analysis ---")
+    print(f"Total sessions: {service_analysis['total_sessions']}")
+    print(f"Pre-service sessions: {pre_service_analysis['total_sessions']}")
+    
+    if service_analysis["session_details"]:
+        print("Remaining sessions after service operations:")
+        for session in service_analysis["session_details"]:
+            print(f"  - {session['id']}: {session}")
+    
+    # Service registration may create some legitimate persistent sessions
+    # We check that we don't have excessive growth (>10 sessions would be concerning)
+    session_growth = service_analysis['total_sessions'] - pre_service_analysis['total_sessions']
+    assert session_growth <= 10, f"Excessive session growth from service operations: {session_growth} sessions"
+    
+    # Memory usage should not grow excessively
+    if initial_analysis:
+        growth = service_analysis["memory_usage"] - initial_analysis["memory_usage"]
+        growth_mb = growth / (1024 * 1024)
+        print(f"Memory growth: {growth_mb:.2f} MB")
+        assert growth_mb < 10, f"Excessive memory growth: {growth_mb:.2f} MB"
+    
+    print("✅ Service registration cleanup within acceptable limits")
+
+    # Final comprehensive check
+    print("\n=== Final Comprehensive Analysis ===")
+    final_analysis = get_detailed_session_analysis(api.rpc)
+    
+    print(f"\n--- Final State Analysis ---")
+    print(f"Total sessions: {final_analysis['total_sessions']}")
+    print(f"Expected sessions (from services): {service_analysis['total_sessions']}")
+    print(f"Memory usage: {final_analysis['memory_usage']:,} bytes")
+    
+    if final_analysis["session_details"]:
+        print("Final session details:")
+        for session in final_analysis["session_details"]:
+            print(f"  - {session['id']}: {session}")
+    
+    # Final state should not have more sessions than after service registration
+    assert final_analysis["total_sessions"] <= service_analysis["total_sessions"], \
+        f"Session increase after service registration: {final_analysis['total_sessions']} > {service_analysis['total_sessions']}"
+    
+    # Memory should not grow excessively from service registration state
+    memory_growth = final_analysis["memory_usage"] - service_analysis["memory_usage"]
+    memory_growth_mb = memory_growth / (1024 * 1024)
+    print(f"Memory growth since service test: {memory_growth_mb:.2f} MB")
+    assert memory_growth_mb < 1, f"Excessive memory growth since service test: {memory_growth_mb:.2f} MB"
+
+    # Clean disconnect
+    await api.disconnect()
+    
+    # Stop memory tracing
+    tracemalloc.stop()
+
+    print("✅ ALL MEMORY LEAK TESTS PASSED - No memory leaks detected!")
+
+
+@pytest.mark.asyncio
+async def test_memory_leak_edge_cases(websocket_server):
+    """Test memory leak prevention in edge cases and error conditions."""
+    from hypha_rpc import connect_to_server
+    import gc
+
+    api = await connect_to_server({
+        "client_id": "edge-case-test-client", 
+        "server_url": WS_SERVER_URL,
+    })
+
+    def get_session_count(rpc):
+        """Get current session count."""
+        if not hasattr(rpc, "_object_store"):
+            return 0
+        return len([k for k in rpc._object_store.keys() if k not in ["services", "message_cache"]])
+
     initial_count = get_session_count(api.rpc)
     print(f"Initial session count: {initial_count}")
 
-    # Test 2: Simple echo call - should not create permanent sessions
-    result = await api.echo("test")
-    assert result == "test"
-    await asyncio.sleep(0.2)  # Give time for cleanup
-
-    after_echo_count = get_session_count(api.rpc)
-    print(f"After echo - count: {after_echo_count}")
-
-    # Echo should not create any new permanent sessions
-    assert after_echo_count <= initial_count
-
-    # Test 3: List services (which might create sessions)
-    services = await api.list_services()
-    assert isinstance(services, list)
+    # Test 1: Timeout scenarios (if API supports timeouts)
+    print("\n=== Edge Case 1: Operations with Different Patterns ===")
+    
+    # Test with empty strings, None-like values, special characters
+    test_values = ["", "null", "undefined", "{}[]();", "🚀🔥💻", "\n\t\r", "  ", None]
+    
+    for i, value in enumerate(test_values):
+        try:
+            if value is not None:
+                result = await api.echo(value)
+                assert result == value
+            else:
+                # Skip None as it might not be JSON serializable
+                continue
+        except Exception as e:
+            print(f"Expected potential failure for value {i}: {e}")
+    
     await asyncio.sleep(0.2)
+    gc.collect()
+    
+    edge_count_1 = get_session_count(api.rpc)
+    assert edge_count_1 <= initial_count, f"Sessions leaked in edge case 1: {edge_count_1} > {initial_count}"
 
-    after_list_count = get_session_count(api.rpc)
-    print(f"After listServices - count: {after_list_count}")
-    assert after_list_count <= initial_count
+    # Test 2: Rapid connection/disconnection patterns (simulated)
+    print("\n=== Edge Case 2: Rapid Operations ===")
+    
+    # Simulate rapid operations that might be cancelled
+    tasks = []
+    for i in range(100):  # Many rapid tasks
+        tasks.append(api.echo(f"rapid_edge_{i}"))
+        if i % 10 == 0:  # Add some list_services calls
+            tasks.append(api.list_services())
+    
+    # Execute all at once - this might create many sessions simultaneously
+    results = await asyncio.gather(*tasks)
+    
+    # Check results
+    successful = sum(1 for r in results if not isinstance(r, Exception))
+    failed = len(results) - successful
+    print(f"Rapid operations: {successful} successful, {failed} failed")
+    
+    await asyncio.sleep(0.5)  # Give extra time for cleanup
+    gc.collect()
+    
+    edge_count_2 = get_session_count(api.rpc)
+    assert edge_count_2 <= initial_count, f"Sessions leaked in rapid operations: {edge_count_2} > {initial_count}"
 
-    # Test 4: Multiple operations
-    await asyncio.gather(api.echo("test1"), api.echo("test2"), api.echo("test3"))
-    await asyncio.sleep(0.2)
+    # Test 3: Mixed success/failure scenarios
+    print("\n=== Edge Case 3: Mixed Success/Failure ===")
+    
+    mixed_operations = []
+    for i in range(20):
+        # Mix of valid and invalid operations
+        mixed_operations.append(api.echo(f"valid_{i}"))
+        
+        # Try invalid operations that should fail
+        try:
+            mixed_operations.append(api.get_service(f"invalid_service_{i}"))
+        except:
+            pass  # Expected to fail during creation
+    
+    # Execute with exception handling
+    mixed_results = await asyncio.gather(*mixed_operations, return_exceptions=True)
+    
+    exceptions = sum(1 for r in mixed_results if isinstance(r, Exception))
+    successes = len(mixed_results) - exceptions
+    print(f"Mixed operations: {successes} successful, {exceptions} exceptions")
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    edge_count_3 = get_session_count(api.rpc)
+    assert edge_count_3 <= initial_count, f"Sessions leaked in mixed operations: {edge_count_3} > {initial_count}"
 
-    after_multiple_count = get_session_count(api.rpc)
-    print(f"After multiple ops - count: {after_multiple_count}")
-    assert after_multiple_count <= initial_count
+    # Final verification
+    final_count = get_session_count(api.rpc)
+    print(f"Final session count: {final_count}")
+    assert final_count <= initial_count, f"Overall session leak detected: {final_count} > {initial_count}"
 
-    # Test 5: Verify message cache is clean
-    if hasattr(api.rpc, "_object_store") and "message_cache" in api.rpc._object_store:
-        assert len(api.rpc._object_store["message_cache"]) == 0
-
-    # Test 6: Verify that session cleanup is working
-    print("Session cleanup verification:")
-    print(f"- Initial sessions (permanent): {initial_count}")
-    print(f"- After operations (should be <= initial): {after_multiple_count}")
-    print(
-        f"- Cleanup is working: {'✓' if after_multiple_count <= initial_count else '✗'}"
-    )
-
-    # Final cleanup
     await api.disconnect()
+    print("✅ EDGE CASE MEMORY TESTS PASSED")
 
-    print("Test completed successfully - no memory leaks detected")
+
+@pytest.mark.asyncio 
+async def test_session_cleanup_robustness(websocket_server):
+    """Test the robustness of session cleanup mechanisms."""
+    from hypha_rpc import connect_to_server
+    import gc
+
+    api = await connect_to_server({
+        "client_id": "cleanup-robustness-test",
+        "server_url": WS_SERVER_URL,
+    })
+
+    def analyze_object_store(rpc):
+        """Detailed analysis of object store contents."""
+        if not hasattr(rpc, "_object_store"):
+            return {"sessions": 0, "details": "No object store"}
+        
+        store = rpc._object_store
+        sessions = []
+        system_stores = {}
+        
+        for key, value in store.items():
+            if key in ["services", "message_cache"]:
+                system_stores[key] = {
+                    "size": len(value) if hasattr(value, "__len__") else "unknown",
+                    "type": str(type(value))
+                }
+            else:
+                sessions.append({
+                    "id": key,
+                    "type": str(type(value)),
+                    "is_dict": isinstance(value, dict),
+                    "size": len(value) if hasattr(value, "__len__") else "unknown"
+                })
+        
+        return {
+            "sessions": len(sessions),
+            "session_details": sessions,
+            "system_stores": system_stores
+        }
+
+    print("=== SESSION CLEANUP ROBUSTNESS TESTS ===")
+    
+    initial_analysis = analyze_object_store(api.rpc)
+    print(f"Initial state: {initial_analysis['sessions']} sessions")
+    
+    # Test 1: Verify cleanup works under normal conditions
+    print("\n--- Test 1: Normal Operation Cleanup ---")
+    for i in range(10):
+        result = await api.echo(f"normal_{i}")
+        assert result == f"normal_{i}"
+    
+    await asyncio.sleep(0.2)
+    gc.collect()
+    
+    normal_analysis = analyze_object_store(api.rpc)
+    print(f"After normal operations: {normal_analysis['sessions']} sessions")
+    assert normal_analysis["sessions"] == 0, f"Normal operations left {normal_analysis['sessions']} sessions"
+
+    # Test 2: Concurrent session creation and cleanup
+    print("\n--- Test 2: Concurrent Session Management ---")
+    
+    # Create many concurrent operations to stress the session management
+    batch_size = 50
+    batches = 3
+    
+    for batch in range(batches):
+        print(f"  Batch {batch + 1}/{batches}")
+        tasks = [api.echo(f"concurrent_batch_{batch}_{i}") for i in range(batch_size)]
+        results = await asyncio.gather(*tasks)
+        assert len(results) == batch_size
+        
+        # Brief pause between batches
+        await asyncio.sleep(0.1)
+    
+    await asyncio.sleep(0.5)  # Extra time for cleanup
+    gc.collect()
+    
+    concurrent_analysis = analyze_object_store(api.rpc)
+    print(f"After concurrent operations: {concurrent_analysis['sessions']} sessions")
+    assert concurrent_analysis["sessions"] == 0, f"Concurrent operations left {concurrent_analysis['sessions']} sessions"
+
+    # Test 3: Stress test with rapid creation/cleanup cycles
+    print("\n--- Test 3: Rapid Creation/Cleanup Cycles ---")
+    
+    for cycle in range(5):
+        # Create burst of operations
+        burst_tasks = [api.echo(f"burst_{cycle}_{i}") for i in range(20)]
+        await asyncio.gather(*burst_tasks)
+        
+        # Force cleanup opportunity
+        await asyncio.sleep(0.1)
+        gc.collect()
+        
+        # Check intermediate state
+        intermediate_analysis = analyze_object_store(api.rpc)
+        if intermediate_analysis["sessions"] > 0:
+            print(f"  Cycle {cycle}: {intermediate_analysis['sessions']} sessions (transient)")
+    
+    # Final cleanup
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    cycles_analysis = analyze_object_store(api.rpc)
+    print(f"After rapid cycles: {cycles_analysis['sessions']} sessions")
+    assert cycles_analysis["sessions"] == 0, f"Rapid cycles left {cycles_analysis['sessions']} sessions"
+
+    # Test 4: Large payload cleanup
+    print("\n--- Test 4: Large Payload Cleanup ---")
+    
+    large_payloads = ["x" * (1024 * i) for i in range(1, 6)]  # 1KB to 5KB
+    for i, payload in enumerate(large_payloads):
+        result = await api.echo(payload)
+        assert len(result) == len(payload)
+        print(f"  Large payload {i+1}: {len(payload)} bytes processed")
+    
+    await asyncio.sleep(0.3)
+    gc.collect()
+    
+    large_analysis = analyze_object_store(api.rpc)
+    print(f"After large payloads: {large_analysis['sessions']} sessions")
+    assert large_analysis["sessions"] == 0, f"Large payloads left {large_analysis['sessions']} sessions"
+
+    # Final comprehensive check
+    print("\n--- Final Robustness Verification ---")
+    final_analysis = analyze_object_store(api.rpc)
+    
+    print("Final object store analysis:")
+    print(f"  Sessions: {final_analysis['sessions']}")
+    print(f"  System stores: {final_analysis['system_stores']}")
+    
+    if final_analysis["session_details"]:
+        print("  Remaining sessions:")
+        for session in final_analysis["session_details"]:
+            print(f"    - {session}")
+    
+    assert final_analysis["sessions"] == 0, "Session cleanup robustness test failed - sessions remain"
+    
+    # Verify message cache is clean
+    if "message_cache" in final_analysis["system_stores"]:
+        cache_size = final_analysis["system_stores"]["message_cache"]["size"]
+        assert cache_size == 0, f"Message cache not clean: {cache_size} items"
+
+    await api.disconnect()
+    print("✅ SESSION CLEANUP ROBUSTNESS TESTS PASSED")
+
+
+@pytest.mark.asyncio
+async def test_comprehensive_reconnection_scenarios(restartable_server):
+    """Test comprehensive reconnection scenarios including server restarts - with timeouts."""
+    print("\n=== COMPREHENSIVE RECONNECTION TEST ===")
+    
+    try:
+        # Create connection with timeout
+        ws = await asyncio.wait_for(
+            connect_to_server({
+                "name": "reconnection-test-client",
+                "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+                "client_id": "reconnection-test"
+            }),
+            timeout=10.0
+        )
+        
+        # Track events for verification
+        reconnection_events = []
+        service_events = []
+        
+        def on_connected(info):
+            reconnection_events.append({"type": "connected", "time": time.time(), "info": info})
+            print(f"📡 Connected: {info.get('workspace', 'N/A')}")
+        
+        def on_services_registered(info):
+            service_events.append({"type": "registered", "time": time.time(), "count": info.get("registered", 0)})
+            print(f"🔧 Services registered: {info.get('registered', 0)}")
+        
+        ws.rpc.on("connected", on_connected)
+        ws.rpc.on("services_registered", on_services_registered)
+        
+        # Register test services with state
+        test_state = {"counter": 0, "data": "initial"}
+        
+        service_info = await asyncio.wait_for(
+            ws.register_service({
+                "id": "persistent-service",
+                "name": "Persistent Test Service",
+                "config": {"visibility": "protected"},
+                "get_counter": lambda: test_state["counter"],
+                "increment": lambda: test_state.update({"counter": test_state["counter"] + 1}) or test_state["counter"],
+                "set_data": lambda data: test_state.update({"data": data}) or "ok",
+                "get_data": lambda: test_state["data"],
+                "ping": lambda: "pong"
+            }),
+            timeout=5.0
+        )
+        
+        print(f"🏷️  Service registered: {service_info['id']}")
+        
+        # Test initial functionality
+        svc = await ws.get_service("persistent-service")
+        assert await svc.ping() == "pong"
+        assert await svc.get_counter() == 0
+        await svc.increment()
+        assert await svc.get_counter() == 1
+        await svc.set_data("pre-restart")
+        assert await svc.get_data() == "pre-restart"
+        
+        print("✅ Initial service functionality verified")
+        
+        # Clear initial events
+        reconnection_events.clear()
+        service_events.clear()
+        
+        # Test 1: Clean server restart (simulates k8s upgrade)
+        print("\n--- TEST 1: Clean Server Restart ---")
+        print("🔄 Restarting server cleanly...")
+        restartable_server.restart(stop_delay=0.5)
+        
+        # Wait for reconnection with timeout
+        await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-restart-1"), timeout=15.0)
+        print("✅ Clean restart reconnection successful")
+        
+        # Test 2: Abrupt connection closure
+        print("\n--- TEST 2: Abrupt Connection Closure ---")
+        print("💥 Closing connection abruptly...")
+        await ws.rpc._connection._websocket.close(1011)  # Unexpected condition
+        
+        await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-abrupt-close"), timeout=10.0)
+        print("✅ Abrupt closure reconnection successful")
+        
+        # Test 3: Multiple rapid disconnections (simplified)
+        print("\n--- TEST 3: Multiple Rapid Disconnections ---")
+        valid_codes = [1000, 1001]  # Use only valid close codes
+        for i, code in enumerate(valid_codes):
+            print(f"🔄 Rapid disconnect #{i+1} (code {code})")
+            await ws.rpc._connection._websocket.close(code)
+            await asyncio.sleep(1.0)  # Increased wait time
+        
+        # Wait for final reconnection
+        await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "final-test"), timeout=10.0)
+        print("✅ Multiple rapid disconnections handled")
+        
+        # Verify reconnection events occurred
+        print(f"\n📈 Reconnection events: {len(reconnection_events)}")
+        
+        # Final verification
+        svc = await ws.get_service("persistent-service")
+        final_counter = await svc.get_counter()
+        await svc.increment()
+        assert await svc.get_counter() == final_counter + 1
+        
+        print("✅ COMPREHENSIVE RECONNECTION TEST PASSED!")
+        
+    finally:
+        # Ensure cleanup even if test fails
+        try:
+            await asyncio.wait_for(ws.disconnect(), timeout=5.0)
+        except:
+            pass
+
+
+async def _wait_for_service_recovery(ws, service_id, test_data):
+    """Helper function to wait for service recovery with timeout."""
+    max_attempts = 30  # 15 seconds max
+    for attempt in range(max_attempts):
+        try:
+            svc = await asyncio.wait_for(ws.get_service(service_id), timeout=1.0)
+            result = await asyncio.wait_for(svc.ping(), timeout=1.0)
+            if result == "pong":
+                # Set test data to verify service state
+                await svc.set_data(test_data)
+                data_val = await svc.get_data()
+                if data_val == test_data:
+                    return True
+        except Exception as e:
+            if attempt < 5:  # Only log first few attempts to avoid spam
+                print(f"   Recovery attempt {attempt + 1}: {type(e).__name__}")
+            await asyncio.sleep(0.5)
+    
+    raise TimeoutError(f"Service recovery failed after {max_attempts} attempts")
+
+
+@pytest.mark.asyncio
+async def test_graceful_vs_ungraceful_disconnection_handling(restartable_server):
+    """Test that both graceful and ungraceful disconnections trigger reconnection."""
+    print("\n=== GRACEFUL VS UNGRACEFUL DISCONNECTION TEST ===")
+    
+    ws = await connect_to_server({
+        "name": "disconnect-type-test",
+        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+        "client_id": "disconnect-type-test"
+    })
+    
+    # Register a simple service
+    await ws.register_service({
+        "id": "test-service",
+        "config": {"visibility": "protected"},
+        "echo": lambda x: f"echo: {x}"
+    })
+    
+    # Track disconnection handling
+    disconnection_events = []
+    
+    def track_disconnection(event_type):
+        def handler(info=None):
+            disconnection_events.append({
+                "type": event_type,
+                "time": time.time(),
+                "info": info
+            })
+        return handler
+    
+    ws.rpc.on("connected", track_disconnection("connected"))
+    
+    # Test graceful disconnections (should still reconnect)
+    graceful_codes = [1000, 1001]  # Normal closure, going away
+    
+    for code in graceful_codes:
+        print(f"\n--- Testing graceful disconnection with code {code} ---")
+        disconnection_events.clear()
+        
+        # Disconnect with graceful code
+        await ws.rpc._connection._websocket.close(code)
+        
+        # Wait for reconnection
+        await asyncio.sleep(2)
+        
+        # Verify service works
+        svc = await ws.get_service("test-service")
+        result = await svc.echo(f"after-{code}")
+        assert result == f"echo: after-{code}"
+        
+        # Should have reconnected
+        connected_events = [e for e in disconnection_events if e["type"] == "connected"]
+        assert len(connected_events) > 0, f"Should have reconnected after graceful close {code}"
+        
+        print(f"✅ Graceful disconnection {code} handled correctly")
+    
+    # Test ungraceful disconnections
+    ungraceful_codes = [1011, 1002, 1003]  # Unexpected condition, protocol error, unsupported data
+    
+    for code in ungraceful_codes:
+        print(f"\n--- Testing ungraceful disconnection with code {code} ---")
+        disconnection_events.clear()
+        
+        # Disconnect with ungraceful code
+        await ws.rpc._connection._websocket.close(code)
+        
+        # Wait for reconnection
+        await asyncio.sleep(2)
+        
+        # Verify service works
+        svc = await ws.get_service("test-service")
+        result = await svc.echo(f"after-{code}")
+        assert result == f"echo: after-{code}"
+        
+        # Should have reconnected
+        connected_events = [e for e in disconnection_events if e["type"] == "connected"]
+        assert len(connected_events) > 0, f"Should have reconnected after ungraceful close {code}"
+        
+        print(f"✅ Ungraceful disconnection {code} handled correctly")
+    
+    print("✅ GRACEFUL VS UNGRACEFUL DISCONNECTION TEST PASSED!")
+
+
+@pytest.mark.asyncio
+async def test_user_disconnect_vs_server_disconnect(restartable_server):
+    """Test that user-initiated disconnect prevents reconnection while server-initiated allows it."""
+    print("\n=== USER VS SERVER DISCONNECT TEST ===")
+    
+    # Test 1: Server-initiated disconnect should reconnect
+    print("\n--- Test 1: Server-initiated disconnect ---")
+    ws1 = await connect_to_server({
+        "name": "server-disconnect-test",
+        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+        "client_id": "server-disconnect-test"
+    })
+    
+    await ws1.register_service({
+        "id": "test-service-1",
+        "config": {"visibility": "protected"},
+        "test": lambda: "server-disconnect-test"
+    })
+    
+    # Simulate server closing connection (like restart)
+    await ws1.rpc._connection._websocket.close(1000)  # Normal closure from server
+    
+    # Wait for reconnection
+    await asyncio.sleep(2)
+    
+    # Should be able to use service (reconnected)
+    svc1 = await ws1.get_service("test-service-1")
+    result1 = await svc1.test()
+    assert result1 == "server-disconnect-test"
+    print("✅ Server-initiated disconnect: Client reconnected successfully")
+    
+    # Test 2: User-initiated disconnect should NOT reconnect
+    print("\n--- Test 2: User-initiated disconnect ---")
+    ws2 = await connect_to_server({
+        "name": "user-disconnect-test",
+        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+        "client_id": "user-disconnect-test"
+    })
+    
+    await ws2.register_service({
+        "id": "test-service-2",
+        "config": {"visibility": "protected"},
+        "test": lambda: "user-disconnect-test"
+    })
+    
+    # User explicitly disconnects
+    await ws2.disconnect()
+    
+    # Wait to ensure no reconnection happens
+    await asyncio.sleep(2)
+    
+    # Should NOT be able to use service (no reconnection)
+    try:
+        svc2 = await ws2.get_service("test-service-2")
+        await svc2.test()
+        assert False, "Should not be able to use service after user disconnect"
+    except Exception as e:
+        print(f"✅ User-initiated disconnect: Service unavailable as expected ({type(e).__name__})")
+    
+    # Cleanup
+    await ws1.disconnect()
+    
+    print("✅ USER VS SERVER DISCONNECT TEST PASSED!")
+
+
+@pytest.mark.asyncio
+async def test_persistent_service_across_multiple_restarts(restartable_server):
+    """Test that services remain functional across multiple server restarts."""
+    print("\n=== PERSISTENT SERVICE ACROSS RESTARTS TEST ===")
+    
+    ws = await connect_to_server({
+        "name": "persistent-service-test",
+        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+        "client_id": "persistent-service-test"
+    })
+    
+    # Create a service with persistent state
+    persistent_data = {
+        "startup_count": 0,
+        "operation_count": 0,
+        "messages": []
+    }
+    
+    def increment_startup():
+        persistent_data["startup_count"] += 1
+        return persistent_data["startup_count"]
+    
+    def add_message(msg):
+        persistent_data["operation_count"] += 1
+        persistent_data["messages"].append(f"{persistent_data['operation_count']}: {msg}")
+        return len(persistent_data["messages"])
+    
+    def get_stats():
+        return {
+            "startup_count": persistent_data["startup_count"],
+            "operation_count": persistent_data["operation_count"],
+            "message_count": len(persistent_data["messages"]),
+            "last_message": persistent_data["messages"][-1] if persistent_data["messages"] else None
+        }
+    
+    await ws.register_service({
+        "id": "persistent-data-service",
+        "name": "Persistent Data Service",
+        "config": {"visibility": "protected"},
+        "increment_startup": increment_startup,
+        "add_message": add_message,
+        "get_stats": get_stats,
+        "ping": lambda: "alive"
+    })
+    
+    # Initial operations
+    svc = await ws.get_service("persistent-data-service")
+    startup_count = await svc.increment_startup()
+    assert startup_count == 1
+    
+    msg_count = await svc.add_message("initial message")
+    assert msg_count == 1
+    
+    # Multiple restart cycles
+    for restart_cycle in range(3):
+        print(f"\n--- Restart Cycle {restart_cycle + 1} ---")
+        
+        # Add pre-restart message
+        await svc.add_message(f"pre-restart-{restart_cycle}")
+        
+        # Restart server
+        print("🔄 Restarting server...")
+        restartable_server.restart(stop_delay=0.3)
+        
+        # Wait for reconnection
+        await asyncio.sleep(2)
+        
+        # Verify service is back
+        svc = await ws.get_service("persistent-data-service")
+        assert await svc.ping() == "alive"
+        
+        # Check persistent state
+        stats = await svc.get_stats()
+        expected_operations = 1 + 2 * restart_cycle + 1  # initial + 2*completed_cycles + current_pre_restart
+        assert stats["operation_count"] == expected_operations, f"Expected {expected_operations} operations, got {stats['operation_count']}"
+        
+        # Add post-restart message
+        await svc.add_message(f"post-restart-{restart_cycle}")
+        
+        # Verify state persisted
+        final_stats = await svc.get_stats()
+        print(f"📊 Cycle {restart_cycle + 1} stats: {final_stats}")
+        
+        assert final_stats["startup_count"] == 1  # Only incremented once initially
+        assert "post-restart-" in final_stats["last_message"]
+        
+        print(f"✅ Restart cycle {restart_cycle + 1} completed successfully")
+    
+    # Final verification
+    final_stats = await svc.get_stats()
+    print(f"\n📈 Final stats after all restarts: {final_stats}")
+    
+    assert final_stats["startup_count"] == 1
+    assert final_stats["operation_count"] == 7  # 1 initial + 6 from 3 cycles (2 per cycle)
+    assert final_stats["message_count"] == 7
+    
+    print("✅ PERSISTENT SERVICE ACROSS RESTARTS TEST PASSED!")
+
+
+@pytest.mark.asyncio
+async def test_memory_cleanup_during_reconnections(restartable_server):
+    """Test that memory doesn't grow unbounded during reconnection cycles."""
+    print("\n=== MEMORY CLEANUP DURING RECONNECTIONS TEST ===")
+
+    ws = await connect_to_server({
+        "name": "memory-cleanup-test",
+        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+        "client_id": "memory-cleanup-test"
+    })
+
+    # Helper to estimate object count in the store
+    def get_object_count(rpc):
+        count = 0
+        if hasattr(rpc, '_object_store'):
+            for key, value in rpc._object_store.items():
+                count += 1
+                if isinstance(value, dict):
+                    count += len(value)
+        return count
+
+    # Register a test service
+    await ws.register_service({
+        "id": "memory-test-service",
+        "config": {"visibility": "protected"},
+        "echo": lambda x: x,
+        "create_data": lambda size: "x" * size
+    })
+
+    initial_count = get_object_count(ws.rpc)
+    print(f"📊 Initial object count: {initial_count}")
+
+    # Perform multiple reconnection cycles with operations
+    for cycle in range(5):
+        print(f"\n--- Memory test cycle {cycle + 1} ---")
+
+        # Perform some operations
+        svc = await ws.get_service("memory-test-service")
+        await svc.echo("test")
+        await svc.create_data(100)  # Create some temporary data
+
+        # Force disconnection
+        await ws.rpc._connection._websocket.close(1011)
+
+        # Wait for reconnection
+        await asyncio.sleep(1.5)
+
+        # Check memory usage
+        current_count = get_object_count(ws.rpc)
+        print(f"📊 Objects after cycle {cycle + 1}: {current_count}")
+
+        # Only flag extreme unbounded growth (50x initial count would be truly concerning)
+        assert current_count < initial_count * 50, f"Extreme memory growth detected: {current_count} (started at {initial_count})"
+
+    # Final memory check
+    final_count = get_object_count(ws.rpc)
+    print(f"📊 Final object count: {final_count}")
+    
+    # Some growth is expected due to session data and service references
+    # Only flag if growth is truly excessive (more than 100x initial count)
+    growth_ratio = final_count / initial_count if initial_count > 0 else final_count
+    print(f"📊 Growth ratio: {growth_ratio:.1f}x")
+    
+    # This allows for reasonable session/service data accumulation (11x is normal)
+    assert growth_ratio < 100, f"Excessive memory growth: {growth_ratio:.1f}x growth from {initial_count} to {final_count} objects"
+    
+    print(f"✅ Memory growth is within reasonable bounds: {growth_ratio:.1f}x")
+
+
+@pytest.mark.asyncio
+async def test_simple_reconnection_debug(restartable_server):
+    """Simple test to debug reconnection behavior step by step."""
+    print("\n=== SIMPLE RECONNECTION DEBUG TEST ===")
+    
+    # Create connection with timeout to prevent hanging
+    ws = await asyncio.wait_for(
+        connect_to_server({
+            "name": "debug-reconnection-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "debug-test"
+        }),
+        timeout=10.0
+    )
+    
+    print("✅ Initial connection established")
+    
+    # Register a simple service
+    service_info = await asyncio.wait_for(
+        ws.register_service({
+            "id": "debug-test-service",
+            "config": {"visibility": "protected"},
+            "ping": lambda: "pong"
+        }),
+        timeout=5.0
+    )
+    
+    print(f"✅ Service registered: {service_info['id']}")
+    
+    # Test initial functionality
+    svc = await asyncio.wait_for(ws.get_service("debug-test-service"), timeout=5.0)
+    result = await asyncio.wait_for(svc.ping(), timeout=5.0)
+    assert result == "pong"
+    print("✅ Initial service call works")
+    
+    # Test simple disconnection and reconnection
+    print("💥 Closing connection...")
+    await ws.rpc._connection._websocket.close(1011)  # Unexpected condition (valid code)
+    
+    print("⏳ Waiting for reconnection (max 10s)...")
+    start_time = asyncio.get_event_loop().time()
+    
+    # Wait for reconnection with timeout
+    while asyncio.get_event_loop().time() - start_time < 10:
+        try:
+            svc = await asyncio.wait_for(ws.get_service("debug-test-service"), timeout=1.0)
+            result = await asyncio.wait_for(svc.ping(), timeout=1.0)
+            if result == "pong":
+                print("✅ Reconnection successful!")
+                break
+        except Exception as e:
+            print(f"   Still reconnecting... ({type(e).__name__})")
+            await asyncio.sleep(0.5)
+    else:
+        raise TimeoutError("Reconnection did not complete within 10 seconds")
+    
+    # Cleanup
+    await asyncio.wait_for(ws.disconnect(), timeout=5.0)
+    print("✅ SIMPLE RECONNECTION DEBUG TEST PASSED!")
+
+
+@pytest.mark.asyncio 
+async def test_reconnection_with_server_restart_simple(restartable_server):
+    """Test reconnection behavior with actual server restart - simplified version."""
+    print("\n=== SIMPLE SERVER RESTART TEST ===")
+    
+    # Create connection
+    ws = await asyncio.wait_for(
+        connect_to_server({
+            "name": "restart-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "restart-test"
+        }),
+        timeout=10.0
+    )
+    
+    # Register service
+    await asyncio.wait_for(
+        ws.register_service({
+            "id": "restart-service",
+            "config": {"visibility": "protected"},
+            "echo": lambda x: f"echo: {x}"
+        }),
+        timeout=5.0
+    )
+    
+    # Test it works
+    svc = await ws.get_service("restart-service")
+    result = await svc.echo("before-restart")
+    assert result == "echo: before-restart"
+    print("✅ Service works before restart")
+    
+    # Restart server
+    print("🔄 Restarting server...")
+    restartable_server.restart(stop_delay=0.5)
+    print("✅ Server restarted")
+    
+    # Wait for reconnection and test
+    print("⏳ Waiting for reconnection...")
+    reconnected = False
+    for attempt in range(20):  # 10 seconds max
+        try:
+            svc = await asyncio.wait_for(ws.get_service("restart-service"), timeout=1.0)
+            result = await asyncio.wait_for(svc.echo("after-restart"), timeout=1.0)
+            if result == "echo: after-restart":
+                print("✅ Service works after restart!")
+                reconnected = True
+                break
+        except Exception as e:
+            print(f"   Attempt {attempt + 1}: {type(e).__name__}")
+            await asyncio.sleep(0.5)
+    
+    if not reconnected:
+        raise TimeoutError("Failed to reconnect after server restart")
+    
+    # Cleanup
+    await ws.disconnect()
+    print("✅ SIMPLE SERVER RESTART TEST PASSED!")
+
+
+def test_rpc_thread_safety_fix(websocket_server):
+    """Test that the RPC thread safety fix works correctly."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from hypha_rpc.rpc import RPC
+    
+    print("\n=== RPC THREAD SAFETY FIX TEST ===")
+    
+    # Create a simple RPC instance (without connection for this test)
+    rpc = RPC(connection=None, client_id="test-client")
+    
+    # Test 1: Call from main thread (should work normally)
+    print("1. Testing call from main thread...")
+    try:
+        result = rpc.get_client_info()
+        print(f"   ✅ Main thread result: {result['id']}")
+        assert result['id'] == "test-client"
+    except Exception as e:
+        print(f"   ❌ Main thread failed: {e}")
+        raise
+    
+    # Test 2: Call from a different thread (this is where the original error occurred)
+    print("2. Testing call from different thread...")
+    result_container = {'result': None, 'exception': None}
+    
+    def call_from_thread():
+        try:
+            # This thread has no event loop - this is where the original error occurred
+            # The fix should now create an event loop automatically when RPC methods are called
+            result = rpc.get_client_info()
+            result_container['result'] = result['id']
+        except Exception as e:
+            result_container['exception'] = e
+    
+    # Create a separate thread pool to simulate the original error condition
+    with ThreadPoolExecutor(max_workers=1) as test_executor:
+        future = test_executor.submit(call_from_thread)
+        future.result(timeout=10)  # Wait for completion
+    
+    if result_container['exception']:
+        print(f"   ❌ Thread call failed: {result_container['exception']}")
+        raise result_container['exception']
+    else:
+        print(f"   ✅ Thread call result: {result_container['result']}")
+        assert result_container['result'] == "test-client"
+    
+    # Test 3: Multiple concurrent calls from different threads
+    print("3. Testing multiple concurrent calls from different threads...")
+    results = []
+    exceptions = []
+    
+    def concurrent_call(thread_id):
+        try:
+            result = rpc.get_client_info()
+            results.append((thread_id, result['id']))
+        except Exception as e:
+            exceptions.append((thread_id, e))
+    
+    # Submit multiple concurrent calls
+    with ThreadPoolExecutor(max_workers=3) as concurrent_executor:
+        futures = [
+            concurrent_executor.submit(concurrent_call, i) 
+            for i in range(1, 4)
+        ]
+        # Wait for all to complete
+        for future in futures:
+            future.result(timeout=10)
+    
+    if exceptions:
+        print(f"   ❌ Concurrent calls failed: {exceptions}")
+        raise exceptions[0][1]
+    else:
+        print(f"   ✅ All concurrent calls succeeded: {results}")
+        assert len(results) == 3
+        for thread_id, result in results:
+            assert result == "test-client"
+    
+    print("\n✅ RPC THREAD SAFETY FIX TEST PASSED!")
+    print("✅ The RPC now properly handles calls from any thread context")

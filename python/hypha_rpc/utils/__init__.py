@@ -8,13 +8,70 @@ import re
 import secrets
 import string
 import traceback
+from functools import partial
 import html
 import uuid
-from functools import partial
 from inspect import Parameter, Signature
 from collections.abc import Mapping
 from types import BuiltinFunctionType, FunctionType
 from munch import Munch, munchify
+
+
+def ensure_event_loop():
+    """
+    Ensure there's an event loop available for the current thread.
+    
+    This function checks if there's a running event loop or an event loop
+    set for the current thread. If neither exists, it creates a new one.
+    
+    This is useful for preventing RuntimeError when calling asyncio.Future()
+    or other asyncio operations from threads without event loops.
+    """
+    try:
+        # First check if there's a running loop
+        asyncio.get_running_loop()
+        return  # Running loop exists, nothing to do
+    except RuntimeError:
+        pass
+    
+    try:
+        # Check if there's a loop set for this thread
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            # Loop exists but is closed, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    except RuntimeError:
+        # No event loop exists, create one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+
+def safe_create_future():
+    """
+    Safely create an asyncio.Future() that works from any thread context.
+    
+    This is a more targeted approach than ensure_event_loop() - it only
+    creates an event loop if absolutely necessary for Future creation.
+    """
+    try:
+        # First check if there's a running loop
+        asyncio.get_running_loop()
+        return asyncio.Future()
+    except RuntimeError:
+        # No running loop, check if there's a loop set for this thread
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                # Loop exists but is closed, create a new one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            return asyncio.Future()
+        except RuntimeError:
+            # No event loop exists at all, create one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return asyncio.Future()
 
 
 # The following code adopted from the munch library,
@@ -467,7 +524,7 @@ def callable_doc(any_callable):
     """Return the docstring of a callable."""
     if isinstance(any_callable, partial):
         return any_callable.func.__doc__
-
+    
     try:
         return any_callable.__doc__
     except AttributeError:
