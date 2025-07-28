@@ -636,7 +636,7 @@ describe("HTTP Message Transmission", () => {
     console.log("\n=== TESTING CONFIGURABLE MULTIPART SIZE AND PARALLEL UPLOADS ===");
     
     // Verify configuration was applied
-    expect(httpClient.rpc._multipart_size).to.equal(10 * 1024 * 1024); // Default
+    expect(httpClient.rpc._multipart_size).to.equal(6 * 1024 * 1024); // Default
     expect(httpClient.rpc._max_parallel_uploads).to.equal(5); // Default
     
     console.log(`✅ Multipart size configured: ${httpClient.rpc._multipart_size / (1024*1024)}MB`);
@@ -693,8 +693,8 @@ describe("HTTP Message Transmission", () => {
     
     const lastEvent = httpTransmissionEvents[httpTransmissionEvents.length - 1];
     expect(lastEvent.content_length).to.equal(testData.byteLength);
-    expect(lastEvent.multipart_size).to.equal(10 * 1024 * 1024); // Should match our configuration
-    expect(lastEvent.part_count).to.equal(Math.ceil(testData.byteLength / (10 * 1024 * 1024))); // Should be 2 parts for 15MB
+    expect(lastEvent.multipart_size).to.equal(6 * 1024 * 1024); // Should match our configuration
+    expect(lastEvent.part_count).to.equal(Math.ceil(testData.byteLength / (6 * 1024 * 1024))); // Should be 3 parts for 15MB
     expect(lastEvent.used_multipart).to.be.true;
     
     console.log(`✅ Multipart configuration verified: ${lastEvent.part_count} parts of ${lastEvent.multipart_size / (1024*1024)}MB each`);

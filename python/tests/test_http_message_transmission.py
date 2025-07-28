@@ -2,11 +2,12 @@
 
 import asyncio
 import pytest
+import pytest_asyncio
 import math
 import time
 import numpy as np
 
-from hypha_rpc import connect_to_server
+from hypha_rpc import connect_to_server, login
 from . import WS_SERVER_URL
 
 
@@ -33,14 +34,40 @@ def generate_large_string(size_mb):
 # FIXTURES
 # ============================================================================
 
-@pytest.fixture
-async def http_client(fastapi_server, test_user_token):
+@pytest_asyncio.fixture
+async def http_client(fastapi_server):
     """Create a client for HTTP transmission testing."""
     client = await connect_to_server({
         "name": "http-test-client",
         "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "enable_http_transmission": True,
+        "http_transmission_threshold": 1024 * 1024,  # 1MB
+        "multipart_threshold": 10 * 1024 * 1024,  # 10MB
+        "multipart_size": 6 * 1024 * 1024,  # 6MB
     })
+    
+    # Wait for HTTP transmission to initialize
+    max_wait = 5  # seconds
+    wait_interval = 0.1
+    total_waited = 0
+    
+    while total_waited < max_wait:
+        if hasattr(client.rpc, '_http_message_transmission_available'):
+            if client.rpc._http_message_transmission_available:
+                print("✅ HTTP transmission initialized automatically")
+                break
+        await asyncio.sleep(wait_interval)
+        total_waited += wait_interval
+    
+    # If still not initialized, try manual initialization
+    if hasattr(client.rpc, '_http_message_transmission_available') and not client.rpc._http_message_transmission_available:
+        print("⚠️  HTTP transmission not auto-initialized, attempting manual initialization...")
+        try:
+            await client.rpc._initialize_http_message_transmission()
+            print(f"✅ Manual initialization successful: {client.rpc._http_message_transmission_available}")
+        except Exception as e:
+            print(f"❌ Manual initialization failed: {e}")
+    
     yield client
     await client.disconnect()
 
@@ -63,14 +90,46 @@ async def test_http_transmission_availability(http_client):
     
     if http_client.rpc._http_message_transmission_available:
         print("✅ S3 controller is properly initialized")
+        assert http_client.rpc._s3controller is not None
+        
+        # Verify S3 controller has required methods
+        required_methods = ["put_file", "get_file", "put_file_start_multipart", "put_file_complete_multipart"]
+        for method in required_methods:
+            assert hasattr(http_client.rpc._s3controller, method), f"S3 controller missing method: {method}"
+        print("✅ All required S3 methods are available")
     else:
-        print("⚠️  HTTP transmission not available (this is normal if S3 is not configured)")
+        pytest.skip("HTTP transmission not available - S3 may not be configured")
 
 
 @pytest.mark.asyncio
-async def test_small_message_below_threshold(http_client):
+async def test_small_message_below_threshold(fastapi_server, test_user_token):
     """Test that messages below 1MB threshold use regular WebSocket transmission."""
     print("\n=== TESTING SMALL MESSAGE (BELOW 1MB THRESHOLD) ===")
+    
+    # Create a client with HTTP transmission configured
+    client = await connect_to_server({
+        "name": "http-test-client",
+        "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
+        "token": test_user_token,
+        "enable_http_transmission": True,
+        "http_transmission_threshold": 1024 * 1024,  # 1MB
+        "multipart_threshold": 10 * 1024 * 1024,  # 10MB
+        "multipart_size": 6 * 1024 * 1024,  # 6MB
+    })
+    
+    # Wait for HTTP transmission to initialize
+    max_wait = 5  # seconds
+    wait_interval = 0.1
+    total_waited = 0
+    
+    while total_waited < max_wait:
+        if hasattr(client.rpc, '_http_message_transmission_available'):
+            if client.rpc._http_message_transmission_available:
+                print("✅ HTTP transmission initialized automatically")
+                break
+        await asyncio.sleep(wait_interval)
+        total_waited += wait_interval
     
     # Track HTTP transmission events
     http_transmission_events = []
@@ -79,28 +138,15 @@ async def test_small_message_below_threshold(http_client):
         http_transmission_events.append(data)
         print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
     
-    http_client.rpc.on("http_transmission_stats", on_http_transmission)
+    client.rpc.on("http_transmission_stats", on_http_transmission)
     
-    # Register a service that echoes data
-    def echo_data(data):
-        return data
-    
-    service_info = await http_client.register_service({
-        "id": "echo-service",
-        "name": "Echo Service",
-        "config": {"visibility": "public"},
-        "echo_data": echo_data
-    })
-    
-    print(f"✅ Service registered: {service_info['id']}")
-    
-    # Test with small data (500KB - well below 1MB threshold)
+    # Test with built-in echo service
     small_data = generate_test_data(0.5)  # 500KB
     print(f"📤 Sending {len(small_data) / (1024*1024):.1f}MB of data...")
     
     start_time = time.time()
-    service = await http_client.get_service("echo-service")
-    result = await service.echo_data(small_data)
+    # Use the built-in echo method
+    result = await client.echo(small_data)
     transmission_time = time.time() - start_time
     
     print(f"✅ Data echoed successfully in {transmission_time:.2f}s")
@@ -109,12 +155,40 @@ async def test_small_message_below_threshold(http_client):
     # Verify NO HTTP transmission was used
     assert len(http_transmission_events) == 0, "HTTP transmission should not be used for small messages"
     print("✅ Confirmed: Small message used regular WebSocket transmission")
+    
+    # Cleanup
+    await client.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_medium_message_single_upload(http_client):
+async def test_medium_message_single_upload(fastapi_server, test_user_token):
     """Test that messages between 1MB and 10MB use single upload HTTP transmission."""
     print("\n=== TESTING MEDIUM MESSAGE (1MB-10MB, SINGLE UPLOAD) ===")
+    
+    # Create a client with HTTP transmission configured
+    client = await connect_to_server({
+        "name": "http-test-client-medium",
+        "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
+        "token": test_user_token,
+        "enable_http_transmission": True,
+        "http_transmission_threshold": 1024 * 1024,  # 1MB
+        "multipart_threshold": 10 * 1024 * 1024,  # 10MB
+        "multipart_size": 6 * 1024 * 1024,  # 6MB
+    })
+    
+    # Wait for HTTP transmission to initialize
+    max_wait = 5  # seconds
+    wait_interval = 0.1
+    total_waited = 0
+    
+    while total_waited < max_wait:
+        if hasattr(client.rpc, '_http_message_transmission_available'):
+            if client.rpc._http_message_transmission_available:
+                print("✅ HTTP transmission initialized automatically")
+                break
+        await asyncio.sleep(wait_interval)
+        total_waited += wait_interval
     
     # Track HTTP transmission events
     http_transmission_events = []
@@ -125,33 +199,18 @@ async def test_medium_message_single_upload(http_client):
         print(f"   Method: {data['transmission_method']}, Parts: {data['part_count']}")
         print(f"   Used multipart: {data['used_multipart']}")
     
-    http_client.rpc.on("http_transmission_stats", on_http_transmission)
-    
-    # Register a service that processes data
-    def process_data(data):
-        return {"received_size": len(data), "processed": True}
-    
-    service_info = await http_client.register_service({
-        "id": "process-service",
-        "name": "Process Service",
-        "config": {"visibility": "public"},
-        "process_data": process_data
-    })
-    
-    print(f"✅ Service registered: {service_info['id']}")
+    client.rpc.on("http_transmission_stats", on_http_transmission)
     
     # Test with medium data (5MB - above 1MB threshold, below 10MB multipart threshold)
     medium_data = generate_test_data(5)  # 5MB
     print(f"📤 Sending {len(medium_data) / (1024*1024):.1f}MB of data...")
     
     start_time = time.time()
-    service = await http_client.get_service("process-service")
-    result = await service.process_data(medium_data)
+    result = await client.echo(medium_data)
     transmission_time = time.time() - start_time
     
     print(f"✅ Data processed successfully in {transmission_time:.2f}s")
-    assert result["received_size"] == len(medium_data)
-    assert result["processed"] is True
+    assert result == medium_data
     
     # Verify HTTP transmission was used with single upload
     assert len(http_transmission_events) == 1, "HTTP transmission should be used for medium messages"
@@ -161,6 +220,9 @@ async def test_medium_message_single_upload(http_client):
     assert event["used_multipart"] is False
     assert event["multipart_threshold"] == 10 * 1024 * 1024  # 10MB
     print("✅ Confirmed: Medium message used single upload HTTP transmission")
+    
+    # Cleanup
+    await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -188,22 +250,24 @@ async def test_large_message_multipart_upload(http_client):
             "checksum": hash(data) % 1000000  # Simple checksum
         }
     
-    service_info = await http_client.register_service({
+    await http_client.register_service({
         "id": "analyze-service",
         "name": "Analyze Service",
         "config": {"visibility": "public"},
         "analyze_data": analyze_data
     })
     
-    print(f"✅ Service registered: {service_info['id']}")
+    print(f"✅ Service registered")
+    
+    # Get the service
+    analyze_service = await http_client.get_service("analyze-service")
     
     # Test with large data (15MB - above 10MB multipart threshold)
     large_data = generate_test_data(15)  # 15MB
     print(f"📤 Sending {len(large_data) / (1024*1024):.1f}MB of data...")
     
     start_time = time.time()
-    service = await http_client.get_service("analyze-service")
-    result = await service.analyze_data(large_data)
+    result = await analyze_service.analyze_data(large_data)
     transmission_time = time.time() - start_time
     
     print(f"✅ Data analyzed successfully in {transmission_time:.2f}s")
@@ -230,6 +294,7 @@ async def test_very_large_message_multipart_upload(fastapi_server, test_user_tok
     client = await connect_to_server({
         "name": "very-http-message-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
     })
     
@@ -255,22 +320,24 @@ async def test_very_large_message_multipart_upload(fastapi_server, test_user_tok
                 "last_byte": data[-1] if data else None
             }
         
-        service_info = await client.register_service({
+        await client.register_service({
             "id": "very-large-service",
             "name": "Very Large Data Service",
             "config": {"visibility": "public"},
             "handle_very_large_data": handle_very_large_data
         })
         
-        print(f"✅ Service registered: {service_info['id']}")
+        print(f"✅ Service registered")
+        
+        # Get the service
+        very_large_service = await client.get_service("very-large-service")
         
         # Test with very large data (50MB - should use many parts)
         very_large_data = generate_test_data(50)  # 50MB
         print(f"📤 Sending {len(very_large_data) / (1024*1024):.1f}MB of data...")
         
         start_time = time.time()
-        service = await client.get_service("very-large-service")
-        result = await service.handle_very_large_data(very_large_data)
+        result = await very_large_service.handle_very_large_data(very_large_data)
         transmission_time = time.time() - start_time
         
         print(f"✅ Very large data handled successfully in {transmission_time:.2f}s")
@@ -322,22 +389,24 @@ async def test_numpy_array_transmission(http_client):
             "sum": float(array_data.sum())
         }
     
-    service_info = await http_client.register_service({
+    await http_client.register_service({
         "id": "array-service",
         "name": "Array Processing Service",
         "config": {"visibility": "public"},
         "process_array": process_array
     })
     
-    print(f"✅ Service registered: {service_info['id']}")
+    print(f"✅ Service registered")
+    
+    # Get the service
+    array_service = await http_client.get_service("array-service")
     
     # Create large numpy array (20MB - should trigger multipart upload)
     large_array = generate_numpy_array((2048, 2048, 2))  # ~32MB
     print(f"📤 Sending numpy array: {large_array.shape}, {large_array.nbytes / (1024*1024):.1f}MB")
     
     start_time = time.time()
-    service = await http_client.get_service("array-service")
-    result = await service.process_array(large_array)
+    result = await array_service.process_array(large_array)
     transmission_time = time.time() - start_time
     
     print(f"✅ Array processed successfully in {transmission_time:.2f}s")
@@ -363,6 +432,7 @@ async def test_string_data_transmission(fastapi_server, test_user_token):
     client = await connect_to_server({
         "name": "string-data-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
     })
     
@@ -388,22 +458,24 @@ async def test_string_data_transmission(fastapi_server, test_user_token):
                 "char_count": len(set(string_data))
             }
         
-        service_info = await client.register_service({
+        await client.register_service({
             "id": "string-service",
             "name": "String Processing Service",
             "config": {"visibility": "public"},
             "process_string": process_string
         })
         
-        print(f"✅ Service registered: {service_info['id']}")
+        print(f"✅ Service registered")
+        
+        # Get the service
+        string_service = await client.get_service("string-service")
         
         # Create large string data (12MB - should trigger multipart upload)
         large_string = generate_large_string(12)  # 12MB
         print(f"📤 Sending large string: {len(large_string.encode('utf-8')) / (1024*1024):.1f}MB")
         
         start_time = time.time()
-        service = await client.get_service("string-service")
-        result = await service.process_string(large_string)
+        result = await string_service.process_string(large_string)
         transmission_time = time.time() - start_time
         
         print(f"✅ String processed successfully in {transmission_time:.2f}s")
@@ -437,6 +509,7 @@ async def test_http_vs_websocket_performance(fastapi_server, test_user_token):
     client = await connect_to_server({
         "name": "performance-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
     })
     
@@ -456,14 +529,17 @@ async def test_http_vs_websocket_performance(fastapi_server, test_user_token):
         def echo_data(data):
             return {"echoed": True, "size": len(data)}
         
-        service_info = await client.register_service({
+        await client.register_service({
             "id": "echo-performance-service",
             "name": "Echo Performance Service",
             "config": {"visibility": "public"},
             "echo_data": echo_data
         })
         
-        print(f"✅ Service registered: {service_info['id']}")
+        print(f"✅ Service registered")
+        
+        # Get the service
+        echo_performance_service = await client.get_service("echo-performance-service")
         
         # Test different data sizes
         test_sizes = [2, 5, 8, 10, 15]  # MB
@@ -480,8 +556,7 @@ async def test_http_vs_websocket_performance(fastapi_server, test_user_token):
             
             # Measure transmission time
             start_time = time.time()
-            service = await client.get_service("echo-performance-service")
-            result = await service.echo_data(test_data)
+            result = await echo_performance_service.echo_data(test_data)
             transmission_time = time.time() - start_time
             
             # Determine transmission method
@@ -544,6 +619,7 @@ async def test_http_transmission_fallback(fastapi_server, test_user_token):
     client = await connect_to_server({
         "name": "fallback-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
     })
     
@@ -556,22 +632,24 @@ async def test_http_transmission_fallback(fastapi_server, test_user_token):
         def echo_data(data):
             return {"echoed": True, "size": len(data)}
         
-        service_info = await client.register_service({
+        await client.register_service({
             "id": "fallback-service",
             "name": "Fallback Service",
             "config": {"visibility": "public"},
             "echo_data": echo_data
         })
         
-        print(f"✅ Service registered: {service_info['id']}")
+        print(f"✅ Service registered")
+        
+        # Get the service
+        fallback_service = await client.get_service("fallback-service")
         
         # Test with large data that would normally use HTTP transmission
         large_data = generate_test_data(5)  # 5MB
         print(f"📤 Sending {len(large_data) / (1024*1024):.1f}MB with HTTP disabled...")
         
         start_time = time.time()
-        service = await client.get_service("fallback-service")
-        result = await service.echo_data(large_data)
+        result = await fallback_service.echo_data(large_data)
         transmission_time = time.time() - start_time
         
         print(f"✅ Data transmitted successfully via fallback in {transmission_time:.2f}s")
@@ -595,6 +673,7 @@ async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
     client = await connect_to_server({
         "name": "concurrent-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
     })
     
@@ -614,14 +693,17 @@ async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
         def process_data(data):
             return {"processed": True, "size": len(data), "checksum": hash(data) % 1000000}
         
-        service_info = await client.register_service({
+        await client.register_service({
             "id": "concurrent-service",
             "name": "Concurrent Processing Service",
             "config": {"visibility": "public"},
             "process_data": process_data
         })
         
-        print(f"✅ Service registered: {service_info['id']}")
+        print(f"✅ Service registered")
+        
+        # Get the service
+        concurrent_service = await client.get_service("concurrent-service")
         
         # Create multiple large datasets
         datasets = [
@@ -638,10 +720,9 @@ async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
         
         # Send all datasets concurrently
         start_time = time.time()
-        service = await client.get_service("concurrent-service")
         tasks = []
         for i, data in enumerate(datasets):
-            task = service.process_data(data)
+            task = concurrent_service.process_data(data)
             tasks.append(task)
         
         results = await asyncio.gather(*tasks)
@@ -681,6 +762,7 @@ async def test_comprehensive_integration(fastapi_server, test_user_token):
     client = await connect_to_server({
         "name": "integration-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
     })
     
@@ -727,14 +809,17 @@ async def test_comprehensive_integration(fastapi_server, test_user_token):
             else:
                 raise ValueError(f"Unknown data type: {data_type}")
         
-        service_info = await client.register_service({
+        await client.register_service({
             "id": "comprehensive-service",
             "name": "Comprehensive Processing Service",
             "config": {"visibility": "public"},
             "comprehensive_processor": comprehensive_processor
         })
         
-        print(f"✅ Service registered: {service_info['id']}")
+        print(f"✅ Service registered")
+        
+        # Get the service
+        comprehensive_service = await client.get_service("comprehensive-service")
         
         # Test different data types and sizes
         test_cases = [
@@ -757,8 +842,7 @@ async def test_comprehensive_integration(fastapi_server, test_user_token):
             
             # Process data
             start_time = time.time()
-            service = await client.get_service("comprehensive-service")
-            result = await service.comprehensive_processor(data, data_type)
+            result = await comprehensive_service.comprehensive_processor(data, data_type)
             transmission_time = time.time() - start_time
             
             print(f"   ✅ Processed in {transmission_time:.2f}s")
@@ -843,6 +927,7 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
     client = await connect_to_server({
         "name": "configurable-params-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
         "enable_http_transmission": True,
         "http_transmission_threshold": custom_http_threshold,
@@ -870,22 +955,22 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
             "checksum": hash(data) % 1000000  # Simple checksum
         }
     
-    service_info = await client.register_service({
+    await client.register_service({
         "id": "analyze-service",
         "name": "Analyze Service",
         "config": {"visibility": "public"},
         "analyze_data": analyze_data
     })
     
-    print(f"✅ Service registered: {service_info['id']}")
+    print(f"✅ Service registered")
     
     # Get the service
-    service = await client.get_service("analyze-service")
+    analyze_service = await client.get_service("analyze-service")
     
     # Test 1: Small message (should use HTTP single upload due to lowered threshold)
     print("📤 Testing small message (should use HTTP due to lowered threshold)...")
     small_data = generate_test_data(0.5)  # 500KB
-    result = await service.analyze_data(small_data)
+    result = await analyze_service.analyze_data(small_data)
     assert result["size"] == len(small_data)
     assert len(http_transmission_events) == 1, "Small message should trigger HTTP transmission with lowered threshold"
     
@@ -899,7 +984,7 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
     # Test 2: Medium message (should use HTTP single upload)
     print("📤 Testing medium message (should use HTTP single upload)...")
     medium_data = generate_test_data(3.0)  # 3MB
-    result = await service.analyze_data(medium_data)
+    result = await analyze_service.analyze_data(medium_data)
     assert result["size"] == len(medium_data)
     assert len(http_transmission_events) == 2, "Medium message should trigger HTTP transmission"
     
@@ -913,7 +998,7 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
     # Test 3: Large message (should use HTTP multipart upload)
     print("📤 Testing large message (should use HTTP multipart upload)...")
     large_data = generate_test_data(8.0)  # 8MB
-    result = await service.analyze_data(large_data)
+    result = await analyze_service.analyze_data(large_data)
     assert result["size"] == len(large_data)
     assert len(http_transmission_events) == 3, "Large message should trigger HTTP transmission"
     
@@ -937,6 +1022,7 @@ async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, 
     client = await connect_to_server({
         "name": "configurable-multipart-test",
         "server_url": WS_SERVER_URL,
+        "workspace": "ws-user-test-user",
         "token": test_user_token,
         # Test with custom multipart configuration
         "multipart_size": 5 * 1024 * 1024,  # 5MB parts (minimum for S3)
@@ -971,7 +1057,7 @@ async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, 
                 "timestamp": time.time()
             }
         
-        service_info = await client.register_service({
+        await client.register_service({
             "id": "large-data-processor",
             "name": "Large Data Processor",
             "description": "Processes large data with configurable multipart settings",
@@ -982,15 +1068,17 @@ async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, 
             "process_large_data": process_large_data,
         })
         
-        print(f"✅ Service registered: {service_info['id']}")
+        print(f"✅ Service registered")
+        
+        # Get the service
+        large_data_processor = await client.get_service("large-data-processor")
         
         # Test with data that will trigger multipart upload
         test_data = generate_test_data(15)  # 15MB - should trigger multipart with 4MB parts
         print(f"📤 Sending {len(test_data) / (1024*1024):.1f}MB of test data")
         
         start_time = time.time()
-        service = await client.get_service("large-data-processor")
-        result = await service.process_large_data(test_data)
+        result = await large_data_processor.process_large_data(test_data)
         end_time = time.time()
         
         print(f"✅ Data processed successfully in {end_time - start_time:.2f}s")
@@ -1032,6 +1120,7 @@ async def test_parallel_upload_performance(fastapi_server, test_user_token):
         client = await connect_to_server({
             "name": f"parallel-test-{config['max_parallel_uploads']}",
             "server_url": WS_SERVER_URL,
+            "workspace": "ws-user-test-user",
             "token": test_user_token,
             "multipart_size": 5 * 1024 * 1024,  # 5MB parts (minimum for S3)
             "max_parallel_uploads": config["max_parallel_uploads"],
@@ -1056,13 +1145,15 @@ async def test_parallel_upload_performance(fastapi_server, test_user_token):
                 "echo_data": echo_data,
             })
             
+            # Get the service
+            echo_service = await client.get_service("echo-service")
+            
             # Test with data that creates multiple parts
             test_data = generate_test_data(25)  # 25MB with 5MB parts = 5 parts
             print(f"📤 Sending {len(test_data) / (1024*1024):.1f}MB with {config['max_parallel_uploads']} parallel uploads")
             
             start_time = time.time()
-            service = await client.get_service("echo-service")
-            result = await service.echo_data(test_data)
+            result = await echo_service.echo_data(test_data)
             end_time = time.time()
             
             duration = end_time - start_time
