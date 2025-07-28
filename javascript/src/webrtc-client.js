@@ -120,14 +120,14 @@ async function _createOffer(params, server, config, onInit, context) {
 
       // Override get_local_service to forward requests to the server's RPC
       const originalGetLocalService = rpc.get_local_service.bind(rpc);
-      rpc.get_local_service = async function(service_id) {
+      rpc.get_local_service = async function(service_id, context) {
         // First try to get it locally
         try {
-          return await originalGetLocalService(service_id);
+          return await originalGetLocalService(service_id, context);
         } catch (e) {
           // If not found locally, forward to the server's RPC
           if (e.message && e.message.includes("Service not found") && server.rpc) {
-            return await server.rpc.get_local_service(service_id);
+            return await server.rpc.get_local_service(service_id, context);
           }
           throw e;
         }
@@ -266,8 +266,8 @@ async function getRTCService(server, service_id, config) {
       channel.onopen = () => {
         config.channel = channel;
         config.workspace = answer.workspace;
-        // Use peer_id as client_id for this WebRTC connection
-        config.client_id = config.peer_id;
+        // Use server's client_id for this WebRTC connection to ensure consistency
+        config.client_id = server.config.client_id || config.peer_id;
 
         // Minimal context for WebRTC - just enough to satisfy require_context services
         const webrtcContext = { connection_type: "webrtc" };
@@ -306,13 +306,17 @@ async function getRTCService(server, service_id, config) {
                   !name.includes("/"),
                   "WebRTC service name should not contain '/'",
                 );
-                // Use the server's client_id to access its services
-                const serverClientId =
-                  server.config.client_id || server.rpc._client_id;
-                return await rpc.get_remote_service(
-                  config.workspace + "/" + serverClientId + ":" + name,
-                  ...args,
-                );
+                // The client should request services through the WebRTC channel
+                // The server-side WebRTC RPC will handle the lookup and forward to the server's main RPC
+                // Use local service call to send request through WebRTC channel to server
+                // Provide proper context with required 'to' field - use server's client_id for proper routing
+                const targetClientId = server.config.client_id || rpc._client_id;
+                const context = {
+                  to: `${config.workspace}/${targetClientId}`,
+                  ws: config.workspace,
+                  ...rpc.default_context
+                };
+                return await rpc.get_local_service(name, context, ...args);
               }
               async function disconnect() {
                 await rpc.disconnect();

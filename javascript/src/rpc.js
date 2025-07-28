@@ -779,7 +779,7 @@ export class RPC extends MessageEmitter {
       let svc = await waitFor(
         method(service_id),
         timeout,
-        "Timeout Error: Failed to get remote service: " + service_uri,
+        new Error("Timeout Error: Failed to get remote service: " + service_uri),
       );
       svc.id = `${provider}:${service_id}`;
       if (kwargs_expansion) {

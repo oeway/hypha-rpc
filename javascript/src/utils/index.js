@@ -229,10 +229,10 @@ export async function loadRequirementsInWindow(requirements) {
           }
         }
       } else {
-        throw "unsupported requirements definition";
+        throw new Error("unsupported requirements definition");
       }
     } catch (e) {
-      throw "failed to import required scripts: " + requirements.toString();
+      throw new Error("failed to import required scripts: " + requirements.toString());
     }
   }
 }
@@ -251,7 +251,7 @@ export async function loadRequirementsInWebworker(requirements) {
           requirements[i].toLowerCase().endsWith(".css") ||
           requirements[i].startsWith("css:")
         ) {
-          throw "unable to import css in a webworker";
+          throw new Error("unable to import css in a webworker");
         } else if (
           requirements[i].toLowerCase().endsWith(".js") ||
           requirements[i].startsWith("js:")
@@ -269,7 +269,7 @@ export async function loadRequirementsInWebworker(requirements) {
         }
       }
     } catch (e) {
-      throw "failed to import required scripts: " + requirements.toString();
+      throw new Error("failed to import required scripts: " + requirements.toString());
     }
   }
 }
@@ -403,7 +403,10 @@ export function waitFor(prom, time, error) {
     new Promise(
       (_r, rej) =>
         (timer = setTimeout(() => {
-          rej(error || "Timeout Error");
+          const errorObj = error instanceof Error 
+            ? error 
+            : new Error(error || "Timeout Error");
+          rej(errorObj);
         }, time * 1000)),
     ),
   ]).finally(() => clearTimeout(timer));
