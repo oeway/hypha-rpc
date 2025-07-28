@@ -232,7 +232,9 @@ export async function loadRequirementsInWindow(requirements) {
         throw new Error("unsupported requirements definition");
       }
     } catch (e) {
-      throw new Error("failed to import required scripts: " + requirements.toString());
+      throw new Error(
+        "failed to import required scripts: " + requirements.toString(),
+      );
     }
   }
 }
@@ -269,7 +271,9 @@ export async function loadRequirementsInWebworker(requirements) {
         }
       }
     } catch (e) {
-      throw new Error("failed to import required scripts: " + requirements.toString());
+      throw new Error(
+        "failed to import required scripts: " + requirements.toString(),
+      );
     }
   }
 }
@@ -403,9 +407,10 @@ export function waitFor(prom, time, error) {
     new Promise(
       (_r, rej) =>
         (timer = setTimeout(() => {
-          const errorObj = error instanceof Error 
-            ? error 
-            : new Error(error || "Timeout Error");
+          const errorObj =
+            error instanceof Error
+              ? error
+              : new Error(error || "Timeout Error");
           rej(errorObj);
         }, time * 1000)),
     ),
