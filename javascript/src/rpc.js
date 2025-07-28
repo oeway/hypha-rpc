@@ -322,25 +322,35 @@ export class RPC extends MessageEmitter {
     // Set up global unhandled promise rejection handler for RPC-related errors
     const handleUnhandledRejection = (event) => {
       const reason = event.reason;
-      if (reason && typeof reason === 'object') {
+      if (reason && typeof reason === "object") {
         // Check if this is a "Method not found" or "Session not found" error that we can ignore
         const reasonStr = reason.toString();
-        if (reasonStr.includes("Method not found") || reasonStr.includes("Session not found") || 
-            reasonStr.includes("Method expired") || reasonStr.includes("Session not found")) {
-          console.debug("Ignoring expected method/session not found error:", reason);
+        if (
+          reasonStr.includes("Method not found") ||
+          reasonStr.includes("Session not found") ||
+          reasonStr.includes("Method expired") ||
+          reasonStr.includes("Session not found")
+        ) {
+          console.debug(
+            "Ignoring expected method/session not found error:",
+            reason,
+          );
           event.preventDefault(); // Prevent the default unhandled rejection behavior
           return;
         }
       }
       console.warn("Unhandled RPC promise rejection:", reason);
     };
-    
+
     // Only set the handler if we haven't already set one for this RPC instance
-    if (typeof window !== 'undefined' && !window._hypha_rejection_handler_set) {
-      window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    if (typeof window !== "undefined" && !window._hypha_rejection_handler_set) {
+      window.addEventListener("unhandledrejection", handleUnhandledRejection);
       window._hypha_rejection_handler_set = true;
-    } else if (typeof process !== 'undefined' && !process._hypha_rejection_handler_set) {
-      process.on('unhandledRejection', (reason, promise) => {
+    } else if (
+      typeof process !== "undefined" &&
+      !process._hypha_rejection_handler_set
+    ) {
+      process.on("unhandledRejection", (reason, promise) => {
         handleUnhandledRejection({ reason, promise, preventDefault: () => {} });
       });
       process._hypha_rejection_handler_set = true;
@@ -1803,7 +1813,7 @@ export class RPC extends MessageEmitter {
               `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
             );
             // For expired callbacks, don't throw an exception, just log and return
-            if (typeof reject === 'function') {
+            if (typeof reject === "function") {
               reject(new Error(`Method expired or not found: ${method_name}`));
             }
             return;
@@ -1812,7 +1822,7 @@ export class RPC extends MessageEmitter {
               `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
             );
             // For cleaned up sessions, just log and return without throwing
-            if (typeof reject === 'function') {
+            if (typeof reject === "function") {
               reject(new Error(`Session not found: ${method_name}`));
             }
             return;
@@ -1822,12 +1832,17 @@ export class RPC extends MessageEmitter {
         console.debug(
           `Failed to find method ${method_name} at ${this._client_id}`,
         );
-        const error = new Error(`Method not found: ${method_name} at ${this._client_id}`);
-        if (typeof reject === 'function') {
+        const error = new Error(
+          `Method not found: ${method_name} at ${this._client_id}`,
+        );
+        if (typeof reject === "function") {
           reject(error);
         } else {
           // Log the error instead of throwing to prevent unhandled exceptions
-          console.warn("Method not found and no reject callback:", error.message);
+          console.warn(
+            "Method not found and no reject callback:",
+            error.message,
+          );
         }
         return;
       }
