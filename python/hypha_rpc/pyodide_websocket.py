@@ -8,6 +8,7 @@ import js
 from js import WebSocket
 import json
 import logging
+from hypha_rpc.utils import ensure_event_loop, safe_create_future
 
 try:
     from pyodide.ffi import to_js
@@ -177,7 +178,7 @@ class PyodideWebsocketRPCConnection:
 
     async def _attempt_connection(self, server_url):
         """Attempt to establish a WebSocket connection."""
-        fut = asyncio.Future()
+        fut = safe_create_future()
         self._legacy_auth = False
         websocket = self._WebSocketClass.new(server_url)
         websocket.binaryType = "arraybuffer"
@@ -229,7 +230,7 @@ class PyodideWebsocketRPCConnection:
         )
         try:
             self._websocket = await self._attempt_connection(self._server_url)
-            fut = asyncio.Future()
+            fut = safe_create_future()
             if self._legacy_auth:
                 raise NotImplementedError("Legacy authentication is not supported")
             # Send authentication info as the first message
@@ -363,7 +364,7 @@ class PyodideWebsocketRPCConnection:
             query_params.append(f"reconnection_token={self._reconnection_token}")
         query_string = "&".join(query_params)
         server_url = f"{server_url}?{query_string}" if query_string else server_url
-        fut = asyncio.Future()
+        fut = safe_create_future()
         websocket = self._WebSocketClass.new(server_url)
         websocket.binaryType = "arraybuffer"
         websocket.onopen = lambda evt: fut.set_result(websocket)

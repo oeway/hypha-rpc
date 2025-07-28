@@ -288,20 +288,20 @@ class WebsocketRPCConnection {
       // Clean up timers when connection closes
       this._cleanup();
 
-      if ([1000, 1001].includes(event.code)) {
-        console.info(
-          `Websocket connection closed (code: ${event.code}): ${event.reason}`,
-        );
-        if (this._handle_disconnected) {
-          this._handle_disconnected(event.reason);
+      // Even if it's a graceful closure (codes 1000, 1001), if it wasn't user-initiated,
+      // we should attempt to reconnect (e.g., server restart, k8s upgrade)
+      if (this._enable_reconnect) {
+        if ([1000, 1001].includes(event.code)) {
+          console.warn(
+            `Websocket connection closed gracefully by server (code: ${event.code}): ${event.reason} - attempting reconnect`,
+          );
+        } else {
+          console.warn(
+            "Websocket connection closed unexpectedly (code: %s): %s",
+            event.code,
+            event.reason,
+          );
         }
-        this._closed = true;
-      } else if (this._enable_reconnect) {
-        console.warn(
-          "Websocket connection closed unexpectedly (code: %s): %s",
-          event.code,
-          event.reason,
-        );
 
         let retry = 0;
         const baseDelay = 1000; // Start with 1 second

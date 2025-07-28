@@ -16,6 +16,7 @@ import msgpack
 from .rpc import RPC
 from .utils.schema import schema_function
 from .utils import ObjectProxy, parse_service_url
+from .utils import ensure_event_loop, safe_create_future
 
 try:
     import js  # noqa: F401
@@ -336,31 +337,44 @@ class WebsocketRPCConnection:
                         )
         except asyncio.CancelledError:
             logger.info("Listen task was cancelled.")
+        except websockets.exceptions.InvalidStatusCode as e:
+            logger.error(f"HTTP error during WebSocket connection: {e}")
+        except websockets.exceptions.ConnectionClosedOK as e:
+            logger.info("Websocket connection closed gracefully")
+            # Don't set self._closed = True here - let the finally block 
+            # decide whether to reconnect based on whether this was user-initiated
         except websockets.exceptions.ConnectionClosedError as e:
             logger.info("Websocket connection closed: %s", e)
+        except RuntimeError as e:
+            # Handle event loop closed error gracefully
+            if "Event loop is closed" in str(e):
+                logger.debug("Event loop closed during WebSocket operation, stopping listen task")
+                return
+            else:
+                logger.error(f"RuntimeError in _listen: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error in _listen: {e}")
+            raise
         finally:
             # Handle unexpected disconnection or disconnection caused by the server
             if not self._closed and self._websocket.state == State.CLOSED:
-                # normal closure, means no need to recover
-                if hasattr(
-                    self._websocket, "close_code"
-                ) and self._websocket.close_code in [1000, 1001]:
-                    logger.info(
-                        "Websocket connection closed (code: %s): %s",
-                        self._websocket.close_code,
-                        self._websocket.close_reason,
-                    )
-                    if self._handle_disconnected:
-                        self._handle_disconnected(str(e))
-                    # make it as closed
-                    self._closed = True
-                elif self._enable_reconnect:
+                # Even if it's a normal closure (codes 1000, 1001), if it wasn't user-initiated,
+                # we should attempt to reconnect (e.g., server restart, k8s upgrade)
+                if self._enable_reconnect:
                     if hasattr(self._websocket, "close_code"):
-                        logger.warning(
-                            "Websocket connection closed unexpectedly (code: %s): %s",
-                            self._websocket.close_code,
-                            self._websocket.close_reason,
-                        )
+                        if self._websocket.close_code in [1000, 1001]:
+                            logger.warning(
+                                "Websocket connection closed gracefully by server (code: %s): %s - attempting reconnect",
+                                self._websocket.close_code,
+                                self._websocket.close_reason,
+                            )
+                        else:
+                            logger.warning(
+                                "Websocket connection closed unexpectedly (code: %s): %s",
+                                self._websocket.close_code,
+                                self._websocket.close_reason,
+                            )
                     else:
                         logger.warning(
                             "Websocket connection closed unexpectedly (no close code)"
@@ -557,7 +571,7 @@ class WebsocketRPCConnection:
             # Check if event loop is running before cleanup
             loop = asyncio.get_event_loop()
             if loop.is_closed():
-                logger.warning("Event loop is closed, skipping cleanup")
+                logger.debug("Event loop is closed, performing minimal cleanup")
                 self._refresh_token_task = None
                 self._listen_task = None
                 self._reconnect_tasks.clear()
@@ -571,6 +585,8 @@ class WebsocketRPCConnection:
                 except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
                     # RuntimeError occurs when event loop is closed
                     pass
+                except Exception as e:
+                    logger.debug(f"Error waiting for refresh token task: {e}")
                 self._refresh_token_task = None
 
             # Cancel listen task
@@ -581,6 +597,8 @@ class WebsocketRPCConnection:
                 except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
                     # RuntimeError occurs when event loop is closed
                     pass
+                except Exception as e:
+                    logger.debug(f"Error waiting for listen task: {e}")
                 self._listen_task = None
 
             # Cancel all reconnection tasks
@@ -592,10 +610,25 @@ class WebsocketRPCConnection:
                     except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
                         # RuntimeError occurs when event loop is closed
                         pass
+                    except Exception as e:
+                        logger.debug(f"Error waiting for reconnect task: {e}")
                 self._reconnect_tasks.discard(task)
+            
+            # Clear any remaining tasks
+            self._reconnect_tasks.clear()
+            
         except RuntimeError as e:
-            # If event loop is closed, just clear the references
-            logger.warning(f"RuntimeError during cleanup: {e}")
+            if "Event loop is closed" in str(e):
+                logger.debug("Event loop closed during cleanup, performing minimal cleanup")
+                self._refresh_token_task = None
+                self._listen_task = None
+                self._reconnect_tasks.clear()
+            else:
+                logger.warning(f"RuntimeError during cleanup: {e}")
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
+        finally:
+            # Ensure tasks are marked as None even if cleanup fails
             self._refresh_token_task = None
             self._listen_task = None
             self._reconnect_tasks.clear()
@@ -1127,7 +1160,7 @@ async def _connect_to_server(config):
 
 def setup_local_client(enable_execution=False, on_ready=None):
     """Set up a local client."""
-    fut = asyncio.Future()
+    fut = safe_create_future()
 
     async def message_handler(event):
         data = event.data.to_py()

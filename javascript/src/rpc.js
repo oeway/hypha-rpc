@@ -319,6 +319,33 @@ export class RPC extends MessageEmitter {
       services: this._services,
     };
 
+    // Set up global unhandled promise rejection handler for RPC-related errors
+    const handleUnhandledRejection = (event) => {
+      const reason = event.reason;
+      if (reason && typeof reason === 'object') {
+        // Check if this is a "Method not found" or "Session not found" error that we can ignore
+        const reasonStr = reason.toString();
+        if (reasonStr.includes("Method not found") || reasonStr.includes("Session not found") || 
+            reasonStr.includes("Method expired") || reasonStr.includes("Session not found")) {
+          console.debug("Ignoring expected method/session not found error:", reason);
+          event.preventDefault(); // Prevent the default unhandled rejection behavior
+          return;
+        }
+      }
+      console.warn("Unhandled RPC promise rejection:", reason);
+    };
+    
+    // Only set the handler if we haven't already set one for this RPC instance
+    if (typeof window !== 'undefined' && !window._hypha_rejection_handler_set) {
+      window.addEventListener('unhandledrejection', handleUnhandledRejection);
+      window._hypha_rejection_handler_set = true;
+    } else if (typeof process !== 'undefined' && !process._hypha_rejection_handler_set) {
+      process.on('unhandledRejection', (reason, promise) => {
+        handleUnhandledRejection({ reason, promise, preventDefault: () => {} });
+      });
+      process._hypha_rejection_handler_set = true;
+    }
+
     if (connection) {
       this.add_service({
         id: "built-in",
@@ -1027,35 +1054,291 @@ export class RPC extends MessageEmitter {
     return [encoded, wrapped_callback];
   }
 
-  // Clean session management - all logic in one place
   _cleanup_session_if_needed(session_id, callback_name) {
-    // Python-style immediate cleanup - no complex logic needed
-    if (this._object_store[session_id]) {
-      delete this._object_store[session_id];
+    /**
+     * Clean session management - all logic in one place.
+     */
+    if (!session_id) {
+      console.debug("Cannot cleanup session: session_id is empty");
+      return;
     }
+
+    try {
+      const store = this._get_session_store(session_id, false);
+      if (!store) {
+        console.debug(`Session ${session_id} not found for cleanup`);
+        return;
+      }
+
+      let should_cleanup = false;
+
+      // Promise sessions: let the promise manager decide cleanup
+      if (store._promise_manager) {
+        try {
+          const promise_manager = store._promise_manager;
+          if (
+            promise_manager.should_cleanup_on_callback &&
+            promise_manager.should_cleanup_on_callback(callback_name)
+          ) {
+            if (promise_manager.settle) {
+              promise_manager.settle();
+            }
+            should_cleanup = true;
+            console.debug(
+              `Promise session ${session_id} settled and marked for cleanup`,
+            );
+          }
+        } catch (e) {
+          console.warn(
+            `Error in promise manager cleanup for session ${session_id}:`,
+            e,
+          );
+        }
+      } else {
+        // Regular sessions: only cleanup temporary method call sessions
+        // Don't cleanup service registration sessions or persistent sessions
+        // Only cleanup sessions that are clearly temporary promises for method calls
+        if (
+          (callback_name === "resolve" || callback_name === "reject") &&
+          store._callbacks &&
+          Object.keys(store._callbacks).includes(callback_name)
+        ) {
+          should_cleanup = true;
+          console.debug(
+            `Regular session ${session_id} marked for cleanup after ${callback_name}`,
+          );
+        }
+      }
+
+      if (should_cleanup) {
+        this._cleanup_session_completely(session_id);
+      }
+    } catch (error) {
+      console.warn(`Error during session cleanup for ${session_id}:`, error);
+    }
+  }
+
+  _cleanup_session_completely(session_id) {
+    /**
+     * Complete session cleanup with resource management.
+     */
+    try {
+      const store = this._get_session_store(session_id, false);
+      if (!store) {
+        console.debug(`Session ${session_id} already cleaned up`);
+        return;
+      }
+
+      // Clean up resources before removing session
+      if (store.timer && typeof store.timer.clear === "function") {
+        try {
+          store.timer.clear();
+        } catch (error) {
+          console.warn(
+            `Error clearing timer for session ${session_id}:`,
+            error,
+          );
+        }
+      }
+
+      if (
+        store.heartbeat_task &&
+        typeof store.heartbeat_task.cancel === "function"
+      ) {
+        try {
+          store.heartbeat_task.cancel();
+        } catch (error) {
+          console.warn(
+            `Error canceling heartbeat for session ${session_id}:`,
+            error,
+          );
+        }
+      }
+
+      // Navigate and clean session path
+      const levels = session_id.split(".");
+      let current_store = this._object_store;
+
+      // Navigate to parent of target level
+      for (let i = 0; i < levels.length - 1; i++) {
+        const level = levels[i];
+        if (!current_store[level]) {
+          console.debug(
+            `Session path ${session_id} not found at level ${level}`,
+          );
+          return;
+        }
+        current_store = current_store[level];
+      }
+
+      // Delete the final level
+      const final_key = levels[levels.length - 1];
+      if (current_store[final_key]) {
+        delete current_store[final_key];
+        console.debug(`Cleaned up session ${session_id}`);
+
+        // Clean up empty parent containers
+        this._cleanup_empty_containers(levels.slice(0, -1));
+      }
+    } catch (error) {
+      console.warn(
+        `Error in complete session cleanup for ${session_id}:`,
+        error,
+      );
+    }
+  }
+
+  _cleanup_empty_containers(path_levels) {
+    /**
+     * Clean up empty parent containers to prevent memory leaks.
+     */
+    try {
+      // Work backwards from the deepest level
+      for (let depth = path_levels.length - 1; depth >= 0; depth--) {
+        let current_store = this._object_store;
+
+        // Navigate to parent of current depth
+        for (let i = 0; i < depth; i++) {
+          current_store = current_store[path_levels[i]];
+          if (!current_store) return; // Path doesn't exist
+        }
+
+        // Check if container at current depth is empty
+        const container_key = path_levels[depth];
+        const container = current_store[container_key];
+
+        if (
+          container &&
+          typeof container === "object" &&
+          Object.keys(container).length === 0
+        ) {
+          delete current_store[container_key];
+          console.debug(
+            `Cleaned up empty container at depth ${depth}: ${path_levels.slice(0, depth + 1).join(".")}`,
+          );
+        } else {
+          // Container is not empty, stop cleanup
+          break;
+        }
+      }
+    } catch (error) {
+      console.warn("Error cleaning up empty containers:", error);
+    }
+  }
+
+  get_session_stats() {
+    /**
+     * Get detailed session statistics.
+     */
+    const stats = {
+      total_sessions: 0,
+      promise_sessions: 0,
+      regular_sessions: 0,
+      sessions_with_timers: 0,
+      sessions_with_heartbeat: 0,
+      system_stores: {},
+      session_ids: [],
+      memory_usage: 0,
+    };
+
+    if (!this._object_store) {
+      return stats;
+    }
+
+    for (const key in this._object_store) {
+      const value = this._object_store[key];
+
+      if (["services", "message_cache"].includes(key)) {
+        // System stores - don't count these as sessions
+        stats.system_stores[key] = {
+          size:
+            typeof value === "object" && value ? Object.keys(value).length : 0,
+        };
+        continue;
+      }
+
+      // Count all non-system non-empty objects as sessions
+      if (value && typeof value === "object") {
+        const sessionKeys = Object.keys(value);
+
+        // Only skip completely empty objects
+        if (sessionKeys.length > 0) {
+          stats.total_sessions++;
+          stats.session_ids.push(key);
+
+          if (value._promise_manager) {
+            stats.promise_sessions++;
+          } else {
+            stats.regular_sessions++;
+          }
+
+          if (value._timer || value.timer) stats.sessions_with_timers++;
+          if (value._heartbeat || value.heartbeat)
+            stats.sessions_with_heartbeat++;
+
+          // Estimate memory usage
+          stats.memory_usage += JSON.stringify(value).length;
+        }
+      }
+    }
+
+    return stats;
+  }
+
+  _force_cleanup_all_sessions() {
+    /**
+     * Force cleanup all sessions (for testing purposes).
+     */
+    if (!this._object_store) {
+      console.debug("Force cleaning up 0 sessions");
+      return;
+    }
+
+    let cleaned_count = 0;
+    const keys_to_delete = [];
+
+    for (const key in this._object_store) {
+      // Don't delete system stores
+      if (!["services", "message_cache"].includes(key)) {
+        const value = this._object_store[key];
+        if (
+          value &&
+          typeof value === "object" &&
+          Object.keys(value).length > 0
+        ) {
+          keys_to_delete.push(key);
+          cleaned_count++;
+        }
+      }
+    }
+
+    // Delete the sessions
+    for (const key of keys_to_delete) {
+      delete this._object_store[key];
+    }
+
+    console.debug(`Force cleaning up ${cleaned_count} sessions`);
   }
 
   // Clean helper to identify promise method calls by session type
   _is_promise_method_call(method_path) {
     const session_id = method_path.split(".")[0];
-    // Simply check if session exists - no complex promise manager needed
-    return this._object_store[session_id] !== undefined;
+    const session = this._get_session_store(session_id, false);
+    return session && session._promise_manager;
   }
 
-  // Simplified Promise Manager - no complex lifecycle needed
+  // Simplified Promise Manager - enhanced version
   _create_promise_manager() {
-    // Return minimal manager - Python doesn't need complex promise tracking
+    /**
+     * Create a promise manager to track promise state and decide cleanup.
+     */
     return {
-      settled: false,
-      settle() {
-        this.settled = true;
+      should_cleanup_on_callback: (callback_name) => {
+        return ["resolve", "reject"].includes(callback_name);
       },
-      is_settled() {
-        return this.settled;
-      },
-      should_cleanup_on_callback(callback_name) {
-        // Always cleanup on resolve/reject like Python
-        return callback_name === "resolve" || callback_name === "reject";
+      settle: () => {
+        // Promise is settled (resolved or rejected)
+        console.debug("Promise settled");
       },
     };
   }
@@ -1076,10 +1359,15 @@ export class RPC extends MessageEmitter {
       );
       store = {};
     }
+
+    // Clean promise lifecycle management - TYPE-BASED, not string-based
+    store._promise_manager = this._create_promise_manager();
+    console.debug(
+      `Created PROMISE session ${session_id} (type-based detection)`,
+    );
+
     let encoded = {};
 
-    // Simplified promise lifecycle - no complex manager needed
-    // Just store the timer if needed
     if (timer && reject && this._method_timeout) {
       [encoded.heartbeat, store.heartbeat] = this._encode_callback(
         "heartbeat",
@@ -1091,14 +1379,15 @@ export class RPC extends MessageEmitter {
       );
       store.timer = timer;
       encoded.interval = this._method_timeout / 2;
+    } else {
+      timer = null;
     }
 
-    // Always use immediate cleanup like Python
     [encoded.resolve, store.resolve] = this._encode_callback(
       "resolve",
       resolve,
       session_id,
-      true, // Always cleanup immediately
+      clear_after_called,
       timer,
       local_workspace,
       `resolve (${description})`,
@@ -1107,7 +1396,7 @@ export class RPC extends MessageEmitter {
       "reject",
       reject,
       session_id,
-      true, // Always cleanup immediately
+      clear_after_called,
       timer,
       local_workspace,
       `reject (${description})`,
@@ -1362,8 +1651,13 @@ export class RPC extends MessageEmitter {
               }
             })
             .catch(function (err) {
-              console.error("Failed to send message", err);
-              reject(err);
+              const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
+              if (reject) {
+                reject(new Error(error_msg));
+              } else {
+                // No reject callback available, log the error to prevent unhandled promise rejections
+                console.warn("Unhandled RPC method call error:", error_msg);
+              }
               if (timer) {
                 timer.clear();
               }
@@ -1379,8 +1673,13 @@ export class RPC extends MessageEmitter {
               }
             })
             .catch(function (err) {
-              console.error("Failed to send message", err);
-              reject(err);
+              const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
+              if (reject) {
+                reject(new Error(error_msg));
+              } else {
+                // No reject callback available, log the error to prevent unhandled promise rejections
+                console.warn("Unhandled RPC method call error:", error_msg);
+              }
               if (timer) {
                 timer.clear();
               }
@@ -1486,17 +1785,51 @@ export class RPC extends MessageEmitter {
       try {
         method = indexObject(this._object_store, data["method"]);
       } catch (e) {
-        // Simplified error handling like Python - just check if method exists
-        if (!this._object_store[data["method"].split(".")[0]]) {
+        // Clean promise method detection - TYPE-BASED, not string-based
+        if (this._is_promise_method_call(data["method"])) {
           console.debug(
-            `Method ${data["method"]} not available (session cleaned up), ignoring: ${method_name}`,
+            `Promise method ${data["method"]} not available (detected by session type), ignoring: ${method_name}`,
           );
           return;
         }
 
-        throw new Error(
-          `Method not found: ${method_name} at ${this._client_id}`,
+        // Check if this is a session-based method call that might have expired
+        const method_parts = data["method"].split(".");
+        if (method_parts.length > 1) {
+          const session_id = method_parts[0];
+          // Check if the session exists but the specific method doesn't
+          if (session_id in this._object_store) {
+            console.debug(
+              `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
+            );
+            // For expired callbacks, don't throw an exception, just log and return
+            if (typeof reject === 'function') {
+              reject(new Error(`Method expired or not found: ${method_name}`));
+            }
+            return;
+          } else {
+            console.debug(
+              `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
+            );
+            // For cleaned up sessions, just log and return without throwing
+            if (typeof reject === 'function') {
+              reject(new Error(`Session not found: ${method_name}`));
+            }
+            return;
+          }
+        }
+
+        console.debug(
+          `Failed to find method ${method_name} at ${this._client_id}`,
         );
+        const error = new Error(`Method not found: ${method_name} at ${this._client_id}`);
+        if (typeof reject === 'function') {
+          reject(error);
+        } else {
+          // Log the error instead of throwing to prevent unhandled exceptions
+          console.warn("Method not found and no reject callback:", error.message);
+        }
+        return;
       }
 
       assert(
