@@ -426,9 +426,9 @@ class RPC(MessageEmitter):
                 if "Method not found" in str(exception) or "Session not found" in str(exception):
                     logger.debug("Ignoring expected method/session not found error: %s", exception)
                 else:
-                    logger.warning("Unhandled asyncio exception: %s", context)
+                    logger.debug("Unhandled asyncio exception: %s", context)
             else:
-                logger.warning("Unhandled asyncio exception: %s", context)
+                logger.debug("Unhandled asyncio exception: %s", context)
         
         # Only set the exception handler if we haven't already set one
         if not hasattr(self.loop, '_hypha_exception_handler_set'):
