@@ -636,6 +636,7 @@ export async function connectToServer(config) {
     server_base_url: connection_info.public_base_url,
     long_message_chunk_size: config.long_message_chunk_size,
   });
+  await rpc.waitFor("services_registered", config.method_timeout || 120);
   const wm = await rpc.get_manager_service({
     timeout: config.method_timeout,
     case_conversion: "camel",
@@ -902,7 +903,6 @@ export async function connectToServer(config) {
       type: "object",
     },
   });
-
   return wm;
 }
 
