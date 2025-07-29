@@ -376,6 +376,168 @@ class Timer:
             self._task = asyncio.ensure_future(self._job())
 
 
+class RemoteFunction:
+    def __init__(
+        self,
+        rpc_instance,
+        encoded_method,
+        remote_parent=None,
+        local_parent=None,
+        remote_workspace=None,
+        local_workspace=None,
+        description=None,
+        with_promise=None,
+    ):
+        self._rpc = rpc_instance
+        self._encoded_method = encoded_method
+        self._remote_parent = remote_parent
+        self._local_parent = local_parent
+        self._remote_workspace = remote_workspace
+        self._local_workspace = local_workspace
+        self._description = description or ""
+        self._with_promise = with_promise
+
+        self.__rpc_object__ = encoded_method.copy()
+        method_id = encoded_method["_rmethod"]
+        self.__name__ = encoded_method.get("_rname") or method_id.split(".")[-1]
+        if "#" in self.__name__:
+            self.__name__ = self.__name__.split("#")[-1]
+        self.__doc__ = encoded_method.get("_rdoc", f"Remote method: {method_id}")
+        self.__schema__ = encoded_method.get("_rschema")
+        self.__no_chunk__ = (
+            encoded_method.get("_rmethod") == "services.built-in.message_cache.append"
+        )
+
+    def __call__(self, *arguments, **kwargs):
+        arguments = list(arguments)
+        if kwargs:
+            arguments = arguments + [kwargs]
+
+        fut = safe_create_future()
+
+        def resolve(result):
+            if fut.done():
+                return
+            fut.set_result(result)
+
+        def reject(error):
+            if fut.done():
+                return
+            fut.set_exception(error)
+
+        local_session_id = shortuuid.uuid()
+        if self._local_parent:
+            local_session_id = self._local_parent + "." + local_session_id
+        store = self._rpc._get_session_store(local_session_id, create=True)
+        store["target_id"] = self._encoded_method["_rtarget"]
+        args = self._rpc._encode(
+            arguments,
+            session_id=local_session_id,
+            local_workspace=self._local_workspace,
+        )
+        if self._rpc._local_workspace is None:
+            from_client = self._rpc._client_id
+        else:
+            from_client = self._rpc._local_workspace + "/" + self._rpc._client_id
+
+        main_message = {
+            "type": "method",
+            "from": from_client,
+            "to": self._encoded_method["_rtarget"],
+            "method": self._encoded_method["_rmethod"],
+        }
+        extra_data = {}
+        if args:
+            extra_data["args"] = args
+        if kwargs:
+            extra_data["with_kwargs"] = bool(kwargs)
+
+        if self._remote_parent:
+            main_message["parent"] = self._remote_parent
+
+        timer = None
+        if self._with_promise:
+            main_message["session"] = local_session_id
+            method_name = f"{self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}"
+            timer = Timer(
+                self._rpc._method_timeout,
+                reject,
+                f"Method call time out: {method_name}, context: {self._description}",
+                label=method_name,
+            )
+
+            def has_interface_object(obj):
+                if not obj or not isinstance(obj, (dict, list, tuple)):
+                    return False
+                if isinstance(obj, dict):
+                    if obj.get("_rintf") == True:
+                        return True
+                    return any(
+                        has_interface_object(value) for value in obj.values()
+                    )
+                elif isinstance(obj, (list, tuple)):
+                    return any(has_interface_object(item) for item in obj)
+                return False
+
+            clear_after_called = not has_interface_object(args)
+
+            promise_data = self._rpc._encode_promise(
+                resolve=resolve,
+                reject=reject,
+                session_id=local_session_id,
+                clear_after_called=clear_after_called,
+                timer=timer,
+                local_workspace=self._local_workspace,
+                description=self._description,
+            )
+            if self._with_promise == True:
+                extra_data["promise"] = promise_data
+            elif self._with_promise == "*":
+                extra_data["promise"] = "*"
+                extra_data["t"] = self._rpc._method_timeout / 2
+            else:
+                raise RuntimeError(f"Unsupported promise type: {self._with_promise}")
+
+        message_package = msgpack.packb(main_message)
+        if extra_data:
+            message_package = message_package + msgpack.packb(extra_data)
+        total_size = len(message_package)
+        if (
+            total_size <= self._rpc._long_message_chunk_size + 1024
+            or self.__no_chunk__
+        ):
+            emit_task = asyncio.create_task(self._rpc._emit_message(message_package))
+        else:
+            emit_task = asyncio.create_task(
+                self._rpc._send_chunks(message_package, self._encoded_method["_rtarget"], self._remote_parent)
+            )
+        background_tasks.add(emit_task)
+
+        def handle_result(fut):
+            background_tasks.discard(fut)
+            if fut.exception():
+                error_msg = (
+                    "Failed to send the request when calling method "
+                    f"({self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}), error: {fut.exception()}"
+                )
+                if reject:
+                    reject(Exception(error_msg))
+                else:
+                    logger.warning("Unhandled RPC method call error: %s", error_msg)
+                if timer:
+                    timer.clear()
+            else:
+                if timer:
+                    timer.reset()
+        emit_task.add_done_callback(handle_result)
+        return fut
+
+    def __repr__(self):
+        return f"<RemoteFunction {self.__name__} ({(self._description[:100] + '...') if len(self._description) > 100 else self._description})>"
+
+    def __str__(self):
+        return self.__repr__()
+
 background_tasks = set()
 
 
@@ -1576,179 +1738,20 @@ class RPC(MessageEmitter):
         if remote_workspace and "/" not in target_id:
             if remote_workspace != target_id:
                 target_id = remote_workspace + "/" + target_id
-            # Fix the target id to be an absolute id
             encoded_method["_rtarget"] = target_id
         method_id = encoded_method["_rmethod"]
         with_promise = encoded_method.get("_rpromise", False)
         description = f"method: {method_id}, docs: {encoded_method.get('_rdoc')}"
-
-        def remote_method(*arguments, **kwargs):
-            """Run remote method."""
-            arguments = list(arguments)
-            # encode keywords to a dictionary and pass to the last argument
-            if kwargs:
-                arguments = arguments + [kwargs]
-
-            fut = safe_create_future()
-
-            def resolve(result):
-                if fut.done():
-                    return
-                fut.set_result(result)
-
-            def reject(error):
-                if fut.done():
-                    return
-                fut.set_exception(error)
-
-            local_session_id = shortuuid.uuid()
-            if local_parent:
-                # Store the children session under the parent
-                local_session_id = local_parent + "." + local_session_id
-            store = self._get_session_store(local_session_id, create=True)
-            store["target_id"] = target_id
-            args = self._encode(
-                arguments,
-                session_id=local_session_id,
-                local_workspace=local_workspace,
-            )
-            if self._local_workspace is None:
-                from_client = self._client_id
-            else:
-                from_client = self._local_workspace + "/" + self._client_id
-
-            main_message = {
-                "type": "method",
-                "from": from_client,
-                "to": target_id,
-                "method": method_id,
-            }
-            extra_data = {}
-            if args:
-                extra_data["args"] = args
-            if kwargs:
-                extra_data["with_kwargs"] = bool(kwargs)
-
-            # logger.info(
-            #     "Calling remote method %s:%s, session: %s",
-            #     target_id,
-            #     method_id,
-            #     local_session_id,
-            # )
-            if remote_parent:
-                # Set the parent session
-                # Note: It's a session id for the remote, not the current client
-                main_message["parent"] = remote_parent
-
-            timer = None
-            if with_promise:
-                # Only pass the current session id to the remote
-                # if we want to received the result
-                # I.e. the session id won't be passed for promises themselves
-                main_message["session"] = local_session_id
-                method_name = f"{target_id}:{method_id}"
-                timer = Timer(
-                    self._method_timeout,
-                    reject,
-                    f"Method call time out: {method_name}, context: {description}",
-                    label=method_name,
-                )
-                # By default, hypha will clear the session after the method is called
-                # However, if the args contains _rintf === true, we will not clear the session
-
-                # Helper function to recursively check for _rintf objects
-                def has_interface_object(obj):
-                    if not obj or not isinstance(obj, (dict, list, tuple)):
-                        return False
-                    if isinstance(obj, dict):
-                        if obj.get("_rintf") == True:
-                            return True
-                        return any(
-                            has_interface_object(value) for value in obj.values()
-                        )
-                    elif isinstance(obj, (list, tuple)):
-                        return any(has_interface_object(item) for item in obj)
-                    return False
-
-                clear_after_called = not has_interface_object(args)
-
-                promise_data = self._encode_promise(
-                    resolve=resolve,
-                    reject=reject,
-                    session_id=local_session_id,
-                    clear_after_called=clear_after_called,
-                    timer=timer,
-                    local_workspace=local_workspace,
-                    description=description,
-                )
-                # compressed promise
-                if with_promise == True:
-                    extra_data["promise"] = promise_data
-                elif with_promise == "*":
-                    extra_data["promise"] = "*"
-                    extra_data["t"] = self._method_timeout / 2
-                else:
-                    raise RuntimeError(f"Unsupported promise type: {with_promise}")
-
-            # The message consists of two segments, the main message and extra data
-            message_package = msgpack.packb(main_message)
-            if extra_data:
-                message_package = message_package + msgpack.packb(extra_data)
-            total_size = len(message_package)
-            if (
-                total_size <= self._long_message_chunk_size + 1024
-                or remote_method.__no_chunk__
-            ):
-                emit_task = asyncio.create_task(self._emit_message(message_package))
-            else:
-                # send chunk by chunk
-                emit_task = asyncio.create_task(
-                    self._send_chunks(message_package, target_id, remote_parent)
-                )
-            background_tasks.add(emit_task)
-
-            def handle_result(fut):
-                background_tasks.discard(fut)
-                if fut.exception():
-                    error_msg = (
-                        "Failed to send the request when calling method "
-                        f"({target_id}:{method_id}), error: {fut.exception()}"
-                    )
-                    if reject:
-                        reject(Exception(error_msg))
-                    else:
-                        # No reject callback available, log the error to prevent 
-                        # "Future exception was never retrieved" warnings
-                        logger.warning("Unhandled RPC method call error: %s", error_msg)
-                    if timer:
-                        timer.clear()
-                else:
-                    # If resolved successfully, reset the timer
-                    if timer:
-                        timer.reset()
-
-            emit_task.add_done_callback(handle_result)
-            return fut
-
-        # Generate debugging information for the method
-        remote_method.__rpc_object__ = (
-            encoded_method.copy()
-        )  # pylint: disable=protected-access
-        remote_method.__name__ = (
-            encoded_method.get("_rname") or method_id.split(".")[-1]
+        return RemoteFunction(
+            rpc_instance=self,
+            encoded_method=encoded_method,
+            remote_parent=remote_parent,
+            local_parent=local_parent,
+            remote_workspace=remote_workspace,
+            local_workspace=local_workspace,
+            description=description,
+            with_promise=with_promise,
         )
-        # remove the hash part in the method name
-        if "#" in remote_method.__name__:
-            remote_method.__name__ = remote_method.__name__.split("#")[-1]
-        remote_method.__doc__ = encoded_method.get(
-            "_rdoc", f"Remote method: {method_id}"
-        )
-        remote_method.__schema__ = encoded_method.get("_rschema")
-        # Prevent circular chunk sending
-        remote_method.__no_chunk__ = (
-            encoded_method.get("_rmethod") == "services.built-in.message_cache.append"
-        )
-        return remote_method
 
     def _log(self, info):
         logger.info("RPC Info: %s", info)
