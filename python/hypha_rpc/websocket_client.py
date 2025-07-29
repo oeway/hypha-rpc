@@ -854,6 +854,7 @@ async def _connect_to_server(config):
         server_base_url=connection_info.get("public_base_url"),
         long_message_chunk_size=config.get("long_message_chunk_size"),
     )
+    await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))
     wm = await rpc.get_manager_service(
         {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
     )

@@ -477,7 +477,7 @@ export class MessageEmitter {
       const timer = setTimeout(() => {
         this.off(event, handler);
         reject(new Error("Timeout"));
-      }, timeout);
+      }, timeout * 1000);
     });
   }
 }
