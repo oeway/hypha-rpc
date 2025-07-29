@@ -422,6 +422,15 @@ class RPC(MessageEmitter):
         self.loop = loop or asyncio.get_event_loop()
         self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
         super().__init__(self._remote_logger)
+        # Initialize HTTP message transmission configuration
+        self._enable_http_transmission = enable_http_transmission
+        self._http_transmission_threshold = http_transmission_threshold
+        self._multipart_threshold = multipart_threshold
+        # Ensure multipart_size is at least 5MB (S3 minimum requirement)
+        self._multipart_size = max(multipart_size, 5 * 1024 * 1024)
+        self._max_parallel_uploads = max_parallel_uploads
+        self._http_message_transmission_available = False
+        self._s3controller = None
         # Set up exception handler for unhandled asyncio futures
         def handle_exception(loop, context):
             exception = context.get('exception')
@@ -498,6 +507,8 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
+                logger.info(f"🔗 Connection established with info: {connection_info}")
+                
                 if not self._silent and self._connection.manager_id:
                     logger.info("Connection established, reporting services...")
                     try:
@@ -556,12 +567,22 @@ class RPC(MessageEmitter):
                 if connection_info:
                     if connection_info.get("public_base_url"):
                         self._server_base_url = connection_info.get("public_base_url")
-                    self._fire("connected", connection_info)
+                
+                # Initialize HTTP message transmission after connection is fully established
+                if self._enable_http_transmission and self._connection.manager_id:
+                    logger.info("🔄 HTTP transmission is enabled, initializing...")
+                    try:
+                        await self._initialize_http_message_transmission()
+                    except Exception as e:
+                        logger.error(f"Failed to initialize HTTP message transmission: {e}")
+                elif self._enable_http_transmission:
+                    logger.warning("🔄 HTTP transmission enabled but manager ID not yet available")
+                else:
+                    logger.info("🔄 HTTP transmission is disabled")
+                
+                self._fire("connected", connection_info)
 
             connection.on_connected(on_connected)
-            task = self.loop.create_task(on_connected(None))
-            background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
         else:
 
             async def _emit_message(_):
@@ -712,10 +733,15 @@ class RPC(MessageEmitter):
 
     async def _initialize_http_message_transmission(self):
         """Initialize HTTP message transmission and check S3 availability."""
+        logger.info("🔄 Initializing HTTP message transmission...")
         try:
             # Get the manager service to access S3 controller
             manager = await self.get_manager_service()
+            logger.debug("✅ Got manager service")
+            
+            # Try to get the S3 service
             self._s3controller = await manager.get_service("public/s3-storage")
+            logger.debug("✅ Got S3 controller service")
             
             # Check if required methods are available and callable
             required_methods = ["put_file", "get_file", "put_file_start_multipart", "put_file_complete_multipart"]
@@ -724,20 +750,22 @@ class RPC(MessageEmitter):
             for method_name in required_methods:
                 if not hasattr(self._s3controller, method_name):
                     all_methods_available = False
+                    logger.debug(f"❌ Missing method: {method_name}")
                     break
                 method = getattr(self._s3controller, method_name)
                 if not callable(method):
                     all_methods_available = False
+                    logger.debug(f"❌ Method not callable: {method_name}")
                     break
             
             if all_methods_available:
                 self._http_message_transmission_available = True
                 logger.info("✅ HTTP message transmission is available")
             else:
-                logger.debug("❌ HTTP message transmission not available - missing S3 methods")
+                logger.warning("❌ HTTP message transmission not available - missing S3 methods")
                 
         except Exception as e:
-            logger.debug(f"❌ HTTP message transmission not available - S3 service error: {e}")
+            logger.warning(f"❌ HTTP message transmission not available - S3 service error: {e}")
             self._http_message_transmission_available = False
 
     async def _send_chunks_http(self, package, target_id, session_id=None):
@@ -2026,13 +2054,24 @@ class RPC(MessageEmitter):
             if extra_data:
                 message_package = message_package + msgpack.packb(extra_data)
             total_size = len(message_package)
+            
+            # Check if we should use HTTP transmission (when enabled and above threshold)
             if (
+                self._enable_http_transmission and 
+                total_size >= self._http_transmission_threshold and
+                not remote_method.__no_chunk__
+            ):
+                # Use _send_chunks which will try HTTP transmission first
+                emit_task = asyncio.create_task(
+                    self._send_chunks(message_package, target_id, remote_parent)
+                )
+            elif (
                 total_size <= self._long_message_chunk_size + 1024
                 or remote_method.__no_chunk__
             ):
                 emit_task = asyncio.create_task(self._emit_message(message_package))
             else:
-                # send chunk by chunk
+                # send chunk by chunk using message_cache
                 emit_task = asyncio.create_task(
                     self._send_chunks(message_package, target_id, remote_parent)
                 )

@@ -635,6 +635,11 @@ export async function connectToServer(config) {
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
     long_message_chunk_size: config.long_message_chunk_size,
+    enable_http_transmission: config.enable_http_transmission !== undefined ? config.enable_http_transmission : true,
+    http_transmission_threshold: config.http_transmission_threshold || 1024 * 1024,
+    multipart_threshold: config.multipart_threshold || 10 * 1024 * 1024,
+    multipart_size: config.multipart_size || 6 * 1024 * 1024,
+    max_parallel_uploads: config.max_parallel_uploads || 5,
   });
   const wm = await rpc.get_manager_service({
     timeout: config.method_timeout,

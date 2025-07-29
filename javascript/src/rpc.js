@@ -464,6 +464,13 @@ export class RPC extends MessageEmitter {
             this._server_base_url = connectionInfo.public_base_url;
           }
           this._fire("connected", connectionInfo);
+          
+          // Initialize HTTP message transmission if enabled
+          if (this._enable_http_transmission) {
+            this._initialize_http_message_transmission().catch(error => {
+              console.warn("Failed to initialize HTTP message transmission:", error);
+            });
+          }
         }
       };
       connection.on_connected(onConnected);
@@ -1774,6 +1781,20 @@ export class RPC extends MessageEmitter {
   }
 
   async _send_chunks(data, target_id, session_id) {
+    // Try HTTP transmission first if available and message is above threshold
+    if (
+      this._http_message_transmission_available &&
+      data.length >= this._http_transmission_threshold
+    ) {
+      try {
+        return await this._send_chunks_http(data, target_id, session_id);
+      } catch (error) {
+        console.warn("Failed to send via HTTP, falling back to WebSocket chunks:", error.message);
+        // Fall through to WebSocket chunking
+      }
+    }
+    
+    // Fall back to WebSocket chunking
     // 1) Get the remote service
     const remote_services = await this.get_remote_service(
       `${target_id}:built-in`,
@@ -2007,10 +2028,34 @@ export class RPC extends MessageEmitter {
           message_package = new Uint8Array([...message_package, ...extra]);
         }
         const total_size = message_package.length;
+        
+        // Check if we should use HTTP transmission (when enabled and above threshold)
         if (
+          self._enable_http_transmission && 
+          total_size >= self._http_transmission_threshold &&
+          !remote_method.__no_chunk__
+        ) {
+          // Use _send_chunks which will try HTTP transmission first
+          self
+            ._send_chunks(message_package, target_id, remote_parent)
+            .then(function () {
+              if (timer) {
+                // If resolved successfully, reset the timer
+                timer.reset();
+              }
+            })
+            .catch(function (err) {
+              console.error("Failed to send message", err);
+              reject(err);
+              if (timer) {
+                timer.clear();
+              }
+            });
+        } else if (
           total_size <= self._long_message_chunk_size + 1024 ||
           remote_method.__no_chunk__
         ) {
+          // Small message - use direct WebSocket transmission
           self
             ._emit_message(message_package)
             .then(function () {
@@ -2032,7 +2077,8 @@ export class RPC extends MessageEmitter {
               }
             });
         } else {
-          // send chunk by chunk
+          // Medium-sized message that doesn't meet HTTP threshold
+          // Use WebSocket chunking
           self
             ._send_chunks(message_package, target_id, remote_parent)
             .then(function () {
