@@ -853,6 +853,11 @@ async def _connect_to_server(config):
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
         long_message_chunk_size=config.get("long_message_chunk_size"),
+        enable_http_transmission=config.get("enable_http_transmission", True),
+        http_transmission_threshold=config.get("http_transmission_threshold", 1024 * 1024),
+        multipart_threshold=config.get("multipart_threshold", 10 * 1024 * 1024),
+        multipart_size=config.get("multipart_size", 6 * 1024 * 1024),
+        max_parallel_uploads=config.get("max_parallel_uploads", 5),
     )
     await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))
     wm = await rpc.get_manager_service(

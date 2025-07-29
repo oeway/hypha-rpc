@@ -112,8 +112,8 @@ def fastapi_server_fixture():
         "--minio-port=9002",
         "--minio-root-user=myuser",
         "--minio-root-password=mypassword",
-        "--minio-file-system-mode",
-        "--s3-cleanup-period=3"
+        "--s3-cleanup-period=3",
+        "--enable-s3-for-anonymous-users"
     ]
     
     with subprocess.Popen(server_args, env=test_env) as proc:
@@ -169,7 +169,7 @@ def generate_test_user_token():
         email="test-user@test.com",
         parent=None,
         roles=[],
-        scope=create_scope(workspaces={"ws-test-user": UserPermission.admin}),
+        scope=create_scope(workspaces={"ws-user-test-user": UserPermission.admin}),
         expires_at=None,
     )
     token = generate_presigned_token(user_info, 1800)
