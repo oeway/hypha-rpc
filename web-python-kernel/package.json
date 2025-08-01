@@ -1,6 +1,6 @@
 {
   "name": "web-python-kernel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A web-based Python kernel for browser environments with TypeScript support",
   "main": "dist/web-python-kernel.js",
   "module": "dist/web-python-kernel.mjs",
