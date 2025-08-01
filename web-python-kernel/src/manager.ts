@@ -79,6 +79,7 @@ export interface IKernelManagerOptions {
     mode: KernelMode;
     language: KernelLanguage;
   }>; // Restrict which kernel types can be created
+  interruptionMode?: 'shared-array-buffer' | 'kernel-interrupt' | 'auto'; // Default: 'auto'
 }
 
 // Interface for kernel instance
@@ -167,6 +168,9 @@ export class KernelManager extends EventEmitter {
   // Interrupt buffers for worker kernels (using SharedArrayBuffer)
   private interruptBuffers: Map<string, Uint8Array> = new Map();
   
+  // Interruption mode configuration
+  private interruptionMode: 'shared-array-buffer' | 'kernel-interrupt' | 'auto';
+  
   /**
    * Helper function to check if an error is a KeyboardInterrupt
    * @private
@@ -248,6 +252,9 @@ export class KernelManager extends EventEmitter {
   constructor(options: IKernelManagerOptions = {}) {
     super();
     super.setMaxListeners(100); // Allow many listeners for kernel events
+    
+    // Set interruption mode (default to 'auto')
+    this.interruptionMode = options.interruptionMode || 'auto';
     
     // Set default allowed kernel types (worker mode only for security)
     this.allowedKernelTypes = options.allowedKernelTypes || [
@@ -1048,12 +1055,11 @@ export class KernelManager extends EventEmitter {
       };
     }
     
-    // Import worker using webpack worker-loader
-    // @ts-ignore: webpack will handle this require
-    const WorkerModule = require('./worker.worker');
-    
-    // Create worker with permissions - worker-loader might export default or the class directly
-    const worker = WorkerModule.default ? new WorkerModule.default() : new WorkerModule();
+    // Create worker by loading the compiled worker bundle
+    // The worker bundle will be available as a separate file after webpack compilation
+    // Use relative path from the dist directory where the main bundle is served
+    const workerPath = './dist/kernel.worker.js';
+    const worker = new Worker(workerPath, { type: 'classic' });
     
     // Create a message channel for events
     const { port1, port2 } = new MessageChannel();
@@ -2694,6 +2700,11 @@ export class KernelManager extends EventEmitter {
         return false;
       }
       
+      // If interruption mode is 'kernel-interrupt', use fallback directly
+      if (this.interruptionMode === 'kernel-interrupt') {
+        return await this.interruptWorkerKernelFallback(id, worker);
+      }
+      
       // Check if we already have an interrupt buffer for this kernel
       let interruptBuffer = this.interruptBuffers.get(id);
       
@@ -2736,10 +2747,26 @@ export class KernelManager extends EventEmitter {
           console.log(`Interrupt buffer set up for kernel ${id}`);
           
         } catch (error) {
-          console.warn(`Failed to create SharedArrayBuffer for kernel ${id}, falling back to message-based interrupt:`, error);
-          
-          // Fallback: use message-based interrupt
-          return await this.interruptWorkerKernelFallback(id, worker);
+          // Handle based on interruption mode
+          if (this.interruptionMode === 'shared-array-buffer') {
+            // If explicitly set to shared-array-buffer, this is an error
+            console.error(`❌ Cannot create SharedArrayBuffer for interrupt handling in kernel ${id}`);
+            throw new Error(`SharedArrayBuffer is required for interruption mode 'shared-array-buffer' but is not available.
+
+To fix this issue, either:
+1. Configure your web server with these headers:
+   - Cross-Origin-Opener-Policy: same-origin
+   - Cross-Origin-Embedder-Policy: require-corp
+
+2. Or change the interruption mode when creating KernelManager:
+   new KernelManager({ interruptionMode: 'auto' })`);
+          } else {
+            // Auto mode: fall back to kernel.interrupt()
+            console.info(`ℹ️ Using message-based interrupt for kernel ${id} (SharedArrayBuffer not available)`);
+            
+            // Fallback: use message-based interrupt
+            return await this.interruptWorkerKernelFallback(id, worker);
+          }
         }
       }
       
@@ -2801,7 +2828,11 @@ export class KernelManager extends EventEmitter {
       // Set a timeout in case we don't get a response
       setTimeout(() => {
         worker.removeEventListener("message", responseHandler);
-        console.warn(`Timeout waiting for interrupt response from kernel ${id}`);
+        console.warn(`⏱️ Interrupt request timed out for kernel ${id} after 5 seconds.
+This may happen if:
+- The kernel is running code that cannot be interrupted
+- The kernel is in an unresponsive state
+You may need to restart the kernel if it remains unresponsive.`);
         resolve(false);
       }, 5000); // 5 second timeout
     });
@@ -3054,6 +3085,12 @@ export class KernelManager extends EventEmitter {
    * @private
    */
   private async setupWorkerInterruptBuffer(id: string, worker: Worker): Promise<void> {
+    // Skip SharedArrayBuffer setup if mode is 'kernel-interrupt'
+    if (this.interruptionMode === 'kernel-interrupt') {
+      console.log(`Skipping SharedArrayBuffer setup for kernel ${id} - using kernel.interrupt() mode`);
+      return;
+    }
+    
     try {
       // Python kernels support interrupt buffers
       
@@ -3091,8 +3128,27 @@ export class KernelManager extends EventEmitter {
       });
       
     } catch (error) {
-      console.warn(`Failed to set up interrupt buffer for kernel ${id}:`, error);
-      // Don't throw - kernel can still work without interrupt buffer
+      // Handle based on interruption mode
+      if (this.interruptionMode === 'shared-array-buffer') {
+        // If explicitly set to shared-array-buffer, this is an error
+        console.error(`❌ SharedArrayBuffer required but not available for kernel ${id}`);
+        throw new Error(`SharedArrayBuffer is required but not available. To enable SharedArrayBuffer, your server must set these headers:
+- Cross-Origin-Opener-Policy: same-origin
+- Cross-Origin-Embedder-Policy: require-corp
+
+Alternatively, use interruptionMode: 'kernel-interrupt' or 'auto' in KernelManager options.`);
+      } else {
+        // Auto mode: fall back to kernel.interrupt()
+        console.info(`ℹ️ SharedArrayBuffer not available for kernel ${id}. Using alternative interrupt method.
+
+To enable faster interrupts, configure your server with these headers:
+- Cross-Origin-Opener-Policy: same-origin
+- Cross-Origin-Embedder-Policy: require-corp
+
+Note: Some development servers (e.g., Vite, webpack-dev-server) can be configured to add these headers.
+The alternative interrupt method will still work but may be less responsive for long-running code.`);
+        // Don't throw - kernel can still work without interrupt buffer
+      }
     }
   }
 }

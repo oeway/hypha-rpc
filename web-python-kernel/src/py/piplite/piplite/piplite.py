@@ -16,7 +16,26 @@ from unittest.mock import patch
 import micropip
 from micropip.package_index import ProjectInfo
 from micropip.package_index import query_package as _MP_QUERY_PACKAGE
-from micropip.package_index import fetch_string_and_headers as _MP_FETCH_STRING
+
+# Handle compatibility with different micropip versions
+try:
+    from micropip.package_index import fetch_string_and_headers as _MP_FETCH_STRING
+except ImportError:
+    # Fallback for newer micropip versions that don't have fetch_string_and_headers
+    import js
+    
+    async def _MP_FETCH_STRING(url, fetch_kwargs=None):
+        """Fallback implementation using browser's fetch API via Pyodide"""
+        if fetch_kwargs is None:
+            fetch_kwargs = {}
+        
+        response = await js.fetch(url, fetch_kwargs)
+        if not response.ok:
+            raise Exception(f"Failed to fetch {url}: {response.status} {response.statusText}")
+        
+        data = await response.text()
+        headers = dict(response.headers)
+        return data, headers
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +100,7 @@ async def _query_package(
     name: str,
     index_urls: list[str] | str | None = None,
     fetch_kwargs: dict[str, Any] | None = None,
+    compat_layer: Any = None,  # Accept compat_layer for newer micropip versions
 ) -> ProjectInfo:
     """Fetch the warehouse API metadata for a specific ``pkgname``."""
     for piplite_url in _PIPLITE_URLS:
@@ -99,11 +119,22 @@ async def _query_package(
             f"{name} could not be installed: PyPI fallback is disabled"
         )
 
-    return await _MP_QUERY_PACKAGE(
-        name=name,
-        index_urls=index_urls,
-        fetch_kwargs=fetch_kwargs,
-    )
+    # Pass compat_layer if the function signature accepts it
+    import inspect
+    sig = inspect.signature(_MP_QUERY_PACKAGE)
+    if 'compat_layer' in sig.parameters:
+        return await _MP_QUERY_PACKAGE(
+            name=name,
+            index_urls=index_urls,
+            fetch_kwargs=fetch_kwargs,
+            compat_layer=compat_layer,
+        )
+    else:
+        return await _MP_QUERY_PACKAGE(
+            name=name,
+            index_urls=index_urls,
+            fetch_kwargs=fetch_kwargs,
+        )
 
 
 async def _install(

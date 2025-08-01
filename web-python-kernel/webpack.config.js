@@ -17,7 +17,10 @@ module.exports = (env, argv) => {
   }
   
   const config = {
-    entry: './src/index.ts',
+    entry: {
+      'web-python-kernel': './src/index.ts',
+      'kernel.worker': './src/kernel.worker.ts'
+    },
     mode: argv.mode || 'development',
     
     module: {
@@ -61,9 +64,16 @@ module.exports = (env, argv) => {
     },
     
     output: {
-      filename,
+      filename: (pathData) => {
+        // Handle different entry points
+        if (pathData.chunk.name === 'kernel.worker') {
+          return isProduction ? 'kernel.worker.min.js' : 'kernel.worker.js';
+        }
+        return filename; // Use the original filename for main entry
+      },
       path: path.resolve(__dirname, 'dist'),
       clean: false, // Don't clean dist between builds
+      globalObject: 'self', // Important for web workers
     },
     
     plugins: [
@@ -145,6 +155,22 @@ module.exports = (env, argv) => {
       type: 'umd',
     };
   }
+
+  // Override library settings for worker entry
+  config.optimization = {
+    ...config.optimization,
+    splitChunks: {
+      cacheGroups: {
+        default: false,
+        vendors: false,
+        worker: {
+          name: 'kernel.worker',
+          chunks: (chunk) => chunk.name === 'kernel.worker',
+          enforce: true
+        }
+      }
+    }
+  };
 
   // Clean dist only on the first build
   if (env?.clean) {

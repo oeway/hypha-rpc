@@ -461,6 +461,8 @@ except Exception as e:
   private async installViaPipWithOptimizations(packageName: string): Promise<void> {
     await this.pyodide.runPythonAsync(`
 try:
+    # Import piplite first
+    import piplite
     # Use optimized pip installation with caching
     await piplite.install('${packageName}', keep_going=True, deps=True)
     print("✅ Successfully installed ${packageName} via optimized pip")
@@ -1165,13 +1167,12 @@ del _var
       return false;
     }
     
-    // Main thread kernels have limited interrupt support
-    // According to Pyodide docs, interrupts work best in web workers
-    console.warn("[KERNEL] Main thread kernels have limited interrupt support");
+    console.log("[KERNEL] Attempting to interrupt execution...");
     
     try {
-      // If we have an interrupt buffer set up, try to use it
+      // First priority: Use interrupt buffer if available
       if (this._interruptBuffer && this._interruptSupported) {
+        console.log("[KERNEL] Using interrupt buffer method");
         // Set interrupt signal (2 = SIGINT)
         this._interruptBuffer[0] = 2;
         
@@ -1180,35 +1181,58 @@ del _var
         
         // Check if the interrupt was processed (buffer should be reset to 0)
         const wasProcessed = this._interruptBuffer[0] === 0;
-        return wasProcessed;
-      } else {
-        // Fallback: try to force a Python interrupt using the interpreter
-       
-        if (this._interpreter && typeof this._interpreter.interrupt === 'function') {
-          this._interpreter.interrupt();
+        if (wasProcessed) {
+          console.log("[KERNEL] Interrupt processed successfully via buffer");
           return true;
         }
-        
-        // Send stderr stream first (for Jupyter notebook UI compatibility)
-        this._sendMessage({
-          type: 'stream',
-          bundle: {
-            name: 'stderr',
-            text: 'KeyboardInterrupt: Execution interrupted by user\n'
-          }
-        });
-        
-        this._sendMessage({
-          type: 'execute_error',
-          bundle: {
-            ename: 'KeyboardInterrupt',
-            evalue: 'Execution interrupted by user',
-            traceback: ['KeyboardInterrupt: Execution interrupted by user']
-          }
-        });
-        
+      }
+      
+      // Second priority: Try Python-level interrupt
+      try {
+        console.log("[KERNEL] Attempting Python-level interrupt");
+        // Try to raise KeyboardInterrupt in Python
+        await this.pyodide.runPythonAsync(`
+import sys
+import _thread
+# Try to interrupt the main thread
+_thread.interrupt_main()
+`);
+        console.log("[KERNEL] Python interrupt signal sent");
+        return true;
+      } catch (pythonError) {
+        console.log("[KERNEL] Python interrupt attempt failed:", pythonError);
+      }
+      
+      // Third priority: Try interpreter interrupt if available
+      if (this._interpreter && typeof this._interpreter.interrupt === 'function') {
+        console.log("[KERNEL] Using interpreter interrupt method");
+        this._interpreter.interrupt();
         return true;
       }
+      
+      // Last resort: Send interrupt messages for UI feedback
+      console.log("[KERNEL] Sending interrupt messages for UI feedback");
+      
+      // Send stderr stream first (for Jupyter notebook UI compatibility)
+      this._sendMessage({
+        type: 'stream',
+        bundle: {
+          name: 'stderr',
+          text: 'KeyboardInterrupt: Execution interrupted by user\n'
+        }
+      });
+      
+      this._sendMessage({
+        type: 'execute_error',
+        bundle: {
+          ename: 'KeyboardInterrupt',
+          evalue: 'Execution interrupted by user',
+          traceback: ['KeyboardInterrupt: Execution interrupted by user']
+        }
+      });
+      
+      // Return false since we couldn't actually interrupt the execution
+      return false;
     } catch (error) {
       console.error("[KERNEL] Error during interrupt:", error);
       return false;

@@ -93,12 +93,20 @@
                         <span class="status-indicator" id="kernelStatus"></span>
                         <span class="text-sm font-medium" id="kernelStatusText">Initializing...</span>
                     </div>
-                    <button 
-                        id="initBtn"
-                        class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200"
-                    >
-                        Initialize Kernel
-                    </button>
+                    <div class="flex space-x-2">
+                        <button 
+                            id="initMainBtn"
+                            class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200"
+                        >
+                            Initialize (Main Thread)
+                        </button>
+                        <button 
+                            id="initWorkerBtn"
+                            class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200"
+                        >
+                            Initialize (Web Worker)
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -136,7 +144,7 @@
                 <div class="p-4">
                     <textarea id="codeEditor" placeholder="Enter your Python code here...">
 # 🐍 Welcome to the Web Python Kernel Playground!
-# Click "Initialize Kernel" above to start
+# Click "Initialize (Main Thread)" or "Initialize (Web Worker)" above to start
 # Try the visualization examples below! 📊
 # 
 # ✨ NEW: Real-time streaming output support!
@@ -203,7 +211,7 @@ print("🔄 Try the 'Streaming Demo' to see real-time output in action!")
                         class="h-96 overflow-y-auto bg-gray-50 rounded-lg p-4 font-mono text-sm border"
                     >
                         <div class="text-gray-500 italic">
-                            Click "Initialize Kernel" to start running Python code...
+                            Click "Initialize (Main Thread)" or "Initialize (Web Worker)" to start running Python code...
                         </div>
                     </div>
                 </div>
@@ -416,51 +424,32 @@ except Exception as e:
                 <button 
                     class="example-btn p-4 text-left bg-purple-50 hover:bg-purple-100 rounded-lg border transition-colors duration-200"
                     data-code='# Plotly interactive plotting
-try:
-    import plotly.graph_objects as go
-    import plotly.express as px
-    import numpy as np
-    
-    # Create sample data
-    x = np.linspace(0, 10, 50)
-    y1 = np.sin(x)
-    y2 = np.cos(x)
-    
-    # Create interactive line plot
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=x, y=y1, mode="lines+markers", 
-                           name="sin(x)", line=dict(color="blue")))
-    fig.add_trace(go.Scatter(x=x, y=y2, mode="lines+markers", 
-                           name="cos(x)", line=dict(color="red")))
-    
-    fig.update_layout(
-        title="Interactive Trigonometric Functions",
-        xaxis_title="x",
-        yaxis_title="y",
-        hovermode="x unified"
-    )
-    
-    # Generate HTML
-    html_str = fig.to_html(include_plotlyjs="cdn", div_id="plotly-div")
-    print("Plotly interactive plot created!")
-    print("HTML snippet (truncated):")
-    print(html_str[:200] + "...")
-    
-    # Alternative: JSON representation
-    import json
-    fig_dict = fig.to_dict()
-    print(f'\nPlot data structure has {len(fig_dict["data"])} traces')
-    
-except ImportError:
-    print("Plotly not available - installing...")
-    try:
-        import micropip
-        await micropip.install("plotly")
-        print("Plotly installed! Please run this example again.")
-    except:
-        print("Could not install Plotly automatically")
-except Exception as e:
-    print(f"Error creating Plotly chart: {e}")'>
+import micropip
+await micropip.install("plotly")
+import plotly.graph_objects as go
+import plotly.express as px
+import numpy as np
+
+# Create sample data
+x = np.linspace(0, 10, 50)
+y1 = np.sin(x)
+y2 = np.cos(x)
+
+# Create interactive line plot
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=x, y=y1, mode="lines+markers", 
+                         name="sin(x)", line=dict(color="blue")))
+fig.add_trace(go.Scatter(x=x, y=y2, mode="lines+markers", 
+                         name="cos(x)", line=dict(color="red")))
+
+fig.update_layout(
+    title="Interactive Trigonometric Functions",
+    xaxis_title="x",
+    yaxis_title="y",
+    hovermode="x unified"
+)
+
+fig.show()'>
                     <h3 class="font-medium text-gray-900">🎯 Plotly Interactive</h3>
                     <p class="text-sm text-gray-600 mt-1">Interactive web-based plotting</p>
                 </button>
@@ -801,7 +790,7 @@ print("✅ This should not appear if interrupted!")'>
                 await this.initializeWebPythonKernel();
             }
 
-            async initializeWebPythonKernel() {
+            async initializeWebPythonKernel(useWorker = false) {
                 try {
                     this.updateStatus('busy', 'Loading web-python-kernel...');
                     
@@ -816,23 +805,28 @@ print("✅ This should not appear if interrupted!")'>
                     
                     const { KernelManager, KernelMode, KernelLanguage, KernelEvents } = kernelModule;
                     
+                    const kernelMode = useWorker ? KernelMode.WORKER : KernelMode.MAIN_THREAD;
+                    const statusText = useWorker ? 'Creating Python kernel (Web Worker)...' : 'Creating Python kernel (Main Thread)...';
+                    
                     this.kernelManager = new KernelManager({
                         allowedKernelTypes: [
-                            { mode: KernelMode.MAIN_THREAD, language: KernelLanguage.PYTHON }
+                            { mode: kernelMode, language: KernelLanguage.PYTHON }
                         ],
                         pool: {
                             enabled: false,
                             poolSize: 1,
                             autoRefill: false,
                             preloadConfigs: []
-                        }
+                        },
+                        // Use 'auto' mode which will fall back to kernel.interrupt() if SharedArrayBuffer is not available
+                        interruptionMode: 'auto'
                     });
 
-                    this.updateStatus('busy', 'Creating Python kernel...');
+                    this.updateStatus('busy', statusText);
 
                     // Check if pyodide-lock.json is available for faster loading
                     let kernelOptions = {
-                        mode: KernelMode.MAIN_THREAD,
+                        mode: kernelMode,
                         lang: KernelLanguage.PYTHON
                     };
 
@@ -1093,9 +1087,16 @@ print("✅ This should not appear if interrupted!")'>
         });
 
         // Event listeners
-        document.getElementById('initBtn').addEventListener('click', () => {
-            kernelManager.initialize();
-            document.getElementById('initBtn').style.display = 'none';
+        document.getElementById('initMainBtn').addEventListener('click', () => {
+            kernelManager.initializeWebPythonKernel(false);
+            document.getElementById('initMainBtn').style.display = 'none';
+            document.getElementById('initWorkerBtn').style.display = 'none';
+        });
+
+        document.getElementById('initWorkerBtn').addEventListener('click', () => {
+            kernelManager.initializeWebPythonKernel(true);
+            document.getElementById('initMainBtn').style.display = 'none';
+            document.getElementById('initWorkerBtn').style.display = 'none';
         });
 
         document.getElementById('runBtn').addEventListener('click', () => {
