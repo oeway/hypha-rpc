@@ -51,6 +51,17 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
+        
+        .streaming-indicator {
+            animation: pulse 1.5s infinite;
+            font-weight: 500;
+        }
+        
+        .output-streaming {
+            background-color: #fef3c7;
+            border-left: 3px solid #f59e0b;
+            font-style: italic;
+        }
     </style>
     <script>
         tailwind.config = {
@@ -74,7 +85,7 @@
                         🐍 Web Python Kernel Playground
                     </h1>
                     <p class="text-gray-600">
-                        Run Python code with visualization support - matplotlib, plotly, seaborn, pandas & more!
+                        Run Python code with real-time streaming output and visualization support - matplotlib, plotly, seaborn, pandas & more!
                     </p>
                 </div>
                 <div class="flex items-center space-x-4">
@@ -107,6 +118,13 @@
                                 ▶ Run Code
                             </button>
                             <button 
+                                id="interruptBtn"
+                                class="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled
+                            >
+                                ⏹ Interrupt
+                            </button>
+                            <button 
                                 id="clearBtn"
                                 class="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200"
                             >
@@ -120,8 +138,11 @@
 # 🐍 Welcome to the Web Python Kernel Playground!
 # Click "Initialize Kernel" above to start
 # Try the visualization examples below! 📊
+# 
+# ✨ NEW: Real-time streaming output support!
+# Watch outputs appear as they're generated, not just at the end.
 
-print("🚀 Web Python Kernel ready!")
+print("🚀 Web Python Kernel ready with streaming support!")
 
 # Basic Python operations
 print("\n📊 Basic Data Analysis:")
@@ -158,6 +179,7 @@ except Exception as e:
     print(f"Note: {e}")
 
 print("\n🎨 Try the example buttons below for advanced plotting!")
+print("🔄 Try the 'Streaming Demo' to see real-time output in action!")
 </textarea>
                 </div>
             </div>
@@ -694,6 +716,73 @@ except Exception as e:
                     <h3 class="font-medium text-gray-900">📦 Package Management</h3>
                     <p class="text-sm text-gray-600 mt-1">Check and install Python packages</p>
                 </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-orange-50 hover:bg-orange-100 rounded-lg border transition-colors duration-200"
+                    data-code='# 🚀 Streaming Output Demo - Long Running Operation
+import time
+import random
+
+print("🚀 Starting streaming demo with long-running operation...")
+print("This will demonstrate real-time output streaming!")
+
+# Simulate a long-running process with multiple outputs
+for i in range(10):
+    print(f"Step {i+1}/10: Processing data...")
+    
+    # Simulate some work
+    time.sleep(0.5)
+    
+    # Generate some random data
+    data = [random.randint(1, 100) for _ in range(5)]
+    print(f"  Generated data: {data}")
+    print(f"  Sum: {sum(data)}, Average: {sum(data)/len(data):.2f}")
+    
+    # Simulate more work
+    time.sleep(0.3)
+    
+    if i % 3 == 0:
+        print(f"  📊 Progress: {(i+1)*10}% complete")
+    
+    print()  # Empty line for readability
+
+print("✅ Streaming demo completed!")
+print("🎯 Notice how each output appeared in real-time as it was generated!")'>
+                    <h3 class="font-medium text-gray-900">🔄 Streaming Demo</h3>
+                    <p class="text-sm text-gray-600 mt-1">Real-time output streaming demonstration</p>
+                </button>
+
+                <button 
+                    class="example-btn p-4 text-left bg-red-50 hover:bg-red-100 rounded-lg border transition-colors duration-200"
+                    data-code='# ⏹ Interrupt Demo - Very Long Running Operation
+import time
+import random
+
+print("⏹ Starting interrupt demo...")
+print("This will run for a long time - try clicking the Interrupt button!")
+print("You should see output streaming in real-time until interrupted.")
+
+# Simulate a very long-running process
+for i in range(50):
+    print(f"Processing step {i+1}/50...")
+    
+    # Simulate heavy computation
+    time.sleep(1)
+    
+    # Generate and process data
+    data = [random.randint(1, 1000) for _ in range(10)]
+    result = sum(data) / len(data)
+    print(f"  Data average: {result:.2f}")
+    
+    if i % 5 == 0:
+        print(f"  🔄 Still running... {i+1} steps completed")
+    
+    print()  # Empty line for readability
+
+print("✅ This should not appear if interrupted!")'>
+                    <h3 class="font-medium text-gray-900">⏹ Interrupt Demo</h3>
+                    <p class="text-sm text-gray-600 mt-1">Test kernel interruption (click Interrupt button)</p>
+                </button>
             </div>
         </div>
     </div>
@@ -705,6 +794,7 @@ except Exception as e:
                 this.kernelManager = null;
                 this.currentKernelId = null;
                 this.isReady = false;
+                this.currentExecution = null; // Track current execution for interruption
             }
 
             async initialize() {
@@ -757,23 +847,14 @@ except Exception as e:
                         this.updateStatus('ready', 'Kernel ready');
                     });
 
-                    this.kernelManager.onKernelEvent(this.currentKernelId, KernelEvents.STREAM, (data) => {
-                        if (data.name === 'stdout') {
-                            this.addOutput(data.text, 'stdout');
-                        } else if (data.name === 'stderr') {
-                            this.addOutput(data.text, 'stderr');
-                        }
-                    });
-
-                    // Listen for display_data events (plots, HTML, etc.)
-                    this.kernelManager.onKernelEvent(this.currentKernelId, KernelEvents.DISPLAY_DATA, (data) => {
-                        this.handleDisplayData(data);
-                    });
+                    // Note: We no longer need individual event listeners for stream, display_data, etc.
+                    // since executeStream handles all of these internally and yields them as events
 
                     this.isReady = true;
                     this.updateStatus('ready', 'Python kernel ready!');
                     this.enableButton('runBtn');
-                    this.addOutput('✓ Web-python-kernel ready with full features!', 'result');
+                    this.enableButton('interruptBtn');
+                    this.addOutput('✓ Web-python-kernel ready with streaming support!', 'result');
 
                 } catch (error) {
                     console.error('Failed to initialize web-python-kernel:', error);
@@ -790,22 +871,106 @@ except Exception as e:
 
                 try {
                     this.disableButton('runBtn');
+                    this.enableButton('interruptBtn');
+                    this.updateStatus('busy', 'Executing...');
                     this.addOutput(`>>> Executing:\\n${code}`, 'result');
 
-                    // Execute using web-python-kernel
-                    const result = await this.kernelManager.execute(this.currentKernelId, code);
-                    if (result.success) {
+                    // Track current execution for interruption
+                    this.currentExecution = { code, startTime: Date.now() };
+
+                    // Add streaming indicator
+                    const streamingIndicator = document.createElement('div');
+                    streamingIndicator.className = 'output-line output-streaming';
+                    streamingIndicator.innerHTML = '<span class="streaming-indicator">🔄 Streaming output...</span>';
+                    document.getElementById('output').appendChild(streamingIndicator);
+
+                    // Use executeStream for real-time output streaming
+                    const stream = this.kernelManager.executeStream(this.currentKernelId, code);
+                    
+                    let hasOutput = false;
+                    
+                    // Process streaming output in real-time
+                    for await (const event of stream) {
+                        // Remove streaming indicator once we get first output
+                        if (!hasOutput) {
+                            hasOutput = true;
+                            streamingIndicator.remove();
+                        }
+                        
+                        // Handle different event types
+                        switch (event.type) {
+                            case 'stream':
+                                // Handle stdout/stderr streams
+                                if (event.data.name === 'stdout') {
+                                    this.addOutput(event.data.text, 'stdout');
+                                } else if (event.data.name === 'stderr') {
+                                    this.addOutput(event.data.text, 'stderr');
+                                }
+                                break;
+                                
+                            case 'display_data':
+                                // Handle display data (plots, HTML, etc.)
+                                this.handleDisplayData(event.data);
+                                break;
+                                
+                            case 'update_display_data':
+                                // Handle display updates
+                                this.handleDisplayData(event.data);
+                                break;
+                                
+                            case 'execute_result':
+                                // Handle execution results
+                                if (event.data && event.data.data) {
+                                    const resultText = event.data.data['text/plain'] || 
+                                                     event.data.data['text/html'] || 
+                                                     JSON.stringify(event.data.data);
+                                    this.addOutput(resultText, 'result');
+                                }
+                                break;
+                                
+                            case 'execute_error':
+                                // Handle execution errors
+                                const errorMsg = `${event.data.ename}: ${event.data.evalue}`;
+                                if (event.data.traceback) {
+                                    this.addOutput(errorMsg + '\\n' + event.data.traceback.join('\\n'), 'stderr');
+                                } else {
+                                    this.addOutput(errorMsg, 'stderr');
+                                }
+                                break;
+                                
+                            case 'error':
+                                // Handle general errors
+                                this.addOutput(`Error: ${event.data}`, 'stderr');
+                                break;
+                                
+                            default:
+                                // Log unknown event types for debugging
+                                console.log('Unknown event type:', event.type, event.data);
+                                break;
+                        }
+                    }
+
+                    // Remove streaming indicator if no output was received
+                    if (!hasOutput) {
+                        streamingIndicator.remove();
+                    }
+
+                    // Get the final result from the stream
+                    const finalResult = await stream.next();
+                    if (finalResult.value && finalResult.value.success) {
                         this.addOutput('✓ Execution completed successfully', 'result');
-                    } else {
-                        this.addOutput(`✗ Execution failed: ${result.error?.message || 'Unknown error'}`, 'stderr');
+                    } else if (finalResult.value && !finalResult.value.success) {
+                        this.addOutput(`✗ Execution failed: ${finalResult.value.error?.message || 'Unknown error'}`, 'stderr');
                     }
 
                 } catch (error) {
                     console.error('Execution error:', error);
                     this.addOutput(`Error: ${error.message}`, 'stderr');
-                    this.updateStatus('ready', 'Ready');
                 } finally {
                     this.enableButton('runBtn');
+                    this.disableButton('interruptBtn');
+                    this.currentExecution = null;
+                    this.updateStatus('ready', 'Kernel ready');
                 }
             }
 
@@ -896,6 +1061,21 @@ except Exception as e:
                 btn.disabled = true;
                 btn.classList.add('opacity-50', 'cursor-not-allowed');
             }
+
+            async interruptCurrentExecution() {
+                if (this.currentExecution && this.kernelManager && this.currentKernelId) {
+                    try {
+                        const success = await this.kernelManager.interruptKernel(this.currentKernelId);
+                        if (success) {
+                            this.addOutput('✓ Execution interrupted successfully', 'result');
+                        } else {
+                            this.addOutput('✗ Failed to interrupt execution', 'stderr');
+                        }
+                    } catch (error) {
+                        this.addOutput(`Error interrupting execution: ${error.message}`, 'stderr');
+                    }
+                }
+            }
         }
 
         // Initialize the playground
@@ -925,6 +1105,10 @@ except Exception as e:
             } else {
                 kernelManager.addOutput('No code to execute', 'stderr');
             }
+        });
+
+        document.getElementById('interruptBtn').addEventListener('click', () => {
+            kernelManager.interruptCurrentExecution();
         });
 
         document.getElementById('clearBtn').addEventListener('click', () => {
