@@ -5,8 +5,18 @@ const { CleanWebpackPlugin } = require('clean-webpack-plugin');
 
 module.exports = (env, argv) => {
   const isProduction = argv.mode === 'production';
+  const format = env?.format || 'umd';
+  const isESM = format === 'esm';
   
-  return {
+  // Determine output filename based on format and production mode
+  let filename;
+  if (isESM) {
+    filename = isProduction ? 'web-python-kernel.min.mjs' : 'web-python-kernel.mjs';
+  } else {
+    filename = isProduction ? 'web-python-kernel.min.js' : 'web-python-kernel.js';
+  }
+  
+  const config = {
     entry: './src/index.ts',
     mode: argv.mode || 'development',
     
@@ -51,17 +61,12 @@ module.exports = (env, argv) => {
     },
     
     output: {
-      filename: isProduction ? 'web-python-kernel.min.js' : 'web-python-kernel.js',
+      filename,
       path: path.resolve(__dirname, 'dist'),
-      library: {
-        name: 'WebPythonKernel',
-        type: 'umd',
-      },
-      clean: true,
+      clean: false, // Don't clean dist between builds
     },
     
     plugins: [
-      new CleanWebpackPlugin(),
       new webpack.ProvidePlugin({
         process: 'process/browser',
         Buffer: ['buffer', 'Buffer'],
@@ -125,4 +130,26 @@ module.exports = (env, argv) => {
       maxAssetSize: 2000000,
     },
   };
+
+  // Configure output format
+  if (isESM) {
+    config.output.library = {
+      type: 'module',
+    };
+    config.experiments = {
+      outputModule: true,
+    };
+  } else {
+    config.output.library = {
+      name: 'WebPythonKernel',
+      type: 'umd',
+    };
+  }
+
+  // Clean dist only on the first build
+  if (env?.clean) {
+    config.plugins.unshift(new CleanWebpackPlugin());
+  }
+
+  return config;
 }; 

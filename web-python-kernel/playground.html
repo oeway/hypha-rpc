@@ -698,7 +698,7 @@ except Exception as e:
         </div>
     </div>
 
-    <script>
+    <script type="module">
         // Web Python Kernel Manager
         class WebPythonKernelManager {
             constructor() {
@@ -715,27 +715,13 @@ except Exception as e:
                 try {
                     this.updateStatus('busy', 'Loading web-python-kernel...');
                     
-                    // Try to load the web-python-kernel bundle
+                    // Import the web-python-kernel ES module
                     let kernelModule;
                     try {
-                        // Try loading from the local build first
-                        const script = document.createElement('script');
-                        script.src = './dist/web-python-kernel.js';
-                        document.head.appendChild(script);
-                        
-                        await new Promise((resolve, reject) => {
-                            script.onload = () => {
-                                if (window.WebPythonKernel) {
-                                    kernelModule = window.WebPythonKernel;
-                                    resolve();
-                                } else {
-                                    reject(new Error('WebPythonKernel not found in global scope'));
-                                }
-                            };
-                            script.onerror = reject;
-                        });
+                        // Import the MJS version
+                        kernelModule = await import('./dist/web-python-kernel.mjs');
                     } catch (error) {
-                        throw new Error(`Web-python-kernel bundle not found: ${error.message}`);
+                        throw new Error(`Web-python-kernel MJS module not found: ${error.message}`);
                     }
                     
                     const { KernelManager, KernelMode, KernelLanguage, KernelEvents } = kernelModule;

@@ -12,6 +12,7 @@ const ROOT_DIR = __dirname;
 const MIME_TYPES = {
   '.html': 'text/html',
   '.js': 'text/javascript',
+  '.mjs': 'application/javascript',
   '.css': 'text/css',
   '.json': 'application/json',
   '.png': 'image/png',
@@ -76,9 +77,9 @@ const server = http.createServer((req, res) => {
       return;
     }
     
-    // Watch HTML, JS, CSS files for changes
+    // Watch HTML, JS, CSS, MJS files for changes
     const ext = path.extname(filepath).toLowerCase();
-    if (['.html', '.js', '.css'].includes(ext)) {
+    if (['.html', '.js', '.css', '.mjs'].includes(ext)) {
       watchFile(filepath);
     }
     
