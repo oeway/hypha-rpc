@@ -1,3 +1,7 @@
+go/
+bin/
+minio_data/
+python/minio_data/
 *.pyc
 */__pycache__
 */.pytest_cache

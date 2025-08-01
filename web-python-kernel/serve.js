@@ -6,6 +6,7 @@ const path = require('path');
 const url = require('url');
 
 const PORT = process.env.PORT || 8080;
+// set dist dir
 const ROOT_DIR = __dirname;
 
 const MIME_TYPES = {
@@ -51,10 +52,18 @@ const server = http.createServer((req, res) => {
   // Security: prevent path traversal
   pathname = pathname.replace(/\.\./g, '');
   
+  if (req.url === '/health-check') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('OK');
+    return
+  }
+
   // Default to playground.html for root
   if (pathname === '/') {
     pathname = '/playground.html';
   }
+
+  
   
   const filepath = path.join(ROOT_DIR, pathname);
   
@@ -128,14 +137,6 @@ const server = http.createServer((req, res) => {
       }
     });
   });
-});
-
-// Health check endpoint for auto-reload
-server.on('request', (req, res) => {
-  if (req.url === '/health-check') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('OK');
-  }
 });
 
 server.listen(PORT, () => {

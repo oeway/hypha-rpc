@@ -60,6 +60,8 @@ export type {
   IEventEmitter
 } from "./types";
 
+export { KernelMode, KernelLanguage } from "./manager";
+
 
 
 

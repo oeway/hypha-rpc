@@ -623,11 +623,11 @@ try:
              color=plt.cm.viridis(dz/10.0), alpha=0.8)
     ax4.set_title("3D Bars")
     
-                        plt.tight_layout()
-                    
-                    # Display the plot - plt.show() will automatically generate display_data
-                    print("3D plots created successfully!")
-                    plt.show()
+    plt.tight_layout()
+
+    # Display the plot - plt.show() will automatically generate display_data
+    print("3D plots created successfully!")
+    plt.show()
     
 except ImportError:
     print("3D plotting not available")
@@ -720,7 +720,7 @@ except Exception as e:
                     try {
                         // Try loading from the local build first
                         const script = document.createElement('script');
-                        script.src = './web-python-kernel.js';
+                        script.src = './dist/web-python-kernel.js';
                         document.head.appendChild(script);
                         
                         await new Promise((resolve, reject) => {
@@ -759,18 +759,6 @@ except Exception as e:
                         mode: KernelMode.MAIN_THREAD,
                         lang: KernelLanguage.PYTHON
                     };
-                    
-                    try {
-                        const lockFileResponse = await fetch('./pyodide-lock.json');
-                        if (lockFileResponse.ok) {
-                            const baseUrl = window.location.origin + window.location.pathname.replace(/\/[^\/]*$/, '/');
-                            kernelOptions.lockFileURL = baseUrl + 'pyodide-lock.json';
-                            this.addOutput('🔒 Using pyodide-lock.json for faster loading', 'result');
-                        }
-                    } catch (error) {
-                        // Lock file not available, continue with normal initialization
-                        console.log('Lock file not available, using standard initialization');
-                    }
 
                     this.currentKernelId = await this.kernelManager.createKernel(kernelOptions);
 

@@ -9,7 +9,7 @@
     "dist/"
   ],
   "scripts": {
-    "build": "npm run clean && npm run build:prod",
+    "build": "npm run clean && npm run build:prod && npm run build:dev",
     "build:dev": "node --max-old-space-size=8192 ./node_modules/.bin/webpack --mode=development && cp -r src/pypi .",
     "build:prod": "node --max-old-space-size=8192 ./node_modules/.bin/webpack --mode=production && cp -r src/pypi .",
     "dev": "npm run build:dev && node serve.js",
