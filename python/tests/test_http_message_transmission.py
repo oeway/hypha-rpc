@@ -41,8 +41,10 @@ async def http_client(fastapi_server, test_user_token):
         "server_url": WS_SERVER_URL,
         "token": test_user_token,
     })
-    yield client
-    await client.disconnect()
+    try:
+        yield client
+    finally:
+        await client.disconnect()
 
 
 # ============================================================================
@@ -50,176 +52,212 @@ async def http_client(fastapi_server, test_user_token):
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_http_transmission_availability(http_client):
+async def test_http_transmission_availability(fastapi_server, test_user_token):
     """Test that HTTP transmission is properly initialized and available."""
     print("\n=== TESTING HTTP TRANSMISSION AVAILABILITY ===")
     
-    # Check if HTTP transmission is available
-    assert hasattr(http_client.rpc, '_http_message_transmission_available')
-    assert hasattr(http_client.rpc, '_s3controller')
+    client = await connect_to_server({
+        "name": "http-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
+    })
     
-    # The availability should be determined during initialization
-    print(f"✅ HTTP transmission available: {http_client.rpc._http_message_transmission_available}")
-    
-    if http_client.rpc._http_message_transmission_available:
-        print("✅ S3 controller is properly initialized")
-    else:
-        print("⚠️  HTTP transmission not available (this is normal if S3 is not configured)")
+    try:
+        # Check if HTTP transmission is available
+        assert hasattr(client.rpc, '_http_message_transmission_available')
+        assert hasattr(client.rpc, '_s3controller')
+        
+        # The availability should be determined during initialization
+        print(f"✅ HTTP transmission available: {client.rpc._http_message_transmission_available}")
+        
+        if client.rpc._http_message_transmission_available:
+            print("✅ S3 controller is properly initialized")
+        else:
+            print("⚠️  HTTP transmission not available (this is normal if S3 is not configured)")
+    finally:
+        await client.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_small_message_below_threshold(http_client):
+async def test_small_message_below_threshold(fastapi_server, test_user_token):
     """Test that messages below 1MB threshold use regular WebSocket transmission."""
     print("\n=== TESTING SMALL MESSAGE (BELOW 1MB THRESHOLD) ===")
     
-    # Track HTTP transmission events
-    http_transmission_events = []
-    
-    def on_http_transmission(data):
-        http_transmission_events.append(data)
-        print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
-    
-    http_client.rpc.on("http_transmission_stats", on_http_transmission)
-    
-    # Register a service that echoes data
-    def echo_data(data):
-        return data
-    
-    service_info = await http_client.register_service({
-        "id": "echo-service",
-        "name": "Echo Service",
-        "config": {"visibility": "public"},
-        "echo_data": echo_data
+    client = await connect_to_server({
+        "name": "http-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
     })
     
-    print(f"✅ Service registered: {service_info['id']}")
+    try:
+        # Track HTTP transmission events
+        http_transmission_events = []
+        
+        def on_http_transmission(data):
+            http_transmission_events.append(data)
+            print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
+        
+        client.rpc.on("http_transmission_stats", on_http_transmission)
     
-    # Test with small data (500KB - well below 1MB threshold)
-    small_data = generate_test_data(0.5)  # 500KB
-    print(f"📤 Sending {len(small_data) / (1024*1024):.1f}MB of data...")
-    
-    start_time = time.time()
-    service = await http_client.get_service("echo-service")
-    result = await service.echo_data(small_data)
-    transmission_time = time.time() - start_time
-    
-    print(f"✅ Data echoed successfully in {transmission_time:.2f}s")
-    assert result == small_data
-    
-    # Verify NO HTTP transmission was used
-    assert len(http_transmission_events) == 0, "HTTP transmission should not be used for small messages"
-    print("✅ Confirmed: Small message used regular WebSocket transmission")
+        # Register a service that echoes data
+        def echo_data(data):
+            return data
+        
+        service_info = await client.register_service({
+            "id": "echo-service",
+            "name": "Echo Service",
+            "config": {"visibility": "public"},
+            "echo_data": echo_data
+        })
+        
+        print(f"✅ Service registered: {service_info['id']}")
+        
+        # Test with small data (500KB - well below 1MB threshold)
+        small_data = generate_test_data(0.5)  # 500KB
+        print(f"📤 Sending {len(small_data) / (1024*1024):.1f}MB of data...")
+        
+        start_time = time.time()
+        service = await client.get_service("echo-service")
+        result = await service.echo_data(small_data)
+        transmission_time = time.time() - start_time
+        
+        print(f"✅ Data echoed successfully in {transmission_time:.2f}s")
+        assert result == small_data
+        
+        # Verify NO HTTP transmission was used
+        assert len(http_transmission_events) == 0, "HTTP transmission should not be used for small messages"
+        print("✅ Confirmed: Small message used regular WebSocket transmission")
+    finally:
+        await client.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_medium_message_single_upload(http_client):
+async def test_medium_message_single_upload(fastapi_server, test_user_token):
     """Test that messages between 1MB and 10MB use single upload HTTP transmission."""
     print("\n=== TESTING MEDIUM MESSAGE (1MB-10MB, SINGLE UPLOAD) ===")
     
-    # Track HTTP transmission events
-    http_transmission_events = []
-    
-    def on_http_transmission(data):
-        http_transmission_events.append(data)
-        print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
-        print(f"   Method: {data['transmission_method']}, Parts: {data['part_count']}")
-        print(f"   Used multipart: {data['used_multipart']}")
-    
-    http_client.rpc.on("http_transmission_stats", on_http_transmission)
-    
-    # Register a service that processes data
-    def process_data(data):
-        return {"received_size": len(data), "processed": True}
-    
-    service_info = await http_client.register_service({
-        "id": "process-service",
-        "name": "Process Service",
-        "config": {"visibility": "public"},
-        "process_data": process_data
+    client = await connect_to_server({
+        "name": "http-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
     })
     
-    print(f"✅ Service registered: {service_info['id']}")
+    try:
+        # Track HTTP transmission events
+        http_transmission_events = []
+        
+        def on_http_transmission(data):
+            http_transmission_events.append(data)
+            print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
+            print(f"   Method: {data['transmission_method']}, Parts: {data['part_count']}")
+            print(f"   Used multipart: {data['used_multipart']}")
+        
+        client.rpc.on("http_transmission_stats", on_http_transmission)
     
-    # Test with medium data (5MB - above 1MB threshold, below 10MB multipart threshold)
-    medium_data = generate_test_data(5)  # 5MB
-    print(f"📤 Sending {len(medium_data) / (1024*1024):.1f}MB of data...")
-    
-    start_time = time.time()
-    service = await http_client.get_service("process-service")
-    result = await service.process_data(medium_data)
-    transmission_time = time.time() - start_time
-    
-    print(f"✅ Data processed successfully in {transmission_time:.2f}s")
-    assert result["received_size"] == len(medium_data)
-    assert result["processed"] is True
-    
-    # Verify HTTP transmission was used with single upload
-    assert len(http_transmission_events) == 1, "HTTP transmission should be used for medium messages"
-    event = http_transmission_events[0]
-    assert event["transmission_method"] == "single_upload"
-    assert event["part_count"] == 1
-    assert event["used_multipart"] is False
-    assert event["multipart_threshold"] == 10 * 1024 * 1024  # 10MB
-    print("✅ Confirmed: Medium message used single upload HTTP transmission")
+        # Register a service that processes data
+        def process_data(data):
+            return {"received_size": len(data), "processed": True}
+        
+        service_info = await client.register_service({
+            "id": "process-service",
+            "name": "Process Service",
+            "config": {"visibility": "public"},
+            "process_data": process_data
+        })
+        
+        print(f"✅ Service registered: {service_info['id']}")
+        
+        # Test with medium data (5MB - above 1MB threshold, below 10MB multipart threshold)
+        medium_data = generate_test_data(5)  # 5MB
+        print(f"📤 Sending {len(medium_data) / (1024*1024):.1f}MB of data...")
+        
+        start_time = time.time()
+        service = await client.get_service("process-service")
+        result = await service.process_data(medium_data)
+        transmission_time = time.time() - start_time
+        
+        print(f"✅ Data processed successfully in {transmission_time:.2f}s")
+        assert result["received_size"] == len(medium_data)
+        assert result["processed"] is True
+        
+        # Verify HTTP transmission was used with single upload
+        assert len(http_transmission_events) == 1, "HTTP transmission should be used for medium messages"
+        event = http_transmission_events[0]
+        assert event["transmission_method"] == "single_upload"
+        assert event["part_count"] == 1
+        assert event["used_multipart"] is False
+        assert event["multipart_threshold"] == 10 * 1024 * 1024  # 10MB
+        print("✅ Confirmed: Medium message used single upload HTTP transmission")
+    finally:
+        await client.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_large_message_multipart_upload(http_client):
+async def test_large_message_multipart_upload(fastapi_server, test_user_token):
     """Test that messages above 10MB use multipart upload HTTP transmission."""
     print("\n=== TESTING LARGE MESSAGE (ABOVE 10MB, MULTIPART UPLOAD) ===")
     
-    # Track HTTP transmission events
-    http_transmission_events = []
-    
-    def on_http_transmission(data):
-        http_transmission_events.append(data)
-        print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
-        print(f"   Method: {data['transmission_method']}, Parts: {data['part_count']}")
-        print(f"   Used multipart: {data['used_multipart']}")
-        print(f"   Part size: {data['part_size'] / (1024*1024):.1f}MB")
-    
-    http_client.rpc.on("http_transmission_stats", on_http_transmission)
-    
-    # Register a service that analyzes data
-    def analyze_data(data):
-        return {
-            "size_mb": len(data) / (1024 * 1024),
-            "analyzed": True,
-            "checksum": hash(data) % 1000000  # Simple checksum
-        }
-    
-    service_info = await http_client.register_service({
-        "id": "analyze-service",
-        "name": "Analyze Service",
-        "config": {"visibility": "public"},
-        "analyze_data": analyze_data
+    client = await connect_to_server({
+        "name": "http-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
     })
     
-    print(f"✅ Service registered: {service_info['id']}")
+    try:
+        # Track HTTP transmission events
+        http_transmission_events = []
+        
+        def on_http_transmission(data):
+            http_transmission_events.append(data)
+            print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
+            print(f"   Method: {data['transmission_method']}, Parts: {data['part_count']}")
+            print(f"   Used multipart: {data['used_multipart']}")
+            print(f"   Part size: {data['part_size'] / (1024*1024):.1f}MB")
+        
+        client.rpc.on("http_transmission_stats", on_http_transmission)
     
-    # Test with large data (15MB - above 10MB multipart threshold)
-    large_data = generate_test_data(15)  # 15MB
-    print(f"📤 Sending {len(large_data) / (1024*1024):.1f}MB of data...")
-    
-    start_time = time.time()
-    service = await http_client.get_service("analyze-service")
-    result = await service.analyze_data(large_data)
-    transmission_time = time.time() - start_time
-    
-    print(f"✅ Data analyzed successfully in {transmission_time:.2f}s")
-    assert result["size_mb"] == 15.0
-    assert result["analyzed"] is True
-    
-    # Verify HTTP transmission was used with multipart upload
-    assert len(http_transmission_events) == 1, "HTTP transmission should be used for large messages"
-    event = http_transmission_events[0]
-    assert event["transmission_method"] == "multipart_upload"
-    assert event["used_multipart"] is True
-    assert event["multipart_threshold"] == 10 * 1024 * 1024  # 10MB
-    assert event["part_size"] == 6 * 1024 * 1024  # 6MB per part (new default)
-    # Verify multipart upload was used (actual part count may vary due to data size)
-    assert event["part_count"] >= 3, f"Expected at least 3 parts for 15MB, got {event['part_count']}"
-    print("✅ Confirmed: Large message used multipart upload HTTP transmission")
+        # Register a service that analyzes data
+        def analyze_data(data):
+            return {
+                "size_mb": len(data) / (1024 * 1024),
+                "analyzed": True,
+                "checksum": hash(data) % 1000000  # Simple checksum
+            }
+        
+        service_info = await client.register_service({
+            "id": "analyze-service",
+            "name": "Analyze Service",
+            "config": {"visibility": "public"},
+            "analyze_data": analyze_data
+        })
+        
+        print(f"✅ Service registered: {service_info['id']}")
+        
+        # Test with large data (15MB - above 10MB multipart threshold)
+        large_data = generate_test_data(15)  # 15MB
+        print(f"📤 Sending {len(large_data) / (1024*1024):.1f}MB of data...")
+        
+        start_time = time.time()
+        service = await client.get_service("analyze-service")
+        result = await service.analyze_data(large_data)
+        transmission_time = time.time() - start_time
+        
+        print(f"✅ Data analyzed successfully in {transmission_time:.2f}s")
+        assert result["size_mb"] == 15.0
+        assert result["analyzed"] is True
+        
+        # Verify HTTP transmission was used with multipart upload
+        assert len(http_transmission_events) == 1, "HTTP transmission should be used for large messages"
+        event = http_transmission_events[0]
+        assert event["transmission_method"] == "multipart_upload"
+        assert event["used_multipart"] is True
+        assert event["multipart_threshold"] == 10 * 1024 * 1024  # 10MB
+        assert event["part_size"] == 6 * 1024 * 1024  # 6MB per part (new default)
+        # Verify multipart upload was used (actual part count may vary due to data size)
+        assert event["part_count"] >= 3, f"Expected at least 3 parts for 15MB, got {event['part_count']}"
+        print("✅ Confirmed: Large message used multipart upload HTTP transmission")
+    finally:
+        await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -297,62 +335,71 @@ async def test_very_large_message_multipart_upload(fastapi_server, test_user_tok
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_numpy_array_transmission(http_client):
+async def test_numpy_array_transmission(fastapi_server, test_user_token):
     """Test HTTP transmission with numpy arrays."""
     print("\n=== TESTING NUMPY ARRAY TRANSMISSION ===")
     
-    # Track HTTP transmission events
-    http_transmission_events = []
-    
-    def on_http_transmission(data):
-        http_transmission_events.append(data)
-        print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
-        print(f"   Method: {data['transmission_method']}, Parts: {data['part_count']}")
-        print(f"   Used multipart: {data['used_multipart']}")
-    
-    http_client.rpc.on("http_transmission_stats", on_http_transmission)
-    
-    # Register a service that processes numpy arrays
-    def process_array(array_data):
-        return {
-            "shape": array_data.shape,
-            "dtype": str(array_data.dtype),
-            "size_mb": array_data.nbytes / (1024 * 1024),
-            "mean": float(array_data.mean()),
-            "sum": float(array_data.sum())
-        }
-    
-    service_info = await http_client.register_service({
-        "id": "array-service",
-        "name": "Array Processing Service",
-        "config": {"visibility": "public"},
-        "process_array": process_array
+    client = await connect_to_server({
+        "name": "http-test-client",
+        "server_url": WS_SERVER_URL,
+        "token": test_user_token,
     })
     
-    print(f"✅ Service registered: {service_info['id']}")
+    try:
+        # Track HTTP transmission events
+        http_transmission_events = []
+        
+        def on_http_transmission(data):
+            http_transmission_events.append(data)
+            print(f"🔗 HTTP transmission event: {data['content_length'] / (1024*1024):.1f}MB")
+            print(f"   Method: {data['transmission_method']}, Parts: {data['part_count']}")
+            print(f"   Used multipart: {data['used_multipart']}")
+        
+        client.rpc.on("http_transmission_stats", on_http_transmission)
     
-    # Create large numpy array (20MB - should trigger multipart upload)
-    large_array = generate_numpy_array((2048, 2048, 2))  # ~32MB
-    print(f"📤 Sending numpy array: {large_array.shape}, {large_array.nbytes / (1024*1024):.1f}MB")
-    
-    start_time = time.time()
-    service = await http_client.get_service("array-service")
-    result = await service.process_array(large_array)
-    transmission_time = time.time() - start_time
-    
-    print(f"✅ Array processed successfully in {transmission_time:.2f}s")
-    assert result["shape"] == [2048, 2048, 2]
-    assert result["dtype"] == "float32"
-    assert abs(result["size_mb"] - 32.0) < 0.1
-    
-    # Verify HTTP transmission was used
-    assert len(http_transmission_events) == 1, "HTTP transmission should be used for large numpy arrays"
-    event = http_transmission_events[0]
-    assert event["transmission_method"] == "multipart_upload"
-    assert event["used_multipart"] is True
-    # Verify multipart upload was used (actual part count may vary due to data size)
-    assert event["part_count"] >= 6, f"Expected at least 6 parts for 32MB, got {event['part_count']}"
-    print("✅ Confirmed: Large numpy array used multipart upload HTTP transmission")
+        # Register a service that processes numpy arrays
+        def process_array(array_data):
+            return {
+                "shape": array_data.shape,
+                "dtype": str(array_data.dtype),
+                "size_mb": array_data.nbytes / (1024 * 1024),
+                "mean": float(array_data.mean()),
+                "sum": float(array_data.sum())
+            }
+        
+        service_info = await client.register_service({
+            "id": "array-service",
+            "name": "Array Processing Service",
+            "config": {"visibility": "public"},
+            "process_array": process_array
+        })
+        
+        print(f"✅ Service registered: {service_info['id']}")
+        
+        # Create large numpy array (20MB - should trigger multipart upload)
+        large_array = generate_numpy_array((2048, 2048, 2))  # ~32MB
+        print(f"📤 Sending numpy array: {large_array.shape}, {large_array.nbytes / (1024*1024):.1f}MB")
+        
+        start_time = time.time()
+        service = await client.get_service("array-service")
+        result = await service.process_array(large_array)
+        transmission_time = time.time() - start_time
+        
+        print(f"✅ Array processed successfully in {transmission_time:.2f}s")
+        assert result["shape"] == [2048, 2048, 2]
+        assert result["dtype"] == "float32"
+        assert abs(result["size_mb"] - 32.0) < 0.1
+        
+        # Verify HTTP transmission was used
+        assert len(http_transmission_events) == 1, "HTTP transmission should be used for large numpy arrays"
+        event = http_transmission_events[0]
+        assert event["transmission_method"] == "multipart_upload"
+        assert event["used_multipart"] is True
+        # Verify multipart upload was used (actual part count may vary due to data size)
+        assert event["part_count"] >= 6, f"Expected at least 6 parts for 32MB, got {event['part_count']}"
+        print("✅ Confirmed: Large numpy array used multipart upload HTTP transmission")
+    finally:
+        await client.disconnect()
 
 
 @pytest.mark.asyncio
