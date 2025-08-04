@@ -858,6 +858,7 @@ async def _connect_to_server(config):
         multipart_threshold=config.get("multipart_threshold", 10 * 1024 * 1024),
         multipart_size=config.get("multipart_size", 6 * 1024 * 1024),
         max_parallel_uploads=config.get("max_parallel_uploads", 5),
+
     )
     await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))
     wm = await rpc.get_manager_service(

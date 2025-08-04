@@ -88,7 +88,7 @@ class ImJoyPlugin:
 
 
 @pytest.mark.asyncio
-async def test_schema(websocket_server):
+async def test_schema(fastapi_server):
     """Test schema."""
     api = await connect_to_server(
         {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
@@ -102,7 +102,7 @@ async def test_schema(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_service_with_builtin_key(websocket_server):
+async def test_service_with_builtin_key(fastapi_server):
     """Test schema."""
     async with connect_to_server(
         {
@@ -141,7 +141,7 @@ async def test_service_with_builtin_key(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_login(websocket_server):
+async def test_login(fastapi_server):
     """Test login to the server."""
     TOKEN = "sf31df234"
 
@@ -165,7 +165,7 @@ async def test_login(websocket_server):
     assert token == TOKEN
 
 
-def test_login_sync(websocket_server):
+def test_login_sync(fastapi_server):
     """Test login to the server."""
     TOKEN = "sf31df234"
 
@@ -187,7 +187,7 @@ def test_login_sync(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_numpy_array_sync(websocket_server):
+async def test_numpy_array_sync(fastapi_server):
     """Test numpy array registered in async."""
     ws = connect_to_server_sync(
         {"client_id": "test-plugin", "server_url": WS_SERVER_URL}
@@ -213,7 +213,7 @@ async def test_numpy_array_sync(websocket_server):
     np.testing.assert_array_equal(result, large_array + 1.0)
 
 
-def test_connect_to_server_sync(websocket_server):
+def test_connect_to_server_sync(fastapi_server):
     """Test connecting to the server sync."""
     # Now all the functions are sync
     with connect_to_server_sync(
@@ -243,7 +243,7 @@ def test_connect_to_server_sync(websocket_server):
         )
 
 
-def test_connect_to_server_sync(websocket_server):
+def test_connect_to_server_sync(fastapi_server):
     """Test connecting to the server sync."""
     # Now all the functions are sync
     with get_remote_service_sync(
@@ -254,7 +254,7 @@ def test_connect_to_server_sync(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_export_api(websocket_server):
+async def test_export_api(fastapi_server):
     """Test exporting API."""
     from hypha_rpc import api
 
@@ -273,7 +273,7 @@ async def test_export_api(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_connect_to_server(websocket_server):
+async def test_connect_to_server(fastapi_server):
     """Test connecting to the server."""
     # test workspace is an exception, so it can pass directly
     ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
@@ -336,19 +336,22 @@ async def test_connect_to_server(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_numpy_transmission(websocket_server):
+async def test_numpy_transmission(fastapi_server, test_user_token):
     """Test numpy array transmission."""
+    import shortuuid
+    unique_client_id = f"numpy-test-{shortuuid.uuid()}"
     api = await connect_to_server(
-        {"name": "my app", "server_url": WS_SERVER_URL, "client_id": "my-app"}
+        {"name": "numpy transmission test", "server_url": WS_SERVER_URL, "client_id": unique_client_id, "token": test_user_token}
     )
     image = np.random.rand(512, 512)
     embedding = await api.echo(image)
     assert isinstance(embedding, np.ndarray)
     assert embedding.shape == (512, 512)
+    await api.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_case_conversion(websocket_server):
+async def test_case_conversion(fastapi_server):
     """Test case conversion."""
     ws = await connect_to_server(name="my plugin", server_url=WS_SERVER_URL)
     await ws.export(ImJoyPlugin(ws))
@@ -382,7 +385,7 @@ async def test_case_conversion(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_probe(websocket_server):
+async def test_probe(fastapi_server):
     """Test probes"""
     ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
 
@@ -402,7 +405,7 @@ async def test_probe(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_get_remote_service(websocket_server):
+async def test_get_remote_service(fastapi_server):
     """Test getting a remote service."""
     login = await get_remote_service(f"{WS_SERVER_URL}/public/services/hypha-login")
     info = await login.start()
@@ -416,10 +419,12 @@ async def test_get_remote_service(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_reconnect_to_server(websocket_server):
+async def test_reconnect_to_server(fastapi_server):
     """Test reconnecting to the server."""
+    import shortuuid
+    unique_client_id = f"reconnect-test-{shortuuid.uuid()}"
     # test workspace is an exception, so it can pass directly
-    ws = await connect_to_server({"name": "my plugin", "server_url": WS_SERVER_URL})
+    ws = await connect_to_server({"name": "reconnect test plugin", "server_url": WS_SERVER_URL, "client_id": unique_client_id})
     await ws.register_service(
         {
             "name": "Hello World",
@@ -437,10 +442,11 @@ async def test_reconnect_to_server(websocket_server):
     # will trigger reconnect
     svc = await ws.get_service("hello-world")
     assert await svc.hello("world") == "hello world"
+    await ws.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_robust_reconnection_with_service_reregistration(websocket_server):
+async def test_robust_reconnection_with_service_reregistration(fastapi_server):
     """Test robust reconnection with exponential backoff and service re-registration."""
     import asyncio
 
@@ -575,7 +581,7 @@ async def test_robust_reconnection_with_service_reregistration(websocket_server)
 
 
 @pytest.mark.asyncio
-async def test_reconnection_exponential_backoff(websocket_server):
+async def test_reconnection_exponential_backoff(fastapi_server):
     """Test that reconnection uses exponential backoff."""
     import time
 
@@ -630,7 +636,7 @@ async def test_reconnection_exponential_backoff(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_reconnection_cancellation(websocket_server):
+async def test_reconnection_cancellation(fastapi_server):
     """Test that reconnection can be cancelled when explicitly disconnecting."""
     ws = await connect_to_server(
         {
@@ -675,7 +681,7 @@ async def test_reconnection_cancellation(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_numpy_array(websocket_server):
+async def test_numpy_array(fastapi_server):
     """Test numpy array."""
     ws = await connect_to_server(
         {"client_id": "test-plugin", "server_url": WS_SERVER_URL}
@@ -702,7 +708,7 @@ async def test_numpy_array(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_rtc_service(websocket_server):
+async def test_rtc_service(fastapi_server):
     """Test RTC service."""
     from hypha_rpc import connect_to_server
 
@@ -729,7 +735,7 @@ async def test_rtc_service(websocket_server):
     await pc.close()
 
 
-def test_rtc_service_sync(websocket_server):
+def test_rtc_service_sync(fastapi_server):
     """Test RTC service."""
     from hypha_rpc import connect_to_server_sync
 
@@ -754,7 +760,7 @@ def test_rtc_service_sync(websocket_server):
     pc.close()
 
 
-def test_rtc_service_auto(websocket_server):
+def test_rtc_service_auto(fastapi_server):
     """Test RTC service."""
     from hypha_rpc import connect_to_server_sync
 
@@ -777,7 +783,7 @@ def test_rtc_service_auto(websocket_server):
     assert svc.echo("hello") == "hello", "echo service failed"
 
 
-def test_connect_to_server_sync_lock(websocket_server):
+def test_connect_to_server_sync_lock(fastapi_server):
     """Test connecting to the server sync with thread locking."""
     server = connect_to_server_sync(
         {"client_id": "test-plugin", "server_url": WS_SERVER_URL}
@@ -844,7 +850,7 @@ def test_connect_to_server_sync_lock(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_generator(websocket_server):
+async def test_generator(fastapi_server):
     """Test using generators across RPC."""
     # Create a server with a service that returns a generator
     server = await connect_to_server(
@@ -907,7 +913,7 @@ async def test_generator(websocket_server):
     assert async_results == [0, 1, 2, 3, 4]
 
 
-def test_generator_sync(websocket_server):
+def test_generator_sync(fastapi_server):
     """Test using generators with the synchronous API."""
     # Create a server with a service that returns a generator
     server = connect_to_server_sync(
@@ -971,7 +977,7 @@ def test_generator_sync(websocket_server):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not HAS_PYDANTIC, reason="Pydantic is not installed")
-async def test_pydantic_codec(websocket_server):
+async def test_pydantic_codec(fastapi_server):
     """Test Pydantic model encoding and decoding via RPC."""
     server = await connect_to_server(
         {"client_id": "pydantic-provider", "server_url": WS_SERVER_URL}
@@ -1028,7 +1034,7 @@ async def test_pydantic_codec(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_schema_annotation_python(websocket_server):
+async def test_schema_annotation_python(fastapi_server):
     """Test schema generation from type hints and Pydantic models."""
     server = await connect_to_server(
         {"client_id": "schema-provider-py", "server_url": WS_SERVER_URL}
@@ -1170,7 +1176,7 @@ async def test_schema_annotation_python(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_service_recovery_after_disconnection(websocket_server):
+async def test_service_recovery_after_disconnection(fastapi_server):
     """Test that disconnection is handled gracefully without crashes."""
     # Create a connection to the server
     print("\n=== TEST DISCONNECTION HANDLING ===")
@@ -1277,7 +1283,7 @@ async def test_service_recovery_after_disconnection(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_memory_leak_prevention(websocket_server):
+async def test_memory_leak_prevention(fastapi_server):
     """Comprehensive test suite for memory leak prevention."""
     from hypha_rpc import connect_to_server
     import gc
@@ -1549,7 +1555,7 @@ async def test_memory_leak_prevention(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_memory_leak_edge_cases(websocket_server):
+async def test_memory_leak_edge_cases(fastapi_server):
     """Test memory leak prevention in edge cases and error conditions."""
     from hypha_rpc import connect_to_server
     import gc
@@ -1652,7 +1658,7 @@ async def test_memory_leak_edge_cases(websocket_server):
 
 
 @pytest.mark.asyncio 
-async def test_session_cleanup_robustness(websocket_server):
+async def test_session_cleanup_robustness(fastapi_server):
     """Test the robustness of session cleanup mechanisms."""
     from hypha_rpc import connect_to_server
     import gc
@@ -2367,7 +2373,7 @@ async def test_reconnection_with_server_restart_simple(restartable_server):
     print("✅ SIMPLE SERVER RESTART TEST PASSED!")
 
 
-def test_rpc_thread_safety_fix(websocket_server):
+def test_rpc_thread_safety_fix(fastapi_server):
     """Test that the RPC thread safety fix works correctly."""
     import threading
     from concurrent.futures import ThreadPoolExecutor

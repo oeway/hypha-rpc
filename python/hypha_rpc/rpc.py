@@ -825,6 +825,7 @@ class RPC(MessageEmitter):
 
     def _process_message(self, key: str, heartbeat: bool = False, context=None):
         """Process a message."""
+
         if heartbeat:
             if key not in self._object_store:
                 raise Exception(f"session does not exist anymore: {key}")
@@ -846,16 +847,20 @@ class RPC(MessageEmitter):
         )
         main = unpacker.unpack()
         # Make sure the fields are from trusted source
-        main.update(
-            {
-                "from": context["from"],
-                "to": context["to"],
-                "ws": context["ws"],
-                "user": context["user"],
-            }
-        )
-        main["ctx"] = main.copy()
-        main["ctx"].update(self.default_context)
+        # Restore essential fields and add trusted context
+        main.update({
+            "from": context["from"],
+            "to": context["to"], 
+            "ws": context["ws"],
+        })
+        
+        # Preserve authenticated user from the message if available
+        if "user" in context:
+            main["user"] = context["user"]
+            
+        # Add trusted context to the reconstructed message
+        main = self._add_context_to_message(main)
+
         try:
             extra = unpacker.unpack()
             main.update(extra)
@@ -867,9 +872,20 @@ class RPC(MessageEmitter):
     def _add_context_to_message(self, main):
         """Add trusted context to a message if it doesn't already have it."""
         if "ctx" not in main:
-            # Create context from message fields + default_context
-            main["ctx"] = main.copy()
+            # Create clean context with only essential fields (not all message fields)
+            main["ctx"] = {}
             main["ctx"].update(self.default_context)
+            
+            # Add essential context fields that services expect
+            essential_fields = ["ws", "from", "to"]
+            for field in essential_fields:
+                if field in main:
+                    main["ctx"][field] = main[field]
+            
+            # Preserve authenticated user context from the message (server-side authenticated)
+            if "user" in main:
+                main["ctx"]["user"] = main["user"]
+                
         return main
 
     async def _initialize_http_message_transmission(self):
@@ -979,6 +995,8 @@ class RPC(MessageEmitter):
             "transmission_method": "single_upload"
         }
         
+
+        
         # Send the http-message via regular (small) RPC message
         await self._emit_message(msgpack.packb(http_message))
 
@@ -1084,11 +1102,16 @@ class RPC(MessageEmitter):
             "part_count": part_count
         }
         
+
+        
         # Send the http-message via regular (small) RPC message
         await self._emit_message(msgpack.packb(http_message))
 
     def _handle_http_message(self, data):
         """Handle incoming HTTP message."""
+        # Store the original message context for reconstructed HTTP messages
+        original_context = data.get("ctx", {})
+        
         try:
             assert "type" in data and data["type"] == "http-message"
             assert "presigned_url" in data and "content_length" in data
@@ -1148,9 +1171,19 @@ class RPC(MessageEmitter):
                             io.BytesIO(content), max_buffer_size=self._max_message_buffer_size
                         )
                         main = unpacker.unpack()
+
+
+                            
+                        # Preserve authentication context from original websocket message
+                        # HTTP reconstructed messages inherit auth from the triggering message
+                        for field in ["user", "ws"]:
+                            if field in original_context:
+                                main[field] = original_context[field]
                         
                         # Add trusted context
                         main = self._add_context_to_message(main)
+                        
+
                         
                         try:
                             extra = unpacker.unpack()
@@ -1957,6 +1990,7 @@ class RPC(MessageEmitter):
         return encoded
 
     async def _send_chunks(self, package, target_id, session_id):
+        
         # Try HTTP message transmission first if available and message is large enough
         if self._enable_http_transmission and len(package) >= self._http_transmission_threshold:
             if not self._http_message_transmission_available:
@@ -2034,6 +2068,7 @@ class RPC(MessageEmitter):
                     chunk_num,
                     total_size,
                 )
+        
         await message_cache.process(message_id, bool(session_id))
         logger.debug(
             "All chunks (%d bytes) sent in %d s", total_size, time.time() - start_time
@@ -2151,6 +2186,7 @@ class RPC(MessageEmitter):
             # Ensure context is available - create it if missing (for local service calls)
             if "ctx" not in data:
                 data = self._add_context_to_message(data)
+
             method_name = f'{data["from"]}:{data["method"]}'
             remote_workspace = data["from"].split("/")[0]
             remote_client_id = data["from"].split("/")[1]

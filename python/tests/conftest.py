@@ -98,15 +98,14 @@ def restartable_server_fixture():
         server.stop()
 
 
-@pytest.fixture(name="fastapi_server", scope="session")
-def fastapi_server_fixture():
-    """Start server with S3 support as test fixture and tear down after test."""
-
+@pytest.fixture(name="hypha_server", scope="session")
+def hypha_server_fixture():
+    """Start unified Hypha server with full S3 support as test fixture."""
     server_args = [
         sys.executable,
         "-m", "hypha.server",
         f"--port={WS_PORT}",
-        "--workspace-bucket=test-workspaces",
+        "--workspace-bucket=test-workspaces", 
         "--start-minio-server",
         "--minio-workdir=/tmp/minio_data",
         "--minio-port=9002",
@@ -128,34 +127,16 @@ def fastapi_server_fixture():
             timeout -= 0.1
             time.sleep(0.1)
         if timeout <= 0:
-            raise RuntimeError("Failed to start fastapi server")
+            raise RuntimeError("Failed to start hypha server")
         yield
         proc.kill()
         proc.terminate()
 
 
-@pytest.fixture(name="websocket_server", scope="session")
-def websocket_server_fixture():
-    """Start server as test fixture and tear down after test."""
-    with subprocess.Popen(
-        [sys.executable, "-m", "hypha.server", f"--port={WS_PORT}"],
-        env=test_env,
-    ) as proc:
-        timeout = 10
-        while timeout > 0:
-            try:
-                response = requests.get(f"http://127.0.0.1:{WS_PORT}/health/liveness")
-                if response.ok:
-                    break
-            except RequestException:
-                pass
-            timeout -= 0.1
-            time.sleep(0.1)
-        if timeout <= 0:
-            raise RuntimeError("Failed to start websocket server")
-        yield
-        proc.kill()
-        proc.terminate()
+@pytest.fixture(name="fastapi_server", scope="session") 
+def fastapi_server_fixture(hypha_server):
+    """Alias for the unified hypha server fixture."""
+    yield hypha_server
 
 
 @pytest.fixture(name="test_user_token", scope="session")
@@ -169,7 +150,7 @@ def generate_test_user_token():
         email="test-user@test.com",
         parent=None,
         roles=[],
-        scope=create_scope(workspaces={"ws-test-user": UserPermission.admin}),
+        scope=create_scope(workspaces={"ws-user-test-user": UserPermission.admin}),
         expires_at=None,
     )
     token = generate_presigned_token(user_info, 1800)
