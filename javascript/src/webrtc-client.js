@@ -105,16 +105,42 @@ async function _createOffer(params, server, config, onInit, context) {
   if (server) {
     pc.addEventListener("datachannel", async (event) => {
       const channel = event.channel;
-      let ctx = null;
-      if (context && context.user) ctx = { user: context.user, ws: context.ws };
+      // Minimal context for WebRTC server - just enough to satisfy require_context services
+      let ctx = { connection_type: "webrtc" };
+      if (context && context.user) {
+        ctx.user = context.user;
+      }
+
       const rpc = await _setupRPC({
         channel: channel,
-        client_id: channel.label,
-        workspace: server.config.workspace,
+        client_id: server.config.client_id || config.peer_id,
+        workspace: config.workspace,
         context: ctx,
       });
-      // Map all the local services to the webrtc client
-      rpc._services = server.rpc._services;
+
+      // Override get_local_service to forward requests to the server's RPC
+      const originalGetLocalService = rpc.get_local_service.bind(rpc);
+      rpc.get_local_service = async function (service_id, context) {
+        // First try to get it locally
+        try {
+          return await originalGetLocalService(service_id, context);
+        } catch (e) {
+          // If not found locally, forward to the server's RPC
+          if (
+            e.message &&
+            e.message.includes("Service not found") &&
+            server.rpc
+          ) {
+            return await server.rpc.get_local_service(service_id, context);
+          }
+          throw e;
+        }
+      };
+
+      console.log(
+        "WebRTC RPC default_context:",
+        JSON.stringify(rpc.default_context, null, 2),
+      );
     });
   }
 
@@ -244,12 +270,37 @@ async function getRTCService(server, service_id, config) {
       channel.onopen = () => {
         config.channel = channel;
         config.workspace = answer.workspace;
+        // Use server's client_id for this WebRTC connection to ensure consistency
+        config.client_id = server.config.client_id || config.peer_id;
+
+        // Minimal context for WebRTC - just enough to satisfy require_context services
+        const webrtcContext = { connection_type: "webrtc" };
+        if (
+          server.rpc &&
+          server.rpc.default_context &&
+          server.rpc.default_context.user
+        ) {
+          webrtcContext.user = server.rpc.default_context.user;
+        }
+
+        console.log(
+          "WebRTC context setup:",
+          JSON.stringify(webrtcContext, null, 2),
+        );
+        config.context = webrtcContext;
+
         // Increase timeout for Firefox compatibility
         setTimeout(async () => {
           if (!resolved) {
             try {
               const rpc = await _setupRPC(config);
               pc.rpc = rpc;
+
+              console.log(
+                "WebRTC RPC default_context:",
+                JSON.stringify(rpc.default_context, null, 2),
+              );
+
               async function get_service(name, ...args) {
                 assert(
                   !name.includes(":"),
@@ -259,10 +310,18 @@ async function getRTCService(server, service_id, config) {
                   !name.includes("/"),
                   "WebRTC service name should not contain '/'",
                 );
-                return await rpc.get_remote_service(
-                  config.workspace + "/" + config.peer_id + ":" + name,
-                  ...args,
-                );
+                // The client should request services through the WebRTC channel
+                // The server-side WebRTC RPC will handle the lookup and forward to the server's main RPC
+                // Use local service call to send request through WebRTC channel to server
+                // Provide proper context with required 'to' field - use server's client_id for proper routing
+                const targetClientId =
+                  server.config.client_id || rpc._client_id;
+                const context = {
+                  to: `${config.workspace}/${targetClientId}`,
+                  ws: config.workspace,
+                  ...rpc.default_context,
+                };
+                return await rpc.get_local_service(name, context, ...args);
               }
               async function disconnect() {
                 await rpc.disconnect();
