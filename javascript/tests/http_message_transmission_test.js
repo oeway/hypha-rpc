@@ -118,6 +118,11 @@ describe("HTTP Message Transmission", () => {
   it("should use single upload HTTP transmission for medium messages", async () => {
     console.log("\n=== TESTING MEDIUM MESSAGE (1MB-10MB, SINGLE UPLOAD) ===");
     
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
+    
     // Track HTTP transmission events
     const httpTransmissionEvents = [];
     
@@ -169,6 +174,11 @@ describe("HTTP Message Transmission", () => {
 
   it("should use multipart upload HTTP transmission for large messages", async () => {
     console.log("\n=== TESTING LARGE MESSAGE (ABOVE 10MB, MULTIPART UPLOAD) ===");
+    
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
     
     // Track HTTP transmission events
     const httpTransmissionEvents = [];
@@ -229,6 +239,11 @@ describe("HTTP Message Transmission", () => {
   it("should handle typed array transmission", async () => {
     console.log("\n=== TESTING TYPED ARRAY TRANSMISSION ===");
     
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
+    
     // Track HTTP transmission events
     const httpTransmissionEvents = [];
     
@@ -286,6 +301,11 @@ describe("HTTP Message Transmission", () => {
 
   it("should handle string data transmission", async () => {
     console.log("\n=== TESTING LARGE STRING TRANSMISSION ===");
+    
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
     
     // Track HTTP transmission events
     const httpTransmissionEvents = [];
@@ -387,6 +407,11 @@ describe("HTTP Message Transmission", () => {
   it("should handle concurrent large transmissions", async () => {
     console.log("\n=== TESTING CONCURRENT LARGE TRANSMISSIONS ===");
     
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
+    
     // Track HTTP transmission events
     const httpTransmissionEvents = [];
     
@@ -465,6 +490,11 @@ describe("HTTP Message Transmission", () => {
 
   it("should respect configurable HTTP transmission parameters", async function() {
     console.log("\n=== TESTING CONFIGURABLE HTTP TRANSMISSION PARAMETERS ===");
+    
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
     
     // Create a separate client with custom thresholds
     const customHttpThreshold = 512 * 1024; // 512KB (lower than default 1MB)
@@ -563,6 +593,11 @@ describe("HTTP Message Transmission", () => {
   it("should track actual multipart usage rather than computing from thresholds", async () => {
     console.log("\n=== TESTING TRACKING VERIFICATION ===");
     
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
+    
     // Track HTTP transmission events
     const httpTransmissionEvents = [];
     
@@ -634,6 +669,11 @@ describe("HTTP Message Transmission", () => {
 
   it("should support configurable multipart size and parallel uploads", async () => {
     console.log("\n=== TESTING CONFIGURABLE MULTIPART SIZE AND PARALLEL UPLOADS ===");
+    
+    // Verify S3 is available before testing HTTP transmission
+    if (!httpClient.rpc._http_message_transmission_available) {
+      throw new Error("❌ S3/HTTP message transmission is not available. Ensure MinIO/S3 is properly configured and the 'public/s3-storage' service is accessible.");
+    }
     
     // Verify configuration was applied
     expect(httpClient.rpc._multipart_size).to.equal(10 * 1024 * 1024); // Default

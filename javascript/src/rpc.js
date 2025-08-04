@@ -463,6 +463,10 @@ export class RPC extends MessageEmitter {
           if (connectionInfo.public_base_url) {
             this._server_base_url = connectionInfo.public_base_url;
           }
+          
+          // Initialize HTTP message transmission after services are ready
+          this._initialize_http_message_transmission_when_ready();
+          
           this._fire("connected", connectionInfo);
         }
       };
@@ -583,15 +587,20 @@ export class RPC extends MessageEmitter {
     let unpacker = decodeMulti(cache[key]);
     const { done, value } = unpacker.next();
     const main = value;
-    // Make sure the fields are from trusted source
+    // Restore essential fields and add trusted context
     Object.assign(main, {
       from: context.from,
       to: context.to,
       ws: context.ws,
-      user: context.user,
     });
-    main["ctx"] = JSON.parse(JSON.stringify(main));
-    Object.assign(main["ctx"], this.default_context);
+    
+    // Preserve authenticated user from the message if available
+    if ("user" in context) {
+      main.user = context.user;
+    }
+    
+    // Add trusted context to the reconstructed message
+    this._add_context_to_message(main);
     if (!done) {
       let extra = unpacker.next();
       Object.assign(main, extra.value);
@@ -604,20 +613,79 @@ export class RPC extends MessageEmitter {
     delete cache[key];
   }
 
+  /**
+   * Initialize HTTP message transmission when the manager service is ready.
+   * This method waits for the manager to be properly established before attempting S3 setup.
+   */
+  async _initialize_http_message_transmission_when_ready() {
+    // Wait for manager to be ready with exponential backoff
+    let attempts = 0;
+    const maxAttempts = 15;
+    
+    while (attempts < maxAttempts) {
+      try {
+        // Check if manager is ready and connection is stable
+        if (this._manager_id && this._connection && this._connection._ready) {
+          // Small delay to ensure connection is truly stable
+          await new Promise(resolve => setTimeout(resolve, 500));
+          await this._initialize_http_message_transmission();
+          return; // Success!
+        }
+      } catch (error) {
+        console.warn(`S3 initialization attempt ${attempts + 1}/${maxAttempts} failed:`, error.message);
+      }
+      
+      attempts++;
+      if (attempts >= maxAttempts) {
+        console.warn("⚠️ Failed to initialize HTTP message transmission: Manager not ready after maximum attempts");
+        return;
+      }
+      
+      // Exponential backoff: start with 1s, max 5s
+      const delay = Math.min(1000 * Math.pow(1.5, attempts), 5000);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  /**
+   * Add trusted context to a message if it doesn't already have it.
+   * This creates clean context with only essential fields (not all message fields).
+   * Authentication information should ONLY come from the server.
+   */
+  _add_context_to_message(main) {
+    if (!main.ctx) {
+      // Create clean context with only essential fields (not all message fields)
+      main.ctx = {};
+      Object.assign(main.ctx, this.default_context);
+      
+      // Add essential context fields that services expect
+      const essential_fields = ["ws", "from", "to"];
+      for (const field of essential_fields) {
+        if (field in main) {
+          main.ctx[field] = main[field];
+        }
+      }
+      
+      // Preserve authenticated user context from the message (server-side authenticated)
+      if ("user" in main) {
+        main.ctx.user = main.user;
+      }
+    }
+    return main;
+  }
+
   _on_message(message) {
     if (typeof message === "string") {
       const main = JSON.parse(message);
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       this._fire(main["type"], main);
     } else if (message instanceof ArrayBuffer) {
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       if (!done) {
         let extra = unpacker.next();
         Object.assign(main, extra.value);
@@ -625,8 +693,7 @@ export class RPC extends MessageEmitter {
       this._fire(main["type"], main);
     } else if (typeof message === "object") {
       // Add trusted context to the method call
-      message["ctx"] = JSON.parse(JSON.stringify(message));
-      Object.assign(message["ctx"], this.default_context);
+      this._add_context_to_message(message);
       this._fire(message["type"], message);
     } else {
       throw new Error("Invalid message format");
@@ -637,10 +704,23 @@ export class RPC extends MessageEmitter {
     try {
       // Get the manager service to access S3 controller
       const manager = await this.get_manager_service({
-        timeout: 10,
+        timeout: 15,
         case_conversion: "camel",
       });
-      this._s3controller = await manager.getService("public/s3-storage", {case_conversion: "camel"});
+      
+      // Try to get the S3 storage service
+      let s3Service = null;
+      try {
+        s3Service = await manager.getService("public/s3-storage", {
+          case_conversion: "camel",
+          timeout: 10
+        });
+      } catch (error) {
+        console.warn(`S3 service not available: ${error.message}. This is normal if S3/MinIO is not configured.`);
+        return; // Don't throw error, just exit gracefully
+      }
+      
+      this._s3controller = s3Service;
       
       // Check if required methods are available and callable
       const requiredMethods = ["putFile", "getFile", "putFileStartMultipart", "putFileCompleteMultipart"];
@@ -888,6 +968,9 @@ export class RPC extends MessageEmitter {
       assert(data.type === "http-message");
       assert(data.presigned_url && data.content_length !== undefined);
       
+      // Store the original message context for reconstructed HTTP messages
+      const original_context = data.ctx || {};
+      
       const presigned_url = data.presigned_url;
       const content_length = data.content_length;
       
@@ -948,12 +1031,20 @@ export class RPC extends MessageEmitter {
           // Unpack the message and fire the event
           const main = decodeMulti(new Uint8Array(content)).next().value;
           
+          // Preserve authentication context from original websocket message
+          // HTTP reconstructed messages inherit auth from the triggering message
+          const auth_fields = ["user", "ws"];
+          for (const field of auth_fields) {
+            if (field in original_context) {
+              main[field] = original_context[field];
+            }
+          }
+          
           // Add trusted context
-          main["ctx"] = JSON.parse(JSON.stringify(main));
-          Object.assign(main["ctx"], this.default_context);
+          this._add_context_to_message(main);
           
           // Fire the event
-          this.fire(main.type, main);
+          this._fire(main.type, main);
           
         } catch (e) {
           console.error(`Error downloading/processing HTTP message: ${e}`);
@@ -2884,3 +2975,4 @@ export class RPC extends MessageEmitter {
     };
   }
 }
+

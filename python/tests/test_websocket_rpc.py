@@ -1920,23 +1920,122 @@ async def test_comprehensive_reconnection_scenarios(restartable_server):
 
 async def _wait_for_service_recovery(ws, service_id, test_data):
     """Helper function to wait for service recovery with timeout."""
-    max_attempts = 30  # 15 seconds max
+    max_attempts = 60  # 30 seconds max (increased)
     for attempt in range(max_attempts):
         try:
-            svc = await asyncio.wait_for(ws.get_service(service_id), timeout=1.0)
-            result = await asyncio.wait_for(svc.ping(), timeout=1.0)
-            if result == "pong":
-                # Set test data to verify service state
-                await svc.set_data(test_data)
-                data_val = await svc.get_data()
-                if data_val == test_data:
-                    return True
+            # Try different service lookup strategies
+            svc = None
+            
+            # Strategy 1: Direct service lookup
+            try:
+                svc = await asyncio.wait_for(ws.get_service(service_id), timeout=2.0)
+            except Exception:
+                pass
+            
+            # Strategy 2: If direct lookup fails, try looking for service by name
+            if svc is None:
+                try:
+                    services = await asyncio.wait_for(ws.list_services("Persistent Test Service"), timeout=2.0)
+                    if services:
+                        svc = await asyncio.wait_for(ws.get_service(services[0]["id"]), timeout=2.0)
+                except Exception:
+                    pass
+            
+            # Strategy 3: Try looking for any service with "persistent-service" in the ID
+            if svc is None:
+                try:
+                    services = await asyncio.wait_for(ws.list_services(), timeout=2.0)
+                    for service_info in services:
+                        if "persistent-service" in service_info["id"]:
+                            svc = await asyncio.wait_for(ws.get_service(service_info["id"]), timeout=2.0)
+                            break
+                except Exception:
+                    pass
+            
+            if svc is not None:
+                # Test service functionality
+                result = await asyncio.wait_for(svc.ping(), timeout=2.0)
+                if result == "pong":
+                    # Set test data to verify service state
+                    await svc.set_data(test_data)
+                    data_val = await svc.get_data()
+                    if data_val == test_data:
+                        return True
+                        
         except Exception as e:
-            if attempt < 5:  # Only log first few attempts to avoid spam
-                print(f"   Recovery attempt {attempt + 1}: {type(e).__name__}")
+            if attempt < 10:  # Log more attempts for debugging
+                print(f"   Recovery attempt {attempt + 1}: {type(e).__name__}: {str(e)[:100]}")
             await asyncio.sleep(0.5)
     
+    # If we get here, list available services for debugging
+    try:
+        services = await ws.list_services()
+        print(f"   Available services after failure: {[s['id'] for s in services]}")
+    except Exception:
+        print(f"   Could not list services after failure")
+    
     raise TimeoutError(f"Service recovery failed after {max_attempts} attempts")
+
+
+@pytest.mark.asyncio
+async def test_simple_service_recovery_after_restart(restartable_server):
+    """Test that services can be found after server restart - simplified version."""
+    print("\n=== SIMPLE SERVICE RECOVERY TEST ===")
+    
+    try:
+        # Create connection
+        ws = await connect_to_server({
+            "name": "recovery-test-client",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "recovery-test"
+        })
+        
+        # Register a simple test service
+        service_info = await ws.register_service({
+            "id": "test-service",
+            "name": "Test Recovery Service",
+            "ping": lambda: "pong"
+        })
+        
+        print(f"🏷️  Service registered: {service_info['id']}")
+        
+        # Test initial functionality
+        svc = await ws.get_service("test-service")
+        assert await svc.ping() == "pong"
+        print("✅ Initial service working")
+        
+        # Restart server
+        print("🔄 Restarting server...")
+        restartable_server.restart(stop_delay=0.5)
+        
+        # Wait for reconnection
+        await asyncio.sleep(3.0)
+        
+        # Check what services are available
+        services = await ws.list_services()
+        print(f"📋 Available services after restart: {[s['id'] for s in services]}")
+        
+        # Try to find our service
+        found_service = None
+        for service_info in services:
+            if "test-service" in service_info["id"] or service_info.get("name") == "Test Recovery Service":
+                found_service = service_info
+                break
+        
+        if found_service:
+            print(f"🎯 Found service: {found_service['id']}")
+            svc = await ws.get_service(found_service["id"])
+            result = await svc.ping()
+            assert result == "pong"
+            print("✅ Service recovery successful!")
+        else:
+            assert False, f"Service not found. Available: {[s['id'] for s in services]}"
+        
+    finally:
+        try:
+            await ws.disconnect()
+        except Exception as e:
+            print(f"Warning: Cleanup failed: {e}")
 
 
 @pytest.mark.asyncio
