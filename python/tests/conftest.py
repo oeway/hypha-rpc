@@ -1,6 +1,7 @@
 """Provide common pytest fixtures."""
 
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -16,11 +17,21 @@ os.environ["JWT_SECRET"] = JWT_SECRET
 test_env = os.environ.copy()
 
 
+def find_free_port():
+    """Find a free port to avoid conflicts."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+    return port
+
+
 class RestartableServer:
     """A server that can be restarted during tests."""
     
-    def __init__(self, port=WS_PORT):
-        self.port = port
+    def __init__(self, port=None):
+        # Use a free port to avoid conflicts with other fixtures
+        self.port = port if port is not None else find_free_port()
         self.proc = None
         self.server_args = [
             sys.executable, 
