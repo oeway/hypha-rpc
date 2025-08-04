@@ -59,6 +59,82 @@ function checkHealth(host, port) {
 }
 
 /**
+ * Wait for the S3 service to be available via WebSocket
+ * @param {string} host - The host to check (default: 127.0.0.1)
+ * @param {number} port - The port to check (default: 9394)
+ * @param {number} timeout - Total timeout in seconds (default: 60)
+ * @param {number} interval - Check interval in seconds (default: 2)
+ * @returns {Promise<void>}
+ */
+async function waitForS3Service(host = '127.0.0.1', port = 9394, timeout = 60, interval = 2) {
+  const startTime = Date.now();
+  const timeoutMs = timeout * 1000;
+  const intervalMs = interval * 1000;
+  
+  console.log(`⏳ Waiting for S3 service to be available...`);
+
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      const available = await checkS3Service(host, port);
+      if (available) {
+        console.log(`✅ S3 service is ready! (took ${((Date.now() - startTime) / 1000).toFixed(1)}s)`);
+        return;
+      }
+    } catch (error) {
+      console.log(`⚠️ S3 check failed: ${error.message}`);
+    }
+    
+    await sleep(intervalMs);
+  }
+  
+  throw new Error(`❌ Timeout: S3 service did not become ready within ${timeout} seconds`);
+}
+
+/**
+ * Check if S3 service is available via proper RPC connection
+ * @param {string} host
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
+async function checkS3Service(host, port) {
+  try {
+    // Import the connectToServer function dynamically
+    const { connectToServer } = await import('./src/websocket-client.js');
+    
+    let client = null;
+    try {
+      // Connect with same parameters as tests
+      client = await connectToServer({
+        name: "s3-availability-check",
+        server_url: `http://${host}:${port}`,
+        timeout: 10
+      });
+      
+      // Try to get the manager service
+      const manager = await client.getService("manager", { timeout: 5 });
+      
+      // Try to get the S3 service
+      await manager.getService("public/s3-storage", { timeout: 5 });
+      
+      // If we got here, S3 service is available
+      return true;
+    } catch (error) {
+      // S3 service not available yet
+      console.log(`⚠️ S3 service check: ${error.message}`);
+      return false;
+    } finally {
+      if (client) {
+        await client.disconnect();
+      }
+    }
+  } catch (error) {
+    // Import or connection failed
+    console.log(`⚠️ S3 connection failed: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Sleep for the specified number of milliseconds
  * @param {number} ms
  * @returns {Promise<void>}
@@ -76,8 +152,27 @@ const timeout = parseInt(args[2]) || 30;
 // Main execution
 if (require.main === module) {
   waitForServer(host, port, timeout)
-    .then(() => {
-      console.log('🚀 Server is ready, you can now run your tests!');
+    .then(async () => {
+      console.log('🚀 Server is ready!');
+      
+      // Try to check S3 availability but don't fail if it's not ready
+      try {
+        console.log('⚠️ Checking S3 service availability (this may take a moment)...');
+        const s3Ready = await Promise.race([
+          waitForS3Service(host, port, 30), // Shorter timeout
+          new Promise(resolve => setTimeout(() => resolve(false), 15000)) // 15 second max wait
+        ]);
+        
+        if (s3Ready) {
+          console.log('✅ S3 service is also ready!');
+        } else {
+          console.log('⚠️ S3 service not ready yet, but proceeding with tests (HTTP transmission tests may fail)');
+        }
+      } catch (error) {
+        console.log('⚠️ S3 service check failed, but proceeding with tests (HTTP transmission tests may fail)');
+      }
+      
+      console.log('🚀 Tests can now run!');
       process.exit(0);
     })
     .catch((error) => {
@@ -86,4 +181,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { waitForServer }; 
+module.exports = { waitForServer, waitForS3Service }; 

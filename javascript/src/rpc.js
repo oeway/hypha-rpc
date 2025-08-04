@@ -614,22 +614,43 @@ export class RPC extends MessageEmitter {
   }
 
   /**
-   * Initialize HTTP message transmission when the manager service is ready.
-   * This method waits for the manager to be properly established before attempting S3 setup.
+   * Initialize HTTP message transmission when the S3 service is ready.
+   * This method waits for the specific S3 service to be registered, not just the manager.
    */
   async _initialize_http_message_transmission_when_ready() {
-    // Wait for manager to be ready with exponential backoff
+    // Wait for S3 service to be available with longer timeouts for CI
     let attempts = 0;
-    const maxAttempts = 15;
+    const maxAttempts = 30; // Increased for CI environments
+    
+    console.log("🔄 Waiting for S3 service to be available...");
     
     while (attempts < maxAttempts) {
       try {
         // Check if manager is ready and connection is stable
         if (this._manager_id && this._connection && this._connection._ready) {
-          // Small delay to ensure connection is truly stable
-          await new Promise(resolve => setTimeout(resolve, 500));
-          await this._initialize_http_message_transmission();
-          return; // Success!
+          // Try to get the manager and check if S3 service exists
+          const manager = await this.get_manager_service({
+            timeout: 5,
+            case_conversion: "camel",
+          });
+          
+          // Check if the S3 service is registered
+          try {
+            await manager.getService("public/s3-storage", {
+              case_conversion: "camel",
+              timeout: 3
+            });
+            
+            // If we get here, the service exists - now do full initialization
+            console.log("✅ S3 service found, initializing HTTP message transmission...");
+            await this._initialize_http_message_transmission();
+            return; // Success!
+            
+          } catch (serviceError) {
+            console.log(`🔄 S3 service not ready yet (attempt ${attempts + 1}/${maxAttempts}): ${serviceError.message}`);
+          }
+        } else {
+          console.log(`🔄 Manager not ready yet (attempt ${attempts + 1}/${maxAttempts})`);
         }
       } catch (error) {
         console.warn(`S3 initialization attempt ${attempts + 1}/${maxAttempts} failed:`, error.message);
@@ -637,12 +658,12 @@ export class RPC extends MessageEmitter {
       
       attempts++;
       if (attempts >= maxAttempts) {
-        console.warn("⚠️ Failed to initialize HTTP message transmission: Manager not ready after maximum attempts");
+        console.warn("⚠️ Failed to initialize HTTP message transmission: S3 service not available after maximum attempts");
         return;
       }
       
-      // Exponential backoff: start with 1s, max 5s
-      const delay = Math.min(1000 * Math.pow(1.5, attempts), 5000);
+      // Longer delays for CI environments: start with 2s, max 8s
+      const delay = Math.min(2000 * Math.pow(1.2, attempts), 8000);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -702,25 +723,47 @@ export class RPC extends MessageEmitter {
 
   async _initialize_http_message_transmission() {
     try {
+      console.log("🔄 Getting manager service for S3 initialization...");
+      
       // Get the manager service to access S3 controller
       const manager = await this.get_manager_service({
         timeout: 15,
         case_conversion: "camel",
       });
       
-      // Try to get the S3 storage service
+      console.log("✅ Manager service obtained, getting S3 storage service...");
+      
+      // Try to get the S3 storage service with retry for CI environments
       let s3Service = null;
-      try {
-        s3Service = await manager.getService("public/s3-storage", {
-          case_conversion: "camel",
-          timeout: 10
-        });
-      } catch (error) {
-        console.warn(`S3 service not available: ${error.message}. This is normal if S3/MinIO is not configured.`);
-        return; // Don't throw error, just exit gracefully
+      const maxAttempts = 20; // Extended for CI environments
+      let attempts = 0;
+      
+      while (attempts < maxAttempts && !s3Service) {
+        try {
+          s3Service = await manager.getService("public/s3-storage", {
+            case_conversion: "camel",
+            timeout: 10
+          });
+          console.log("✅ S3 storage service obtained successfully");
+          break; // Success, exit retry loop
+        } catch (error) {
+          attempts++;
+          if (attempts >= maxAttempts) {
+            console.warn(`❌ S3 service not available after ${maxAttempts} attempts: ${error.message}`);
+            console.warn("This could be because:");
+            console.warn("1. MinIO server is not running");
+            console.warn("2. S3 service is not registered (check --enable-s3 flag)");
+            console.warn("3. Server startup timing issue in CI environment");
+            return; // Don't throw error, just exit gracefully
+          }
+          console.warn(`🔄 S3 service not ready (attempt ${attempts}/${maxAttempts}), retrying in 1s...`);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay between attempts
+        }
       }
       
       this._s3controller = s3Service;
+      
+      console.log("🔄 Checking S3 service methods...");
       
       // Check if required methods are available and callable
       const requiredMethods = ["putFile", "getFile", "putFileStartMultipart", "putFileCompleteMultipart"];
@@ -729,20 +772,24 @@ export class RPC extends MessageEmitter {
       for (let methodName of requiredMethods) {
         if (!this._s3controller[methodName] || typeof this._s3controller[methodName] !== "function") {
           allMethodsAvailable = false;
-          console.warn(`S3 method ${methodName} not available`);
+          console.warn(`❌ S3 method ${methodName} not available`);
           break;
+        } else {
+          console.log(`✅ S3 method ${methodName} available`);
         }
       }
       
       if (allMethodsAvailable) {
         this._http_message_transmission_available = true;
-        console.log("✅ HTTP message transmission initialized successfully");
+        console.log("🎉 HTTP message transmission initialized successfully!");
+        console.log(`📊 Thresholds: HTTP=${this.http_message_threshold}MB, Multipart=${this.http_multipart_threshold}MB`);
       } else {
         console.warn("⚠️ HTTP message transmission not available - missing required S3 methods");
         this._http_message_transmission_available = false;
       }
     } catch (error) {
-      console.warn("⚠️ Failed to initialize HTTP message transmission:", error.message);
+      console.warn("❌ Failed to initialize HTTP message transmission:", error.message);
+      console.warn("Stack trace:", error.stack);
       this._http_message_transmission_available = false;
     }
   }

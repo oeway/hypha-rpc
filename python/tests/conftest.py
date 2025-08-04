@@ -120,6 +120,7 @@ def hypha_server_fixture():
         "--minio-root-user=myuser",
         "--minio-root-password=mypassword",
         "--s3-cleanup-period=3",
+        "--enable-s3",
         "--enable-s3-for-anonymous-users"
     ]
     
