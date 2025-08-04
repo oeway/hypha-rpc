@@ -6,7 +6,7 @@ aioboto3==13.1.1
 jupyter==1.0.0
 jupyter_client==8.3.0
 redis==5.2.0
-hypha==0.20.71
+hypha==0.20.80
 sse-starlette==2.1.3
 simpervisor==1.0.0
 uvicorn[standard]==0.23.2
