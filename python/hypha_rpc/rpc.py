@@ -1918,7 +1918,6 @@ class RPC(MessageEmitter):
 
         # Clean promise lifecycle management - TYPE-BASED, not string-based
         store["_promise_manager"] = self._create_promise_manager()
-        logger.debug(f"Created PROMISE session {session_id} (type-based detection)")
 
         encoded = {}
 
