@@ -1632,8 +1632,9 @@ async def test_memory_leak_edge_cases(fastapi_server):
         # Try invalid operations that should fail
         try:
             mixed_operations.append(api.get_service(f"invalid_service_{i}"))
-        except:
-            pass  # Expected to fail during creation
+        except Exception as e:
+            # Expected to fail - log the specific error for debugging
+            print(f"Expected failure for invalid_service_{i}: {type(e).__name__}: {e}")
     
     # Execute with exception handling
     mixed_results = await asyncio.gather(*mixed_operations, return_exceptions=True)
@@ -1912,8 +1913,9 @@ async def test_comprehensive_reconnection_scenarios(restartable_server):
         # Ensure cleanup even if test fails
         try:
             await asyncio.wait_for(ws.disconnect(), timeout=5.0)
-        except:
-            pass
+        except Exception as e:
+            print(f"Warning: Cleanup disconnect failed: {type(e).__name__}: {e}")
+            # Don't re-raise in cleanup to avoid masking the real test error
 
 
 async def _wait_for_service_recovery(ws, service_id, test_data):

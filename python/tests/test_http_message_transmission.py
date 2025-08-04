@@ -74,6 +74,9 @@ async def test_http_transmission_availability(fastapi_server, test_user_token):
             print("✅ S3 controller is properly initialized")
         else:
             print("⚠️  HTTP transmission not available (this is normal if S3 is not configured)")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        raise e
     finally:
         await client.disconnect()
 
@@ -1056,7 +1059,9 @@ async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, 
         assert last_event["used_multipart"] is True
         
         print(f"✅ Multipart configuration verified: {last_event['part_count']} parts of {last_event['multipart_size'] / (1024*1024)}MB each")
-        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        raise e
     finally:
         await client.disconnect()
 
@@ -1128,7 +1133,9 @@ async def test_parallel_upload_performance(fastapi_server, test_user_token):
             print(f"   - Part size: {last_event['part_size'] / (1024*1024)}MB")
             if "transmission_time" in last_event:
                 print(f"   - Transmission time: {last_event['transmission_time']:.2f}s")
-            
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            raise e
         finally:
             await client.disconnect()
 

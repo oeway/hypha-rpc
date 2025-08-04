@@ -1,18 +1,15 @@
 """Provide common pytest fixtures."""
 
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
-import asyncio
 
 import pytest
 import requests
 from requests import RequestException
-from . import WS_PORT, MINIO_PORT, MINIO_SERVER_URL, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD
+from . import WS_PORT
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
@@ -115,22 +112,50 @@ def hypha_server_fixture():
         "--enable-s3-for-anonymous-users"
     ]
     
-    with subprocess.Popen(server_args, env=test_env) as proc:
-        timeout = 20
-        while timeout > 0:
-            try:
-                response = requests.get(f"http://127.0.0.1:{WS_PORT}/health/readiness")
-                if response.ok:
-                    break
-            except RequestException:
-                pass
-            timeout -= 0.1
-            time.sleep(0.1)
-        if timeout <= 0:
-            raise RuntimeError("Failed to start hypha server")
-        yield
-        proc.kill()
+    proc = subprocess.Popen(server_args, env=test_env, 
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    # Check if process failed immediately (e.g., port in use)
+    time.sleep(0.5)  # Give it a moment to fail
+    if proc.poll() is not None:
+        # Process exited, capture error output
+        stdout, stderr = proc.communicate()
+        raise RuntimeError(f"Failed to start hypha server. Exit code: {proc.returncode}\n"
+                          f"STDOUT: {stdout.decode()}\n"
+                          f"STDERR: {stderr.decode()}")
+    
+    # Wait for server to be ready
+    timeout = 20
+    while timeout > 0:
+        try:
+            response = requests.get(f"http://127.0.0.1:{WS_PORT}/health/readiness", timeout=5)
+            if response.ok:
+                break
+        except RequestException as exc:
+            # Check if process died during startup
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
+                raise RuntimeError(f"Hypha server died during startup. Exit code: {proc.returncode}\n"
+                                  f"STDOUT: {stdout.decode()}\n"
+                                  f"STDERR: {stderr.decode()}") from exc
+        timeout -= 0.1
+        time.sleep(0.1)
+        
+    if timeout <= 0:
         proc.terminate()
+        stdout, stderr = proc.communicate(timeout=5)
+        raise RuntimeError(f"Failed to start hypha server within timeout\n"
+                          f"STDOUT: {stdout.decode()}\n"
+                          f"STDERR: {stderr.decode()}")
+    
+    try:
+        yield proc  # Yield the process object instead of None
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 
 @pytest.fixture(name="fastapi_server", scope="session") 
