@@ -88,6 +88,8 @@ class WebsocketRPCConnection:
         self._ping_timeout = ping_timeout
         self._additional_headers = additional_headers
         self._reconnect_tasks = set()  # Track reconnection tasks
+        self._recv_lock = asyncio.Lock()  # Prevent concurrent recv operations
+        self._send_lock = asyncio.Lock()  # Prevent concurrent send operations
         if ssl == False:
             import ssl as ssl_module
 
@@ -212,13 +214,17 @@ class WebsocketRPCConnection:
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
-                await self._websocket.send(refresh_message)
+                async with self._send_lock:
+                    await self._websocket.send(refresh_message)
                 # logger.info("Requested refresh token")
                 # Wait for the next refresh interval
                 await asyncio.sleep(token_refresh_interval)
         except asyncio.CancelledError:
             # Task was cancelled, cleanup or exit gracefully
             logger.info("Refresh token task was cancelled.")
+        except websockets.exceptions.ConnectionClosed as e:
+            # Connection was closed during token refresh, this is expected during reconnection
+            logger.debug(f"Connection closed during refresh token send: {e}")
         except Exception as exp:
             logger.error(f"Failed to send refresh token: {exp}")
 
@@ -241,8 +247,10 @@ class WebsocketRPCConnection:
                 }
             )
             await self._websocket.send(auth_info)
-            first_message = await self._websocket.recv()
+            async with self._recv_lock:
+                first_message = await self._websocket.recv()
             first_message = json.loads(first_message)
+            logger.debug(f"First message received: {first_message}")
             if first_message.get("type") == "connection_info":
                 self.connection_info = first_message
                 if self._workspace:
@@ -268,6 +276,9 @@ class WebsocketRPCConnection:
                 logger.info(
                     f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
                 )
+                # Debug logging for manager_id
+                if not self.manager_id:
+                    logger.warning(f"Manager ID not set in connection_info: {self.connection_info}")
                 if "announcement" in self.connection_info:
                     print(self.connection_info["announcement"])
             elif first_message.get("type") == "error":
@@ -305,8 +316,13 @@ class WebsocketRPCConnection:
 
         try:
             self._last_message = data  # Store the message before sending
-            await self._websocket.send(data)
+            async with self._send_lock:
+                await self._websocket.send(data)
             self._last_message = None  # Clear after successful send
+        except websockets.exceptions.ConnectionClosed as e:
+            # Connection was closed, trigger reconnection
+            logger.warning(f"Connection closed while sending message: {e}")
+            raise
         except Exception as exp:
             logger.error(f"Failed to send message: {exp}")
             raise exp
@@ -317,7 +333,8 @@ class WebsocketRPCConnection:
         self._closed = False
         try:
             while not self._closed and not self._websocket.state == State.CLOSED:
-                data = await self._websocket.recv()
+                async with self._recv_lock:
+                    data = await self._websocket.recv()
                 if isinstance(data, str):
                     data = json.loads(data)
                     if data.get("type") == "reconnection_token":
@@ -406,7 +423,8 @@ class WebsocketRPCConnection:
                                     logger.info(
                                         "Resending last message after reconnection"
                                     )
-                                    await self._websocket.send(self._last_message)
+                                    async with self._send_lock:
+                                        await self._websocket.send(self._last_message)
                                     self._last_message = None
                                 logger.warning(
                                     "Successfully reconnected to %s (services re-registered)",

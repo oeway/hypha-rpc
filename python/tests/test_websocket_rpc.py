@@ -1811,11 +1811,27 @@ async def test_comprehensive_reconnection_scenarios(restartable_server):
     
     try:
         # Create connection with timeout
+        # Generate a token for a persistent workspace
+        from hypha.core.auth import generate_presigned_token, create_scope, UserInfo, UserPermission
+        
+        user_info = UserInfo(
+            id="test-reconnection-user",
+            is_anonymous=False,
+            email="reconnection-test@test.com",
+            parent=None,
+            roles=[],
+            scope=create_scope(workspaces={"ws-test-reconnection": UserPermission.admin}),
+            expires_at=None,
+        )
+        token = generate_presigned_token(user_info, 3600)
+        
         ws = await asyncio.wait_for(
             connect_to_server({
                 "name": "reconnection-test-client",
                 "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-                "client_id": "reconnection-test"
+                "client_id": "reconnection-test",
+                "workspace": "ws-test-reconnection",
+                "token": token
             }),
             timeout=10.0
         )

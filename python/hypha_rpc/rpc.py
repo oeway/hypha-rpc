@@ -660,59 +660,84 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
-                if not self._silent and self._connection.manager_id:
-                    logger.info("Connection established, reporting services...")
+                # Re-initialize HTTP message transmission on reconnection
+                if self._enable_http_transmission:
+                    self._http_message_transmission_available = False
+                    self._s3controller = None
                     try:
-                        # Retry getting manager service with exponential backoff
-                        manager = await self._get_manager_with_retry()
-                        services_count = len(self._services)
-                        registered_count = 0
-                        failed_services = []
+                        await self._initialize_http_message_transmission()
+                    except Exception as e:
+                        logger.debug(f"Failed to initialize HTTP message transmission on reconnection: {e}")
+                
+                # Wait for manager_id to be set during reconnection
+                if not self._silent:
+                    # Debug logging
+                    if connection_info:
+                        logger.info(f"Connection info received in on_connected: {connection_info}")
+                    else:
+                        logger.info("No connection info provided to on_connected callback")
+                    
+                    # Wait up to 3 seconds for manager_id to be set
+                    for i in range(30):
+                        if self._connection.manager_id:
+                            break
+                        await asyncio.sleep(0.1)
+                    
+                    if self._connection.manager_id:
+                        logger.info("Connection established, reporting services...")
+                        try:
+                            # Retry getting manager service with exponential backoff
+                            manager = await self._get_manager_with_retry()
+                            services_count = len(self._services)
+                            registered_count = 0
+                            failed_services = []
 
-                        for service in list(self._services.values()):
-                            try:
-                                service_info = self._extract_service_info(service)
-                                await manager.register_service(service_info)
-                                registered_count += 1
-                                logger.debug(
-                                    f"Successfully registered service: {service.get('id', 'unknown')}"
+                            for service in list(self._services.values()):
+                                try:
+                                    service_info = self._extract_service_info(service)
+                                    await manager.register_service(service_info)
+                                    registered_count += 1
+                                    logger.debug(
+                                        f"Successfully registered service: {service.get('id', 'unknown')}"
+                                    )
+                                except Exception as service_error:
+                                    failed_services.append(service.get("id", "unknown"))
+                                    logger.error(
+                                        f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
+                                    )
+
+                            if registered_count == services_count:
+                                logger.info(
+                                    f"Successfully registered all {registered_count} services with the server"
                                 )
-                            except Exception as service_error:
-                                failed_services.append(service.get("id", "unknown"))
-                                logger.error(
-                                    f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
+                            else:
+                                logger.warning(
+                                    f"Only registered {registered_count} out of {services_count} services with the server. Failed services: {failed_services}"
                                 )
 
-                        if registered_count == services_count:
-                            logger.info(
-                                f"Successfully registered all {registered_count} services with the server"
+                            # Fire event with registration status
+                            self._fire(
+                                "services_registered",
+                                {
+                                    "total": services_count,
+                                    "registered": registered_count,
+                                    "failed": failed_services,
+                                },
                             )
-                        else:
-                            logger.warning(
-                                f"Only registered {registered_count} out of {services_count} services with the server. Failed services: {failed_services}"
+                        except Exception as manager_error:
+                            logger.error(
+                                f"Failed to get manager service for registering services: {manager_error}"
                             )
-
-                        # Fire event with registration status
-                        self._fire(
-                            "services_registered",
-                            {
-                                "total": services_count,
-                                "registered": registered_count,
-                                "failed": failed_services,
-                            },
-                        )
-                    except Exception as manager_error:
-                        logger.error(
-                            f"Failed to get manager service for registering services: {manager_error}"
-                        )
-                        # Fire event with error status
-                        self._fire(
-                            "services_registration_failed",
-                            {
-                                "error": str(manager_error),
-                                "total_services": len(self._services),
-                            },
-                        )
+                            # Fire event with error status
+                            self._fire(
+                                "services_registration_failed",
+                                {
+                                    "error": str(manager_error),
+                                    "total_services": len(self._services),
+                                },
+                            )
+                    else:
+                        logger.warning("Manager ID not available after reconnection, skipping service registration")
                 else:
                     logger.info("Connection established: %s", connection_info)
                 if connection_info:
@@ -923,6 +948,9 @@ class RPC(MessageEmitter):
         if not self._http_message_transmission_available:
             raise RuntimeError("HTTP message transmission not available")
         
+        if not self._s3controller:
+            raise RuntimeError("S3 controller not initialized")
+        
         # Generate unique file path for the message
         message_id = session_id or shortuuid.uuid()
         file_path = f"tmp/{message_id}"
@@ -998,7 +1026,15 @@ class RPC(MessageEmitter):
 
         
         # Send the http-message via regular (small) RPC message
-        await self._emit_message(msgpack.packb(http_message))
+        try:
+            await self._emit_message(msgpack.packb(http_message))
+        except Exception as e:
+            # If sending fails, clean up the uploaded file
+            try:
+                await self._s3controller.delete_file(file_path)
+            except Exception:
+                pass  # Ignore cleanup errors
+            raise RuntimeError(f"Failed to send HTTP message envelope: {e}") from e
 
     async def _parallel_upload_parts(self, part_tasks, concurrency=None):
         """Upload parts in parallel using a queue-based pattern."""
@@ -1105,7 +1141,15 @@ class RPC(MessageEmitter):
 
         
         # Send the http-message via regular (small) RPC message
-        await self._emit_message(msgpack.packb(http_message))
+        try:
+            await self._emit_message(msgpack.packb(http_message))
+        except Exception as e:
+            # If sending fails, clean up the uploaded file
+            try:
+                await self._s3controller.delete_file(file_path)
+            except Exception:
+                pass  # Ignore cleanup errors
+            raise RuntimeError(f"Failed to send HTTP message envelope: {e}") from e
 
     def _handle_http_message(self, data):
         """Handle incoming HTTP message."""
@@ -1993,21 +2037,34 @@ class RPC(MessageEmitter):
         
         # Try HTTP message transmission first if available and message is large enough
         if self._enable_http_transmission and len(package) >= self._http_transmission_threshold:
-            if not self._http_message_transmission_available:
-                # Attempt to initialize HTTP transmission if not yet attempted
+            # Check if connection is ready (not in reconnection state)
+            connection_ready = False
+            if hasattr(self._connection, '_websocket') and self._connection._websocket:
                 try:
-                    await self._initialize_http_message_transmission()
-                except Exception:
-                    pass  # Ignore initialization errors, will fall back to message_cache
+                    from websockets.protocol import State
+                    connection_ready = self._connection._websocket.state == State.OPEN
+                except ImportError:
+                    # Fallback check without State enum
+                    connection_ready = True  # Assume ready if we can't check properly
             
-            # Use HTTP transmission if available
-            if self._http_message_transmission_available:
-                try:
-                    await self._send_chunks_http(package, target_id, session_id)
-                    return  # Successfully sent via HTTP
-                except Exception as e:
-                    logger.warning(f"HTTP message transmission failed, falling back to message_cache: {e}")
-                    # Fall through to use message_cache
+            if connection_ready:
+                if not self._http_message_transmission_available:
+                    # Attempt to initialize HTTP transmission if not yet attempted
+                    try:
+                        await self._initialize_http_message_transmission()
+                    except Exception:
+                        pass  # Ignore initialization errors, will fall back to message_cache
+                
+                # Use HTTP transmission if available
+                if self._http_message_transmission_available:
+                    try:
+                        await self._send_chunks_http(package, target_id, session_id)
+                        return  # Successfully sent via HTTP
+                    except Exception as e:
+                        logger.warning(f"HTTP message transmission failed, falling back to message_cache: {e}")
+                        # Fall through to use message_cache
+            else:
+                logger.debug("WebSocket connection not ready, falling back to message_cache for large message")
         
         # Fallback to original message_cache implementation
         remote_services = await self.get_remote_service(f"{target_id}:built-in")

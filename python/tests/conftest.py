@@ -29,22 +29,35 @@ def find_free_port():
 class RestartableServer:
     """A server that can be restarted during tests."""
     
-    def __init__(self, port=None):
+    def __init__(self, port=None, server_id=None):
         # Use a free port to avoid conflicts with other fixtures
         self.port = port if port is not None else find_free_port()
         self.proc = None
+        self.server_id = server_id or f"test-server-{uuid.uuid4().hex[:8]}"
         self.server_args = [
             sys.executable, 
             "-m", "hypha.server", 
-            f"--port={self.port}"
+            f"--port={self.port}",
+            "--enable-s3",
+            "--enable-s3-for-anonymous-users",
+            "--start-minio-server",
+            "--minio-workdir=/tmp/minio_test_data",
+            "--minio-port=9003",  # Different port from main test server
+            "--minio-root-user=testuser",
+            "--minio-root-password=testpassword",
+            "--workspace-bucket=test-workspaces"
         ]
+        # Create environment with HYPHA_SERVER_ID to maintain consistency across restarts
+        self.env = test_env.copy()
+        self.env["HYPHA_SERVER_ID"] = self.server_id
     
     def start(self, timeout=10):
         """Start the server."""
         if self.proc is not None:
             self.stop()
         
-        self.proc = subprocess.Popen(self.server_args, env=test_env)
+        print(f"🚀 Starting server with ID: {self.server_id} on port {self.port}")
+        self.proc = subprocess.Popen(self.server_args, env=self.env)
         
         # Wait for server to be ready
         start_time = time.time()
@@ -52,6 +65,7 @@ class RestartableServer:
             try:
                 response = requests.get(f"http://127.0.0.1:{self.port}/health/liveness", timeout=1)
                 if response.ok:
+                    print(f"✅ Server {self.server_id} is ready")
                     return True
             except RequestException:
                 pass
