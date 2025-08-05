@@ -671,17 +671,22 @@ class RPC(MessageEmitter):
                 
                 # Wait for manager_id to be set during reconnection
                 if not self._silent:
-                    # Debug logging
+                    # Only try to register services if we have connection info or manager_id
                     if connection_info:
                         logger.info(f"Connection info received in on_connected: {connection_info}")
-                    else:
-                        logger.info("No connection info provided to on_connected callback")
                     
-                    # Wait up to 3 seconds for manager_id to be set
-                    for i in range(30):
+                    # For reconnections, wait longer for manager_id to be set
+                    # This handles cases where the server might be slow to respond
+                    max_wait_time = 10 if connection_info else 3  # Wait longer on reconnection
+                    wait_iterations = max_wait_time * 10  # Check every 100ms
+                    
+                    for i in range(wait_iterations):
                         if self._connection.manager_id:
                             break
                         await asyncio.sleep(0.1)
+                    
+                    # Log the current state for debugging
+                    logger.debug(f"After waiting {i * 0.1:.1f}s: manager_id={self._connection.manager_id}, connection_info={connection_info}")
                     
                     if self._connection.manager_id:
                         logger.info("Connection established, reporting services...")

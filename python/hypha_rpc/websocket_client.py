@@ -250,7 +250,7 @@ class WebsocketRPCConnection:
             async with self._recv_lock:
                 first_message = await self._websocket.recv()
             first_message = json.loads(first_message)
-            logger.debug(f"First message received: {first_message}")
+            logger.info(f"First message received during handshake: type={first_message.get('type')}, has_manager_id={'manager_id' in first_message}")
             if first_message.get("type") == "connection_info":
                 self.connection_info = first_message
                 if self._workspace:
@@ -272,15 +272,51 @@ class WebsocketRPCConnection:
                         self._token_refresh_interval = (
                             self.connection_info["reconnection_token_life_time"] / 1.5
                         )
-                self.manager_id = self.connection_info.get("manager_id", None)
+                # Preserve existing manager_id if not provided in connection_info
+                new_manager_id = self.connection_info.get("manager_id", None)
+                if new_manager_id:
+                    self.manager_id = new_manager_id
+                elif not self.manager_id:
+                    # Only warn if we don't have any manager_id
+                    logger.warning("No manager_id in connection_info and no existing manager_id")
                 logger.info(
                     f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
                 )
                 # Debug logging for manager_id
                 if not self.manager_id:
                     logger.warning(f"Manager ID not set in connection_info: {self.connection_info}")
+                else:
+                    logger.debug(f"Manager ID set successfully: {self.manager_id}")
                 if "announcement" in self.connection_info:
                     print(self.connection_info["announcement"])
+            elif first_message.get("type") == "reconnection_token":
+                # This shouldn't happen during initial handshake, but log and continue
+                logger.warning("Received reconnection_token as first message during handshake - this is unexpected")
+                self._reconnection_token = first_message.get("reconnection_token")
+                # Wait for the actual connection_info message
+                async with self._recv_lock:
+                    second_message = await self._websocket.recv()
+                second_message = json.loads(second_message)
+                if second_message.get("type") == "connection_info":
+                    self.connection_info = second_message
+                    # Preserve existing manager_id if not provided in connection_info
+                    new_manager_id = self.connection_info.get("manager_id", None)
+                    if new_manager_id:
+                        self.manager_id = new_manager_id
+                    elif not self.manager_id:
+                        # Only warn if we don't have any manager_id
+                        logger.warning("No manager_id in connection_info and no existing manager_id after reconnection_token")
+                    logger.info(
+                        f"Successfully connected after reconnection token, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
+                    )
+                else:
+                    logger.error(
+                        "Expected connection_info after reconnection_token, got: %s",
+                        second_message,
+                    )
+                    raise ConnectionAbortedError(
+                        "Expected connection_info after reconnection_token"
+                    )
             elif first_message.get("type") == "error":
                 error = first_message["message"]
                 logger.error("Failed to connect: %s", error)
@@ -396,6 +432,9 @@ class WebsocketRPCConnection:
                         logger.warning(
                             "Websocket connection closed unexpectedly (no close code)"
                         )
+                    
+                    # Store manager_id for reconnection (don't reset it)
+                    # self.manager_id = None  # REMOVED: Keep manager_id for reconnection
 
                     async def reconnect_with_retry():
                         retry = 0
@@ -416,7 +455,7 @@ class WebsocketRPCConnection:
                                 # Wait a short time for services to be registered
                                 # This gives time for the on_connected callback to complete
                                 # which includes re-registering all services to the server
-                                await asyncio.sleep(0.5)
+                                await asyncio.sleep(1.0)  # Increased from 0.5 to 1.0 for more reliability
 
                                 # Resend last message if there was one
                                 if self._last_message:
