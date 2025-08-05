@@ -29,24 +29,37 @@ def find_free_port():
 class RestartableServer:
     """A server that can be restarted during tests."""
     
-    def __init__(self, port=None, server_id=None):
+    def __init__(self, port=None, server_id=None, enable_s3=False):
         # Use a free port to avoid conflicts with other fixtures
         self.port = port if port is not None else find_free_port()
         self.proc = None
         self.server_id = server_id or f"test-server-{uuid.uuid4().hex[:8]}"
+        self.enable_s3 = enable_s3
+        
+        # Basic server args
         self.server_args = [
             sys.executable, 
             "-m", "hypha.server", 
-            f"--port={self.port}",
-            "--enable-s3",
-            "--enable-s3-for-anonymous-users",
-            "--start-minio-server",
-            "--minio-workdir=/tmp/minio_test_data",
-            "--minio-port=9003",  # Different port from main test server
-            "--minio-root-user=testuser",
-            "--minio-root-password=testpassword",
-            "--workspace-bucket=test-workspaces"
+            f"--port={self.port}"
         ]
+        
+        # Only add S3 args if explicitly enabled
+        if self.enable_s3:
+            # Use a free port for MinIO to avoid conflicts
+            self.minio_port = find_free_port()
+            self.server_args.extend([
+                "--enable-s3",
+                "--enable-s3-for-anonymous-users",
+                "--start-minio-server",
+                f"--minio-workdir=/tmp/minio_test_data_{self.server_id}",  # Unique workdir per server
+                f"--minio-port={self.minio_port}",  # Dynamic port to avoid conflicts
+                "--minio-root-user=testuser",
+                "--minio-root-password=testpassword",
+                "--workspace-bucket=test-workspaces"
+            ])
+        else:
+            self.minio_port = None
+            
         # Create environment with HYPHA_SERVER_ID to maintain consistency across restarts
         self.env = test_env.copy()
         self.env["HYPHA_SERVER_ID"] = self.server_id
@@ -56,7 +69,10 @@ class RestartableServer:
         if self.proc is not None:
             self.stop()
         
-        print(f"🚀 Starting server with ID: {self.server_id} on port {self.port}")
+        if self.enable_s3:
+            print(f"🚀 Starting server with ID: {self.server_id} on port {self.port}, MinIO port {self.minio_port}")
+        else:
+            print(f"🚀 Starting server with ID: {self.server_id} on port {self.port} (no S3)")
         self.proc = subprocess.Popen(self.server_args, env=self.env)
         
         # Wait for server to be ready
@@ -112,7 +128,8 @@ class RestartableServer:
 @pytest.fixture(name="restartable_server", scope="function")
 def restartable_server_fixture():
     """Provide a server that can be restarted during tests."""
-    server = RestartableServer()
+    # Don't enable S3 by default to avoid port conflicts
+    server = RestartableServer(enable_s3=False)
     server.start()
     try:
         yield server
