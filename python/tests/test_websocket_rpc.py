@@ -1846,7 +1846,7 @@ async def test_comprehensive_reconnection_scenarios(restartable_server, test_use
     # Register test services with state
     test_state = {"counter": 0, "data": "initial"}
     
-    service_info = ws.register_service({
+    service_info = await ws.register_service({
         "id": "persistent-service",
         "name": "Persistent Test Service",
         "config": {"visibility": "protected"},
