@@ -78,7 +78,7 @@ async function waitForS3Service(host = '127.0.0.1', port = 9394, timeout = 60, i
       const available = await checkS3Service(host, port);
       if (available) {
         console.log(`✅ S3 service is ready! (took ${((Date.now() - startTime) / 1000).toFixed(1)}s)`);
-        return;
+        return true;
       }
     } catch (error) {
       console.log(`⚠️ S3 check failed: ${error.message}`);
@@ -107,14 +107,11 @@ async function checkS3Service(host, port) {
       client = await connectToServer({
         name: "s3-availability-check",
         server_url: `http://${host}:${port}`,
-        timeout: 10
+        timeout: 30
       });
       
-      // Try to get the manager service
-      const manager = await client.getService("manager", { timeout: 5 });
-      
       // Try to get the S3 service
-      await manager.getService("public/s3-storage", { timeout: 5 });
+      await client.getService("public/s3-storage", { timeout: 30 });
       
       // If we got here, S3 service is available
       return true;
@@ -158,10 +155,7 @@ if (require.main === module) {
       // Try to check S3 availability but don't fail if it's not ready
       try {
         console.log('⚠️ Checking S3 service availability (this may take a moment)...');
-        const s3Ready = await Promise.race([
-          waitForS3Service(host, port, 30), // Shorter timeout
-          new Promise(resolve => setTimeout(() => resolve(false), 15000)) // 15 second max wait
-        ]);
+        const s3Ready = await waitForS3Service(host, port, 120)
         
         if (s3Ready) {
           console.log('✅ S3 service is also ready!');

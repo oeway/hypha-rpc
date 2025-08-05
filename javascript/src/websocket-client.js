@@ -166,7 +166,14 @@ class WebsocketRPCConnection {
                 this.connection_info.reconnection_token_life_time / 1.5;
             }
           }
-          this.manager_id = this.connection_info.manager_id || null;
+          // Preserve existing manager_id if not provided in connection_info
+          const new_manager_id = this.connection_info.manager_id;
+          if (new_manager_id) {
+            this.manager_id = new_manager_id;
+          } else if (!this.manager_id) {
+            // Only warn if we don't have any manager_id
+            console.warn("No manager_id in connection_info and no existing manager_id");
+          }
           console.log(
             `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
           );

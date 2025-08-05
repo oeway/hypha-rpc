@@ -404,6 +404,18 @@ export class RPC extends MessageEmitter {
       connection.on_message(this._on_message.bind(this));
       this._connection = connection;
       const onConnected = async (connectionInfo) => {
+        // Re-initialize HTTP message transmission on reconnection
+        if (this._enable_http_transmission) {
+          this._http_message_transmission_available = false;
+          this._s3controller = null;
+          try {
+            await this._initialize_http_message_transmission();
+          } catch (error) {
+            console.debug("Failed to initialize HTTP message transmission on reconnection:", error.message);
+          }
+        }
+        
+        // Check if manager_id is available before attempting to register services
         if (!this._silent && this._connection.manager_id) {
           console.debug("Connection established, reporting services...");
           try {
@@ -456,6 +468,8 @@ export class RPC extends MessageEmitter {
               total_services: Object.keys(this._services).length,
             });
           }
+        } else if (!this._silent && !this._connection.manager_id) {
+          console.warn("Manager ID not available after reconnection, skipping service registration");
         } else {
           // console.debug("Connection established", connectionInfo);
         }
@@ -1075,8 +1089,17 @@ export class RPC extends MessageEmitter {
           // Process the downloaded content as if it came through regular message_cache
           console.debug(`Processing downloaded HTTP message: ${content.byteLength} bytes`);
           
-          // Unpack the message and fire the event
-          const main = decodeMulti(new Uint8Array(content)).next().value;
+          // Unpack the message - there may be multiple segments
+          const decoder = decodeMulti(new Uint8Array(content));
+          const main = decoder.next().value;
+          
+          // Check if there's a second segment (extra_data)
+          const extraResult = decoder.next();
+          if (!extraResult.done) {
+            const extra_data = extraResult.value;
+            // Merge extra_data into main message
+            Object.assign(main, extra_data);
+          }
           
           // Preserve authentication context from original websocket message
           // HTTP reconstructed messages inherit auth from the triggering message
@@ -1909,6 +1932,39 @@ export class RPC extends MessageEmitter {
   }
 
   async _send_chunks(data, target_id, session_id) {
+    // Try HTTP message transmission first if available and message is large enough
+    if (this._enable_http_transmission && data.length >= this._http_transmission_threshold) {
+      // Check if connection is ready (not in reconnection state)
+      let connection_ready = false;
+      if (this._connection && this._connection._websocket) {
+        // Check if websocket is in OPEN state
+        connection_ready = this._connection._websocket.readyState === WebSocket.OPEN;
+      }
+      
+      if (connection_ready) {
+        if (!this._http_message_transmission_available) {
+          // Attempt to initialize HTTP transmission if not yet attempted
+          try {
+            await this._initialize_http_message_transmission();
+          } catch (error) {
+            // Initialization failed, fall back to regular chunking
+            console.debug("Failed to initialize HTTP message transmission:", error.message);
+          }
+        }
+        
+        if (this._http_message_transmission_available) {
+          try {
+            // Use HTTP transmission for large messages
+            await this._send_chunks_http(data, target_id, session_id);
+            return;
+          } catch (error) {
+            console.warn("Failed to send message via HTTP, falling back to WebSocket chunking:", error.message);
+            // Fall through to regular WebSocket chunking
+          }
+        }
+      }
+    }
+
     // 1) Get the remote service
     const remote_services = await this.get_remote_service(
       `${target_id}:built-in`,
