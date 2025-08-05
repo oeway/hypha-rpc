@@ -151,7 +151,7 @@ def hypha_server_fixture():
                           f"STDERR: {stderr.decode()}")
     
     # Wait for server to be ready
-    timeout = 20
+    timeout = 60
     while timeout > 0:
         try:
             response = requests.get(f"http://127.0.0.1:{WS_PORT}/health/readiness", timeout=5)
