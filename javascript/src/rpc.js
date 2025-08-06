@@ -1490,7 +1490,7 @@ export class RPC extends MessageEmitter {
   _extract_service_info(service) {
     const config = service.config || {};
     config.workspace =
-      config.workspace || this._local_workspace || this._connection.workspace;
+      config.workspace || this._local_workspace || this._connection._workspace;
     const skipContext = config.require_context;
     const serviceSchema = _get_schema(service, null, skipContext);
     const serviceInfo = {

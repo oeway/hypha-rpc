@@ -1517,7 +1517,7 @@ class RPC(MessageEmitter):
         service = ObjectProxy.toDict(service)
         config = service.get("config", {})
         config["workspace"] = config.get(
-            "workspace", self._local_workspace or self._connection.workspace
+            "workspace", self._local_workspace or self._connection._workspace
         )
         skip_context = config.get("require_context", False)
         service_schema = _get_schema(service, skip_context=skip_context)
