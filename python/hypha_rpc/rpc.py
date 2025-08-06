@@ -752,7 +752,7 @@ class RPC(MessageEmitter):
         else:
 
             async def _emit_message(_):
-                logger.info("No connection to emit message")
+                raise RuntimeError("No connection to emit message")
 
             self._emit_message = _emit_message
 

@@ -167,7 +167,10 @@ class WebsocketRPCConnection {
             }
           }
           // Manager ID must always be present in connection_info
-          assert(this.connection_info.manager_id, `manager_id missing in connection_info: ${JSON.stringify(this.connection_info)}`);
+          assert(
+            this.connection_info.manager_id,
+            `manager_id missing in connection_info: ${JSON.stringify(this.connection_info)}`,
+          );
           this.manager_id = this.connection_info.manager_id;
           console.log(
             `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
@@ -600,7 +603,10 @@ export async function connectToServer(config) {
     "Failed to connect to the server, no connection info obtained. This issue is most likely due to an outdated Hypha server version. Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version.",
   );
   // Manager ID must be set from connection_info
-  assert(connection.manager_id, "Manager ID must be available after connection is established");
+  assert(
+    connection.manager_id,
+    "Manager ID must be available after connection is established",
+  );
   if (config.workspace && connection_info.workspace !== config.workspace) {
     throw new Error(
       `Connected to the wrong workspace: ${connection_info.workspace}, expected: ${config.workspace}`,
