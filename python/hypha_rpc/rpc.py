@@ -675,9 +675,9 @@ class RPC(MessageEmitter):
                     if connection_info:
                         logger.info(f"Connection info received in on_connected: {connection_info}")
                     
-                    # For reconnections, wait longer for manager_id to be set
-                    # This handles cases where the server might be slow to respond
-                    max_wait_time = 10 if connection_info else 3  # Wait longer on reconnection
+                    # Always wait sufficient time for manager_id to be set
+                    # This handles cases where the server might be slow to respond or HTTP transmission is being initialized
+                    max_wait_time = 10  # Always wait up to 10 seconds for manager_id
                     wait_iterations = max_wait_time * 10  # Check every 100ms
                     
                     for i in range(wait_iterations):
@@ -2461,7 +2461,7 @@ class RPC(MessageEmitter):
                 and not heartbeat_task.done()
             ):
                 heartbeat_task.cancel()
-            if callable(reject):
+            if reject and callable(reject):
                 reject(err)
             logger.debug("Error during calling method: %s", err)
 

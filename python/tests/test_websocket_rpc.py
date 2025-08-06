@@ -1814,7 +1814,6 @@ async def test_session_cleanup_robustness(fastapi_server):
     print("✅ SESSION CLEANUP ROBUSTNESS TESTS PASSED")
 
 
-@pytest.mark.skip(reason="This test is flaky and needs to be rewritten")
 @pytest.mark.asyncio
 async def test_comprehensive_reconnection_scenarios(restartable_server, test_user_token):
     """Test comprehensive reconnection scenarios including server restarts - with timeouts."""
