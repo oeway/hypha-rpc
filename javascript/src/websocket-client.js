@@ -621,7 +621,7 @@ export async function connectToServer(config) {
 
     if (!connection.manager_id) {
       console.error("Manager ID still not set after waiting");
-      throw new Error("Failed to get manager ID from server");
+      // Don't throw - let get_manager_service handle this with its retry logic
     } else {
       console.info(`Manager ID set after waiting: ${connection.manager_id}`);
     }
@@ -642,6 +642,11 @@ export async function connectToServer(config) {
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
     long_message_chunk_size: config.long_message_chunk_size,
+    enable_http_transmission: config.enable_http_transmission,
+    http_transmission_threshold: config.http_transmission_threshold,
+    multipart_threshold: config.multipart_threshold,
+    multipart_size: config.multipart_size,
+    max_parallel_uploads: config.max_parallel_uploads,
   });
   await rpc.waitFor("services_registered", config.method_timeout || 120);
   const wm = await rpc.get_manager_service({

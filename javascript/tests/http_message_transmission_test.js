@@ -46,6 +46,11 @@ describe("HTTP Message Transmission", () => {
     httpClient = await connectToServer({
       name: "http-test-client",
       server_url: SERVER_URL,
+      enable_http_transmission: true,
+      http_transmission_threshold: 1024 * 1024, // 1MB
+      multipart_threshold: 10 * 1024 * 1024, // 10MB
+      multipart_size: 6 * 1024 * 1024, // 6MB
+      max_parallel_uploads: 5,
     });
     
     // Wait for S3 service to be available

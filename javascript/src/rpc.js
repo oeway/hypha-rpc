@@ -529,10 +529,11 @@ export class RPC extends MessageEmitter {
 
   _create_message(key, heartbeat, overwrite, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
 
     if (!this._object_store["message_cache"]) {
@@ -543,30 +544,33 @@ export class RPC extends MessageEmitter {
         `Message with the same key (${key}) already exists in the cache store, please use overwrite=true or remove it first.`,
       );
     }
-    this._object_store["message_cache"][key] = [];
+    this._object_store["message_cache"][key] = {};
   }
 
   _append_message(key, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
       throw new Error(`Message with key ${key} does not exists.`);
     }
     assert(data instanceof ArrayBufferView);
-    cache[key].push(data);
+    const index = Object.keys(cache[key]).length;
+    cache[key][index] = data;
   }
 
   _set_message(key, index, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
@@ -586,17 +590,21 @@ export class RPC extends MessageEmitter {
 
   _process_message(key, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
     const cache = this._object_store["message_cache"];
     assert(!!context, "Context is required");
     if (!cache[key]) {
       throw new Error(`Message with key ${key} does not exists.`);
     }
-    cache[key] = concatArrayBuffers(cache[key]);
+    // Convert dictionary to sorted array before concatenating
+    const sortedIndices = Object.keys(cache[key]).map(Number).sort((a, b) => a - b);
+    const buffers = sortedIndices.map(index => cache[key][index]);
+    cache[key] = concatArrayBuffers(buffers);
     // console.debug(`Processing message ${key} (bytes=${cache[key].byteLength})`);
     let unpacker = decodeMulti(cache[key]);
     const { done, value } = unpacker.next();

@@ -91,44 +91,94 @@ async function waitForS3Service(host = '127.0.0.1', port = 9394, timeout = 60, i
 }
 
 /**
- * Check if S3 service is available via proper RPC connection
+ * Check if S3 service is available via HTTP endpoint check (safer than RPC)
  * @param {string} host
  * @param {number} port
  * @returns {Promise<boolean>}
  */
 async function checkS3Service(host, port) {
   try {
-    // Import the connectToServer function dynamically
-    const { connectToServer } = await import('./src/websocket-client.js');
-    
-    let client = null;
-    try {
-      // Connect with same parameters as tests
-      client = await connectToServer({
-        name: "s3-availability-check",
-        server_url: `http://${host}:${port}`,
-        timeout: 30
-      });
-      
-      // Try to get the S3 service
-      await client.getService("public/s3-storage", { timeout: 30 });
-      
-      // If we got here, S3 service is available
-      return true;
-    } catch (error) {
-      // S3 service not available yet
-      console.log(`⚠️ S3 service check: ${error.message}`);
+    // First check if MinIO is responding on its port
+    const minioHealthy = await checkMinioHealth(host, 9007);
+    if (!minioHealthy) {
+      console.log(`⚠️ MinIO server not responding on port 9007`);
       return false;
-    } finally {
-      if (client) {
-        await client.disconnect();
-      }
     }
+    
+    // Then check if Hypha server has S3 service registered
+    const s3ServiceAvailable = await checkHyphaS3Service(host, port);
+    return s3ServiceAvailable;
   } catch (error) {
-    // Import or connection failed
-    console.log(`⚠️ S3 connection failed: ${error.message}`);
+    console.log(`⚠️ S3 service check failed: ${error.message}`);
     return false;
   }
+}
+
+/**
+ * Check if MinIO server is responding
+ * @param {string} host
+ * @param {number} minioPort
+ * @returns {Promise<boolean>}
+ */
+function checkMinioHealth(host, minioPort) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://${host}:${minioPort}/minio/health/live`, (res) => {
+      resolve(res.statusCode === 200);
+    });
+
+    req.on('error', () => {
+      resolve(false);
+    });
+
+    req.setTimeout(3000, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Check if Hypha server has S3 service available via services endpoint
+ * @param {string} host
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
+function checkHyphaS3Service(host, port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://${host}:${port}/public/services`, (res) => {
+      if (res.statusCode !== 200) {
+        resolve(false);
+        return;
+      }
+      
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          const services = JSON.parse(data);
+          // Check if S3 storage service is available
+          const hasS3Service = services.some(service => 
+            service.id && service.id.includes('s3-storage')
+          );
+          resolve(hasS3Service);
+        } catch (error) {
+          resolve(false);
+        }
+      });
+    });
+
+    req.on('error', () => {
+      resolve(false);
+    });
+
+    req.setTimeout(5000, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
 }
 
 /**
@@ -155,15 +205,16 @@ if (require.main === module) {
       // Try to check S3 availability but don't fail if it's not ready
       try {
         console.log('⚠️ Checking S3 service availability (this may take a moment)...');
-        const s3Ready = await waitForS3Service(host, port, 120)
+        const s3Ready = await waitForS3Service(host, port, 30); // Reduced timeout
         
         if (s3Ready) {
           console.log('✅ S3 service is also ready!');
         } else {
-          console.log('⚠️ S3 service not ready yet, but proceeding with tests (HTTP transmission tests may fail)');
+          console.log('⚠️ S3 service not ready yet, but proceeding with tests (some tests may fail)');
         }
       } catch (error) {
-        console.log('⚠️ S3 service check failed, but proceeding with tests (HTTP transmission tests may fail)');
+        console.log('⚠️ S3 service check failed, but proceeding with tests (some tests may fail)');
+        console.log(`   Error details: ${error.message}`);
       }
       
       console.log('🚀 Tests can now run!');

@@ -366,6 +366,12 @@ class MessageEmitter:
 
     def _fire(self, event, data=None):
         """Fire an event handler."""
+        # Ensure event is always a string to prevent dictionary key corruption
+        if not isinstance(event, str):
+            if self._logger:
+                self._logger.warning(f"Converting non-string event to string: {type(event)} = {repr(event)}")
+            event = str(event)
+            
         if event in self._event_handlers:
             for handler in self._event_handlers[event]:
                 try:
