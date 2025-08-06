@@ -660,24 +660,20 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
-                # Wait for manager_id to be set during reconnection
+                # Extract manager_id from connection_info if available
                 if not self._silent:
                     # Only try to register services if we have connection info or manager_id
                     if connection_info:
                         logger.info(f"Connection info received in on_connected: {connection_info}")
+                        # Update the connection's manager_id from connection_info if available
+                        if connection_info.get("manager_id") and not self._connection.manager_id:
+                            self._connection.manager_id = connection_info.get("manager_id")
                     
-                    # Always wait sufficient time for manager_id to be set
-                    # This handles cases where the server might be slow to respond or HTTP transmission is being initialized
-                    max_wait_time = 10  # Always wait up to 10 seconds for manager_id
-                    wait_iterations = max_wait_time * 10  # Check every 100ms
-                    
-                    for i in range(wait_iterations):
-                        if self._connection.manager_id:
-                            break
-                        await asyncio.sleep(0.1)
-                    
-                    # Log the current state for debugging
-                    logger.debug(f"After waiting {i * 0.1:.1f}s: manager_id={self._connection.manager_id}, connection_info={connection_info}")
+                    # Check if we have a manager_id (either from connection_info or already set)
+                    if self._connection.manager_id:
+                        logger.debug(f"Manager ID available: {self._connection.manager_id}")
+                    else:
+                        logger.warning("Manager ID not available in connection info")
                     
                     if self._connection.manager_id:
                         logger.info("Connection established, reporting services...")

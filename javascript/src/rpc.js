@@ -404,83 +404,100 @@ export class RPC extends MessageEmitter {
       connection.on_message(this._on_message.bind(this));
       this._connection = connection;
       const onConnected = async (connectionInfo) => {
-        // Re-initialize HTTP message transmission on reconnection
-        if (this._enable_http_transmission) {
-          this._http_message_transmission_available = false;
-          this._s3controller = null;
-          try {
-            await this._initialize_http_message_transmission();
-          } catch (error) {
-            console.debug("Failed to initialize HTTP message transmission on reconnection:", error.message);
+        // Extract manager_id from connectionInfo if available
+        if (!this._silent) {
+          // Only try to register services if we have connection info or manager_id
+          if (connectionInfo) {
+            console.info(`Connection info received in onConnected:`, connectionInfo);
+            // Update the connection's manager_id from connectionInfo if available
+            if (connectionInfo.manager_id && !this._connection.manager_id) {
+              this._connection.manager_id = connectionInfo.manager_id;
+            }
           }
-        }
-        
-        // Check if manager_id is available before attempting to register services
-        if (!this._silent && this._connection.manager_id) {
-          console.debug("Connection established, reporting services...");
-          try {
-            // Retry getting manager service with exponential backoff
-            const manager = await this._get_manager_with_retry();
-            const services = Object.values(this._services);
-            const servicesCount = services.length;
-            let registeredCount = 0;
-            const failedServices = [];
+          
+          // Check if we have a manager_id (either from connectionInfo or already set)
+          if (this._connection.manager_id) {
+            console.debug(`Manager ID available: ${this._connection.manager_id}`);
+          } else {
+            console.warn(`Manager ID not available in connection info`);
+          }
+          
+          if (this._connection.manager_id) {
+            console.info("Connection established, reporting services...");
+            try {
+              // Retry getting manager service with exponential backoff
+              const manager = await this._get_manager_with_retry();
+              const services = Object.values(this._services);
+              const servicesCount = services.length;
+              let registeredCount = 0;
+              const failedServices = [];
 
-            for (let service of services) {
-              try {
-                const serviceInfo = this._extract_service_info(service);
-                await manager.registerService(serviceInfo);
-                registeredCount++;
-                console.debug(
-                  `Successfully registered service: ${service.id || "unknown"}`,
+              for (let service of services) {
+                try {
+                  const serviceInfo = this._extract_service_info(service);
+                  await manager.registerService(serviceInfo);
+                  registeredCount++;
+                  console.debug(
+                    `Successfully registered service: ${service.id || "unknown"}`,
+                  );
+                } catch (serviceError) {
+                  failedServices.push(service.id || "unknown");
+                  console.error(
+                    `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
+                  );
+                }
+              }
+
+              if (registeredCount === servicesCount) {
+                console.info(
+                  `Successfully registered all ${registeredCount} services with the server`,
                 );
-              } catch (serviceError) {
-                failedServices.push(service.id || "unknown");
-                console.error(
-                  `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
+              } else {
+                console.warn(
+                  `Only registered ${registeredCount} out of ${servicesCount} services with the server. Failed services: ${failedServices.join(", ")}`,
                 );
               }
-            }
 
-            if (registeredCount === servicesCount) {
-              console.info(
-                `Successfully registered all ${registeredCount} services with the server`,
+              // Fire event with registration status
+              this._fire("services_registered", {
+                total: servicesCount,
+                registered: registeredCount,
+                failed: failedServices,
+              });
+              
+              // Initialize HTTP message transmission AFTER services are registered
+              // This ensures the manager service is fully available
+              if (this._enable_http_transmission) {
+                this._http_message_transmission_available = false;
+                this._s3controller = null;
+                try {
+                  await this._initialize_http_message_transmission();
+                } catch (error) {
+                  console.debug("Failed to initialize HTTP message transmission:", error.message);
+                }
+              }
+              
+            } catch (managerError) {
+              console.error(
+                `Failed to get manager service for registering services: ${managerError}`,
               );
-            } else {
-              console.warn(
-                `Only registered ${registeredCount} out of ${servicesCount} services with the server. Failed services: ${failedServices.join(", ")}`,
-              );
+              // Fire event with error status
+              this._fire("services_registration_failed", {
+                error: managerError.toString(),
+                total_services: Object.keys(this._services).length,
+              });
             }
-
-            // Fire event with registration status
-            this._fire("services_registered", {
-              total: servicesCount,
-              registered: registeredCount,
-              failed: failedServices,
-            });
-          } catch (managerError) {
-            console.error(
-              `Failed to get manager service for registering services: ${managerError}`,
-            );
-            // Fire event with error status
-            this._fire("services_registration_failed", {
-              error: managerError.toString(),
-              total_services: Object.keys(this._services).length,
-            });
+          } else {
+            console.warn("Manager ID not available after reconnection, skipping service registration");
           }
-        } else if (!this._silent && !this._connection.manager_id) {
-          console.warn("Manager ID not available after reconnection, skipping service registration");
         } else {
-          // console.debug("Connection established", connectionInfo);
+          console.info("Connection established:", connectionInfo);
         }
+        
         if (connectionInfo) {
           if (connectionInfo.public_base_url) {
             this._server_base_url = connectionInfo.public_base_url;
           }
-          
-          // Initialize HTTP message transmission after services are ready
-          this._initialize_http_message_transmission_when_ready();
-          
           this._fire("connected", connectionInfo);
         }
       };

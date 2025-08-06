@@ -272,21 +272,12 @@ class WebsocketRPCConnection:
                         self._token_refresh_interval = (
                             self.connection_info["reconnection_token_life_time"] / 1.5
                         )
-                # Preserve existing manager_id if not provided in connection_info
-                new_manager_id = self.connection_info.get("manager_id", None)
-                if new_manager_id:
-                    self.manager_id = new_manager_id
-                elif not self.manager_id:
-                    # Only warn if we don't have any manager_id
-                    logger.warning("No manager_id in connection_info and no existing manager_id")
+                # Manager ID must always be present in connection_info
+                assert "manager_id" in self.connection_info, f"manager_id missing in connection_info: {self.connection_info}"
+                self.manager_id = self.connection_info["manager_id"]
                 logger.info(
                     f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
                 )
-                # Debug logging for manager_id
-                if not self.manager_id:
-                    logger.warning(f"Manager ID not set in connection_info: {self.connection_info}")
-                else:
-                    logger.debug(f"Manager ID set successfully: {self.manager_id}")
                 if "announcement" in self.connection_info:
                     print(self.connection_info["announcement"])
             elif first_message.get("type") == "reconnection_token":
@@ -299,13 +290,9 @@ class WebsocketRPCConnection:
                 second_message = json.loads(second_message)
                 if second_message.get("type") == "connection_info":
                     self.connection_info = second_message
-                    # Preserve existing manager_id if not provided in connection_info
-                    new_manager_id = self.connection_info.get("manager_id", None)
-                    if new_manager_id:
-                        self.manager_id = new_manager_id
-                    elif not self.manager_id:
-                        # Only warn if we don't have any manager_id
-                        logger.warning("No manager_id in connection_info and no existing manager_id after reconnection_token")
+                    # Manager ID must always be present in connection_info
+                    assert "manager_id" in self.connection_info, f"manager_id missing in connection_info after reconnection_token: {self.connection_info}"
+                    self.manager_id = self.connection_info["manager_id"]
                     logger.info(
                         f"Successfully connected after reconnection token, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
                     )
@@ -882,17 +869,8 @@ async def _connect_to_server(config):
         " This issue is most likely due to an outdated Hypha server version. "
         "Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version."
     )
-    await asyncio.sleep(0.1)
-    # Add explicit wait for manager_id to be set
-    if not connection.manager_id:
-        logger.warning("Manager ID not set immediately, waiting...")
-        for _ in range(10):  # Try for up to 1 second
-            await asyncio.sleep(0.1)
-            if connection.manager_id:
-                logger.info(f"Manager ID set after waiting: {connection.manager_id}")
-                break
-        else:
-            logger.error("Manager ID still not set after waiting")
+    # Manager ID must be set from connection_info
+    assert connection.manager_id, "Manager ID must be available after connection is established"
 
     if config.get("workspace") and connection_info["workspace"] != config["workspace"]:
         raise Exception(
