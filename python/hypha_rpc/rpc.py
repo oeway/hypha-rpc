@@ -676,8 +676,10 @@ class RPC(MessageEmitter):
                     # Always register services since manager_id is guaranteed to be present
                     logger.info("Connection established, reporting services...")
                     try:
-                        # Retry getting manager service with exponential backoff
-                        manager = await self.get_manager_service()
+                        # Get manager service with proper config
+                        manager = await self.get_manager_service(
+                            {"timeout": 20, "case_conversion": "snake"}
+                        )
                         services_count = len(self._services)
                         registered_count = 0
                         failed_services = []
@@ -1306,12 +1308,22 @@ class RPC(MessageEmitter):
         config = config or {}
         assert self._connection.manager_id, "Manager id is not set"
 
-        # Since the server now guarantees manager_id is available,
-        # we don't need retry logic anymore
-        svc = await self.get_remote_service(
-            f"*/{self._connection.manager_id}:default", config
-        )
-        return svc
+        # After server restart, the manager service may need a moment to become available
+        # Use minimal retry logic only for this specific case
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                svc = await self.get_remote_service(
+                    f"*/{self._connection.manager_id}:default", config
+                )
+                return svc
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    # Only retry for service not found errors
+                    if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                        await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                        continue
+                raise
 
     def get_all_local_services(self):
         """Get all the local services."""
