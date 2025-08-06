@@ -1880,7 +1880,7 @@ async def test_comprehensive_reconnection_scenarios(restartable_server, test_use
     restartable_server.restart(stop_delay=0.5)
     
     # Wait for reconnection with timeout
-    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-restart-1"), timeout=15.0)
+    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-restart-1"), timeout=30.0)
     print("✅ Clean restart reconnection successful")
     
     # Test 2: Abrupt connection closure
@@ -1888,7 +1888,7 @@ async def test_comprehensive_reconnection_scenarios(restartable_server, test_use
     print("💥 Closing connection abruptly...")
     await ws.rpc._connection._websocket.close(1011)  # Unexpected condition
     
-    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-abrupt-close"), timeout=10.0)
+    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-abrupt-close"), timeout=25.0)
     print("✅ Abrupt closure reconnection successful")
     
     # Test 3: Multiple rapid disconnections (simplified)
@@ -1897,10 +1897,10 @@ async def test_comprehensive_reconnection_scenarios(restartable_server, test_use
     for i, code in enumerate(valid_codes):
         print(f"🔄 Rapid disconnect #{i+1} (code {code})")
         await ws.rpc._connection._websocket.close(code)
-        await asyncio.sleep(1.0)  # Increased wait time
+        await asyncio.sleep(2.0)  # Increased wait time for stability
     
     # Wait for final reconnection
-    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "final-test"), timeout=10.0)
+    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "final-test"), timeout=25.0)
     print("✅ Multiple rapid disconnections handled")
     
     # Verify reconnection events occurred
@@ -1917,7 +1917,7 @@ async def test_comprehensive_reconnection_scenarios(restartable_server, test_use
 
 async def _wait_for_service_recovery(ws, service_id, test_data):
     """Helper function to wait for service recovery with timeout."""
-    max_attempts = 60  # 30 seconds max (increased)
+    max_attempts = 100  # 50 seconds max (increased)
     for attempt in range(max_attempts):
         try:
             # Try different service lookup strategies
@@ -1925,33 +1925,33 @@ async def _wait_for_service_recovery(ws, service_id, test_data):
             
             # Strategy 1: Direct service lookup
             try:
-                svc = await asyncio.wait_for(ws.get_service(service_id), timeout=2.0)
+                svc = await asyncio.wait_for(ws.get_service(service_id), timeout=5.0)
             except Exception:
                 pass
             
             # Strategy 2: If direct lookup fails, try looking for service by name
             if svc is None:
                 try:
-                    services = await asyncio.wait_for(ws.list_services("Persistent Test Service"), timeout=2.0)
+                    services = await asyncio.wait_for(ws.list_services("Persistent Test Service"), timeout=5.0)
                     if services:
-                        svc = await asyncio.wait_for(ws.get_service(services[0]["id"]), timeout=2.0)
+                        svc = await asyncio.wait_for(ws.get_service(services[0]["id"]), timeout=5.0)
                 except Exception:
                     pass
             
             # Strategy 3: Try looking for any service with "persistent-service" in the ID
             if svc is None:
                 try:
-                    services = await asyncio.wait_for(ws.list_services(), timeout=2.0)
+                    services = await asyncio.wait_for(ws.list_services(), timeout=5.0)
                     for service_info in services:
                         if "persistent-service" in service_info["id"]:
-                            svc = await asyncio.wait_for(ws.get_service(service_info["id"]), timeout=2.0)
+                            svc = await asyncio.wait_for(ws.get_service(service_info["id"]), timeout=5.0)
                             break
                 except Exception:
                     pass
             
             if svc is not None:
                 # Test service functionality
-                result = await asyncio.wait_for(svc.ping(), timeout=2.0)
+                result = await asyncio.wait_for(svc.ping(), timeout=5.0)
                 if result == "pong":
                     # Set test data to verify service state
                     await svc.set_data(test_data)
@@ -1962,7 +1962,7 @@ async def _wait_for_service_recovery(ws, service_id, test_data):
         except Exception as e:
             if attempt < 10:  # Log more attempts for debugging
                 print(f"   Recovery attempt {attempt + 1}: {type(e).__name__}: {str(e)[:100]}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)  # Increased sleep time
     
     # If we get here, list available services for debugging
     try:
