@@ -428,8 +428,8 @@ export class RPC extends MessageEmitter {
           // Always register services since manager_id is guaranteed to be present
           console.info("Connection established, reporting services...");
           try {
-            // Retry getting manager service with exponential backoff
-            const manager = await this.get_manager_service();
+            // Get manager service with snake_case for method names
+            const manager = await this.get_manager_service({ case_conversion: "snake" });
             const services = Object.values(this._services);
             const servicesCount = services.length;
             let registeredCount = 0;
@@ -438,7 +438,7 @@ export class RPC extends MessageEmitter {
             for (let service of services) {
               try {
                 const serviceInfo = this._extract_service_info(service);
-                await manager.registerService(serviceInfo);
+                await manager.register_service(serviceInfo);
                 registeredCount++;
                 console.debug(
                   `Successfully registered service: ${service.id || "unknown"}`,
@@ -1276,41 +1276,17 @@ export class RPC extends MessageEmitter {
 
   async get_manager_service(config) {
     config = config || {};
-
-    // Add retry logic
-    const maxRetries = 20;
-    const retryDelay = 500; // 500ms
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      if (!this._connection.manager_id) {
-        if (attempt < maxRetries - 1) {
-          console.warn(
-            `Manager ID not set, retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
-          continue;
-        } else {
-          throw new Error("Manager ID not set after maximum retries");
-        }
-      }
-
-      try {
-        const svc = await this.get_remote_service(
-          `*/${this._connection.manager_id}:default`,
-          config,
-        );
-        return svc;
-      } catch (e) {
-        if (attempt < maxRetries - 1) {
-          console.warn(
-            `Failed to get manager service, retrying in ${retryDelay}ms: ${e.message}`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
-        } else {
-          throw e;
-        }
-      }
-    }
+    
+    // Assert manager_id is set as it's guaranteed by the server
+    assert(this._connection.manager_id, "Manager ID must be set");
+    
+    // Since the server now guarantees manager_id is available,
+    // we don't need retry logic anymore
+    const svc = await this.get_remote_service(
+      `*/${this._connection.manager_id}:default`,
+      config,
+    );
+    return svc;
   }
 
   get_all_local_services() {
@@ -1560,9 +1536,9 @@ export class RPC extends MessageEmitter {
           manager ||
           (await this.get_manager_service({
             timeout: 10,
-            case_conversion: "camel",
+            case_conversion: "snake",
           }));
-        await manager.registerService(serviceInfo);
+        await manager.register_service(serviceInfo);
       } catch (e) {
         throw new Error(`Failed to notify workspace manager: ${e}`);
       }
@@ -1594,9 +1570,9 @@ export class RPC extends MessageEmitter {
     if (notify) {
       const manager = await this.get_manager_service({
         timeout: 10,
-        case_conversion: "camel",
+        case_conversion: "snake",
       });
-      await manager.unregisterService(service_id);
+      await manager.unregister_service(service_id);
     }
     delete this._services[service_id];
   }
