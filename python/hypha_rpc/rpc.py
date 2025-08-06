@@ -748,7 +748,13 @@ class RPC(MessageEmitter):
                     self._fire("connected", connection_info)
 
             connection.on_connected(on_connected)
-            task = self.loop.create_task(on_connected(None))
+            # Call on_connected with the connection info, matching JavaScript implementation
+            # For WebSocket connections, connection_info is set after open()
+            # For other connections (like RedisRPCConnection), we pass None
+            if hasattr(connection, 'connection_info'):
+                task = self.loop.create_task(on_connected(connection.connection_info))
+            else:
+                task = self.loop.create_task(on_connected(None))
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
         else:

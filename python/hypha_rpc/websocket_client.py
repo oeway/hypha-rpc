@@ -456,9 +456,7 @@ class WebsocketRPCConnection:
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
                                 )
-                                # Emit reconnection success event
-                                if self._handle_connected:
-                                    await self._handle_connected(connection_info)
+                                # Don't call handle_connected again - already called in open()
                                 break
                             except NotImplementedError as e:
                                 logger.error(
