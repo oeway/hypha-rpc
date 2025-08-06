@@ -660,15 +660,6 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
-                # Re-initialize HTTP message transmission on reconnection
-                if self._enable_http_transmission:
-                    self._http_message_transmission_available = False
-                    self._s3controller = None
-                    try:
-                        await self._initialize_http_message_transmission()
-                    except Exception as e:
-                        logger.debug(f"Failed to initialize HTTP message transmission on reconnection: {e}")
-                
                 # Wait for manager_id to be set during reconnection
                 if not self._silent:
                     # Only try to register services if we have connection info or manager_id
@@ -729,6 +720,17 @@ class RPC(MessageEmitter):
                                     "failed": failed_services,
                                 },
                             )
+                            
+                            # Initialize HTTP message transmission AFTER services are registered
+                            # This ensures the manager service is fully available
+                            if self._enable_http_transmission:
+                                self._http_message_transmission_available = False
+                                self._s3controller = None
+                                try:
+                                    await self._initialize_http_message_transmission()
+                                except Exception as e:
+                                    logger.debug(f"Failed to initialize HTTP message transmission: {e}")
+                                    
                         except Exception as manager_error:
                             logger.error(
                                 f"Failed to get manager service for registering services: {manager_error}"
@@ -745,6 +747,7 @@ class RPC(MessageEmitter):
                         logger.warning("Manager ID not available after reconnection, skipping service registration")
                 else:
                     logger.info("Connection established: %s", connection_info)
+                    
                 if connection_info:
                     if connection_info.get("public_base_url"):
                         self._server_base_url = connection_info.get("public_base_url")

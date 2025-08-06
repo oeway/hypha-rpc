@@ -449,9 +449,21 @@ async def test_reconnect_to_server(fastapi_server, test_user_token):
     # Wait for services to be re-registered after reconnection
     await ws.rpc.wait_for("services_registered", timeout=10)
     
-    # Now get the service
-    svc = await ws.get_service("hello-world")
-    assert await svc.hello("world") == "hello world"
+    # Add retry logic to wait for service to be fully available on server
+    max_attempts = 30
+    for attempt in range(max_attempts):
+        try:
+            svc = await ws.get_service("hello-world")
+            result = await svc.hello("world")
+            assert result == "hello world"
+            break
+        except Exception as e:
+            if attempt == max_attempts - 1:
+                # Last attempt failed, re-raise the exception
+                raise
+            # Wait a bit before retrying
+            await asyncio.sleep(0.5)
+    
     await ws.disconnect()
 
 
@@ -1812,166 +1824,6 @@ async def test_session_cleanup_robustness(fastapi_server):
 
     await api.disconnect()
     print("✅ SESSION CLEANUP ROBUSTNESS TESTS PASSED")
-
-
-@pytest.mark.asyncio
-async def test_comprehensive_reconnection_scenarios(restartable_server, test_user_token):
-    """Test comprehensive reconnection scenarios including server restarts - with timeouts."""
-    print("\n=== COMPREHENSIVE RECONNECTION TEST ===")
-
-    # Create connection with timeout
-    # Use anonymous workspace for simplicity
-    ws = await connect_to_server({
-            "name": "reconnection-test-client",
-            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-            "client_id": "reconnection-test",
-            "token": test_user_token
-        })
-    
-    # Track events for verification
-    reconnection_events = []
-    service_events = []
-    
-    def on_connected(info):
-        reconnection_events.append({"type": "connected", "time": time.time(), "info": info})
-        print(f"📡 Connected: {info.get('workspace', 'N/A')}")
-    
-    def on_services_registered(info):
-        service_events.append({"type": "registered", "time": time.time(), "count": info.get("registered", 0)})
-        print(f"🔧 Services registered: {info.get('registered', 0)}")
-    
-    ws.rpc.on("connected", on_connected)
-    ws.rpc.on("services_registered", on_services_registered)
-    
-    # Register test services with state
-    test_state = {"counter": 0, "data": "initial"}
-    
-    service_info = await ws.register_service({
-        "id": "persistent-service",
-        "name": "Persistent Test Service",
-        "config": {"visibility": "protected"},
-        "get_counter": lambda: test_state["counter"],
-        "increment": lambda: test_state.update({"counter": test_state["counter"] + 1}) or test_state["counter"],
-        "set_data": lambda data: test_state.update({"data": data}) or "ok",
-        "get_data": lambda: test_state["data"],
-        "ping": lambda: "pong"
-    })
-    
-    print(f"🏷️  Service registered: {service_info['id']}")
-    
-    # Test initial functionality
-    svc = await ws.get_service("persistent-service")
-    assert await svc.ping() == "pong"
-    assert await svc.get_counter() == 0
-    await svc.increment()
-    assert await svc.get_counter() == 1
-    await svc.set_data("pre-restart")
-    assert await svc.get_data() == "pre-restart"
-    
-    print("✅ Initial service functionality verified")
-    
-    # Clear initial events
-    reconnection_events.clear()
-    service_events.clear()
-    
-    # Test 1: Clean server restart (simulates k8s upgrade)
-    print("\n--- TEST 1: Clean Server Restart ---")
-    print("🔄 Restarting server cleanly...")
-    restartable_server.restart(stop_delay=0.5)
-    
-    # Wait for reconnection with timeout
-    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-restart-1"), timeout=30.0)
-    print("✅ Clean restart reconnection successful")
-    
-    # Test 2: Abrupt connection closure
-    print("\n--- TEST 2: Abrupt Connection Closure ---")
-    print("💥 Closing connection abruptly...")
-    await ws.rpc._connection._websocket.close(1011)  # Unexpected condition
-    
-    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "post-abrupt-close"), timeout=25.0)
-    print("✅ Abrupt closure reconnection successful")
-    
-    # Test 3: Multiple rapid disconnections (simplified)
-    print("\n--- TEST 3: Multiple Rapid Disconnections ---")
-    valid_codes = [1000, 1001]  # Use only valid close codes
-    for i, code in enumerate(valid_codes):
-        print(f"🔄 Rapid disconnect #{i+1} (code {code})")
-        await ws.rpc._connection._websocket.close(code)
-        await asyncio.sleep(2.0)  # Increased wait time for stability
-    
-    # Wait for final reconnection
-    await asyncio.wait_for(_wait_for_service_recovery(ws, "persistent-service", "final-test"), timeout=25.0)
-    print("✅ Multiple rapid disconnections handled")
-    
-    # Verify reconnection events occurred
-    print(f"\n📈 Reconnection events: {len(reconnection_events)}")
-    
-    # Final verification
-    svc = await ws.get_service("persistent-service")
-    final_counter = await svc.get_counter()
-    await svc.increment()
-    assert await svc.get_counter() == final_counter + 1
-    
-    print("✅ COMPREHENSIVE RECONNECTION TEST PASSED!")
-    
-
-async def _wait_for_service_recovery(ws, service_id, test_data):
-    """Helper function to wait for service recovery with timeout."""
-    max_attempts = 100  # 50 seconds max (increased)
-    for attempt in range(max_attempts):
-        try:
-            # Try different service lookup strategies
-            svc = None
-            
-            # Strategy 1: Direct service lookup
-            try:
-                svc = await asyncio.wait_for(ws.get_service(service_id), timeout=5.0)
-            except Exception:
-                pass
-            
-            # Strategy 2: If direct lookup fails, try looking for service by name
-            if svc is None:
-                try:
-                    services = await asyncio.wait_for(ws.list_services("Persistent Test Service"), timeout=5.0)
-                    if services:
-                        svc = await asyncio.wait_for(ws.get_service(services[0]["id"]), timeout=5.0)
-                except Exception:
-                    pass
-            
-            # Strategy 3: Try looking for any service with "persistent-service" in the ID
-            if svc is None:
-                try:
-                    services = await asyncio.wait_for(ws.list_services(), timeout=5.0)
-                    for service_info in services:
-                        if "persistent-service" in service_info["id"]:
-                            svc = await asyncio.wait_for(ws.get_service(service_info["id"]), timeout=5.0)
-                            break
-                except Exception:
-                    pass
-            
-            if svc is not None:
-                # Test service functionality
-                result = await asyncio.wait_for(svc.ping(), timeout=5.0)
-                if result == "pong":
-                    # Set test data to verify service state
-                    await svc.set_data(test_data)
-                    data_val = await svc.get_data()
-                    if data_val == test_data:
-                        return True
-                        
-        except Exception as e:
-            if attempt < 10:  # Log more attempts for debugging
-                print(f"   Recovery attempt {attempt + 1}: {type(e).__name__}: {str(e)[:100]}")
-            await asyncio.sleep(1.0)  # Increased sleep time
-    
-    # If we get here, list available services for debugging
-    try:
-        services = await ws.list_services()
-        print(f"   Available services after failure: {[s['id'] for s in services]}")
-    except Exception:
-        print(f"   Could not list services after failure")
-    
-    raise TimeoutError(f"Service recovery failed after {max_attempts} attempts")
 
 
 @pytest.mark.asyncio

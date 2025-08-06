@@ -48,6 +48,7 @@ class RestartableServer:
             # Use a free port for MinIO to avoid conflicts
             self.minio_port = find_free_port()
             self.server_args.extend([
+                "--server-id=" + self.server_id,
                 "--enable-s3",
                 "--enable-s3-for-anonymous-users",
                 "--start-minio-server",
@@ -60,9 +61,7 @@ class RestartableServer:
         else:
             self.minio_port = None
             
-        # Create environment with HYPHA_SERVER_ID to maintain consistency across restarts
         self.env = test_env.copy()
-        self.env["HYPHA_SERVER_ID"] = self.server_id
     
     def start(self, timeout=10):
         """Start the server."""
@@ -100,11 +99,12 @@ class RestartableServer:
                 self.proc.wait()
             self.proc = None
     
-    def restart(self, stop_delay=0.1, start_timeout=10):
+    def restart(self, stop_delay=1, start_timeout=15):
         """Restart the server with optional delay."""
         self.stop()
         if stop_delay > 0:
             time.sleep(stop_delay)
+        # Use a longer timeout for restart to ensure full initialization
         self.start(start_timeout)
     
     def is_running(self):

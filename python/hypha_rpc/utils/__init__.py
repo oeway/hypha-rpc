@@ -357,7 +357,7 @@ class MessageEmitter:
             if event in self._event_handlers:
                 self._event_handlers[event] = []
         else:
-            if event in self._event_handlers:
+            if event in self._event_handlers and handler in self._event_handlers[event]:
                 self._event_handlers[event].remove(handler)
 
     def emit(self, msg):
