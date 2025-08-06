@@ -669,78 +669,74 @@ class RPC(MessageEmitter):
                         if connection_info.get("manager_id") and not self._connection.manager_id:
                             self._connection.manager_id = connection_info.get("manager_id")
                     
-                    # Check if we have a manager_id (either from connection_info or already set)
-                    if self._connection.manager_id:
-                        logger.debug(f"Manager ID available: {self._connection.manager_id}")
-                    else:
-                        logger.warning("Manager ID not available in connection info")
+                    # Manager ID must always be available after connection
+                    assert self._connection.manager_id, f"Manager ID must be available after connection, connection_info: {connection_info}"
+                    logger.debug(f"Manager ID available: {self._connection.manager_id}")
                     
-                    if self._connection.manager_id:
-                        logger.info("Connection established, reporting services...")
-                        try:
-                            # Retry getting manager service with exponential backoff
-                            manager = await self._get_manager_with_retry()
-                            services_count = len(self._services)
-                            registered_count = 0
-                            failed_services = []
+                    # Always register services since manager_id is guaranteed to be present
+                    logger.info("Connection established, reporting services...")
+                    try:
+                        # Retry getting manager service with exponential backoff
+                        manager = await self.get_manager_service()
+                        services_count = len(self._services)
+                        registered_count = 0
+                        failed_services = []
 
-                            for service in list(self._services.values()):
-                                try:
-                                    service_info = self._extract_service_info(service)
-                                    await manager.register_service(service_info)
-                                    registered_count += 1
-                                    logger.debug(
-                                        f"Successfully registered service: {service.get('id', 'unknown')}"
-                                    )
-                                except Exception as service_error:
-                                    failed_services.append(service.get("id", "unknown"))
-                                    logger.error(
-                                        f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
-                                    )
-
-                            if registered_count == services_count:
-                                logger.info(
-                                    f"Successfully registered all {registered_count} services with the server"
+                        for service in list(self._services.values()):
+                            try:
+                                service_info = self._extract_service_info(service)
+                                await manager.register_service(service_info)
+                                registered_count += 1
+                                logger.debug(
+                                    f"Successfully registered service: {service.get('id', 'unknown')}"
                                 )
-                            else:
-                                logger.warning(
-                                    f"Only registered {registered_count} out of {services_count} services with the server. Failed services: {failed_services}"
+                            except Exception as service_error:
+                                failed_services.append(service.get("id", "unknown"))
+                                logger.error(
+                                    f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
                                 )
 
-                            # Fire event with registration status
-                            self._fire(
-                                "services_registered",
-                                {
-                                    "total": services_count,
-                                    "registered": registered_count,
-                                    "failed": failed_services,
-                                },
+                        if registered_count == services_count:
+                            logger.info(
+                                f"Successfully registered all {registered_count} services with the server"
                             )
-                            
-                            # Initialize HTTP message transmission AFTER services are registered
-                            # This ensures the manager service is fully available
-                            if self._enable_http_transmission:
-                                self._http_message_transmission_available = False
-                                self._s3controller = None
-                                try:
-                                    await self._initialize_http_message_transmission()
-                                except Exception as e:
-                                    logger.debug(f"Failed to initialize HTTP message transmission: {e}")
-                                    
-                        except Exception as manager_error:
-                            logger.error(
-                                f"Failed to get manager service for registering services: {manager_error}"
+                        else:
+                            logger.warning(
+                                f"Only registered {registered_count} out of {services_count} services with the server. Failed services: {failed_services}"
                             )
-                            # Fire event with error status
-                            self._fire(
-                                "services_registration_failed",
-                                {
-                                    "error": str(manager_error),
-                                    "total_services": len(self._services),
-                                },
-                            )
-                    else:
-                        logger.warning("Manager ID not available after reconnection, skipping service registration")
+
+                        # Fire event with registration status
+                        self._fire(
+                            "services_registered",
+                            {
+                                "total": services_count,
+                                "registered": registered_count,
+                                "failed": failed_services,
+                            },
+                        )
+                        
+                        # Initialize HTTP message transmission AFTER services are registered
+                        # This ensures the manager service is fully available
+                        if self._enable_http_transmission:
+                            self._http_message_transmission_available = False
+                            self._s3controller = None
+                            try:
+                                await self._initialize_http_message_transmission()
+                            except Exception as e:
+                                logger.debug(f"Failed to initialize HTTP message transmission: {e}")
+                                
+                    except Exception as manager_error:
+                        logger.error(
+                            f"Failed to get manager service for registering services: {manager_error}"
+                        )
+                        # Fire event with error status
+                        self._fire(
+                            "services_registration_failed",
+                            {
+                                "error": str(manager_error),
+                                "total_services": len(self._services),
+                            },
+                        )
                 else:
                     logger.info("Connection established: %s", connection_info)
                     
@@ -1305,57 +1301,17 @@ class RPC(MessageEmitter):
         self.close()
         await self._connection.disconnect()
 
-    async def _get_manager_with_retry(self, max_retries=20):
-        """Get manager service with exponential backoff retry."""
-        base_delay = 0.5
-        max_delay = 10.0
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                svc = await self.get_remote_service(
-                    f"*/{self._connection.manager_id}:default",
-                    {"timeout": 20, "case_conversion": "snake"},
-                )
-                return svc
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
-                )
-                if attempt < max_retries - 1:
-                    # Exponential backoff with maximum delay
-                    delay = min(base_delay * (2**attempt), max_delay)
-                    await asyncio.sleep(delay)
-
-        # If we get here, all retries failed
-        raise last_error
-
     async def get_manager_service(self, config=None):
         """Get remote root service."""
         config = config or {}
         assert self._connection.manager_id, "Manager id is not set"
 
-        max_retries = 20
-        retry_delay = 0.5
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                svc = await self.get_remote_service(
-                    f"*/{self._connection.manager_id}:default", config
-                )
-                return svc
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
-                )
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-
-        # If we get here, all retries failed
-        raise last_error
+        # Since the server now guarantees manager_id is available,
+        # we don't need retry logic anymore
+        svc = await self.get_remote_service(
+            f"*/{self._connection.manager_id}:default", config
+        )
+        return svc
 
     def get_all_local_services(self):
         """Get all the local services."""

@@ -395,15 +395,16 @@ export class RPC extends MessageEmitter {
       this.on("http-message", this._handle_http_message.bind(this));
       this.on("error", console.error);
 
-      assert(connection.emit_message && connection.on_message);
+      if (connection) {
+        assert(connection.emit_message && connection.on_message);
       assert(
         connection.manager_id !== undefined,
         "Connection must have manager_id",
       );
-      this._emit_message = connection.emit_message.bind(connection);
-      connection.on_message(this._on_message.bind(this));
-      this._connection = connection;
-      const onConnected = async (connectionInfo) => {
+        this._emit_message = connection.emit_message.bind(connection);
+        connection.on_message(this._on_message.bind(this));
+        this._connection = connection;
+        const onConnected = async (connectionInfo) => {
         // Extract manager_id from connectionInfo if available
         if (!this._silent) {
           // Only try to register services if we have connection info or manager_id
@@ -415,69 +416,66 @@ export class RPC extends MessageEmitter {
             }
           }
           
-          // Check if we have a manager_id (either from connectionInfo or already set)
-          if (this._connection.manager_id) {
-            console.debug(`Manager ID available: ${this._connection.manager_id}`);
-          } else {
-            console.warn(`Manager ID not available in connection info`);
-          }
+          // Manager ID must always be available after connection
+          assert(this._connection.manager_id, `Manager ID must be available after connection, connection_info: ${JSON.stringify(connectionInfo)}`);
+          console.debug(`Manager ID available: ${this._connection.manager_id}`);
           
-          if (this._connection.manager_id) {
-            console.info("Connection established, reporting services...");
-            try {
-              // Retry getting manager service with exponential backoff
-              const manager = await this._get_manager_with_retry();
-              const services = Object.values(this._services);
-              const servicesCount = services.length;
-              let registeredCount = 0;
-              const failedServices = [];
+          // Always register services since manager_id is guaranteed to be present
+          console.info("Connection established, reporting services...");
+          try {
+            // Retry getting manager service with exponential backoff
+            const manager = await this.get_manager_service();
+            const services = Object.values(this._services);
+            const servicesCount = services.length;
+            let registeredCount = 0;
+            const failedServices = [];
 
-              for (let service of services) {
-                try {
-                  const serviceInfo = this._extract_service_info(service);
-                  await manager.registerService(serviceInfo);
-                  registeredCount++;
-                  console.debug(
-                    `Successfully registered service: ${service.id || "unknown"}`,
-                  );
-                } catch (serviceError) {
-                  failedServices.push(service.id || "unknown");
-                  console.error(
-                    `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
-                  );
-                }
-              }
-
-              if (registeredCount === servicesCount) {
-                console.info(
-                  `Successfully registered all ${registeredCount} services with the server`,
+            for (let service of services) {
+              try {
+                const serviceInfo = this._extract_service_info(service);
+                await manager.registerService(serviceInfo);
+                registeredCount++;
+                console.debug(
+                  `Successfully registered service: ${service.id || "unknown"}`,
                 );
-              } else {
-                console.warn(
-                  `Only registered ${registeredCount} out of ${servicesCount} services with the server. Failed services: ${failedServices.join(", ")}`,
+              } catch (serviceError) {
+                failedServices.push(service.id || "unknown");
+                console.error(
+                  `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
                 );
               }
+            }
 
-              // Fire event with registration status
-              this._fire("services_registered", {
-                total: servicesCount,
-                registered: registeredCount,
-                failed: failedServices,
-              });
-              
-              // Initialize HTTP message transmission AFTER services are registered
-              // This ensures the manager service is fully available
-              if (this._enable_http_transmission) {
-                this._http_message_transmission_available = false;
-                this._s3controller = null;
-                try {
-                  await this._initialize_http_message_transmission();
-                } catch (error) {
-                  console.debug("Failed to initialize HTTP message transmission:", error.message);
-                }
+            if (registeredCount === servicesCount) {
+              console.info(
+                `Successfully registered all ${registeredCount} services with the server`,
+              );
+            } else {
+              console.warn(
+                `Only registered ${registeredCount} out of ${servicesCount} services with the server. Failed services: ${failedServices.join(", ")}`,
+              );
+            }
+
+            // Fire event with registration status
+            this._fire("services_registered", {
+              total: servicesCount,
+              registered: registeredCount,
+              failed: failedServices,
+            });
+            
+            // Initialize HTTP message transmission AFTER services are registered
+            // This ensures the manager service is fully available
+            if (this._enable_http_transmission) {
+              this._http_message_transmission_available = false;
+              this._s3controller = null;
+              try {
+                await this._initialize_http_message_transmission();
+              } catch (error) {
+                console.debug("Failed to initialize HTTP message transmission:", error.message);
               }
-              
-            } catch (managerError) {
+            }
+            
+          } catch (managerError) {
               console.error(
                 `Failed to get manager service for registering services: ${managerError}`,
               );
@@ -490,9 +488,8 @@ export class RPC extends MessageEmitter {
           } else {
             console.warn("Manager ID not available after reconnection, skipping service registration");
           }
-        } else {
-          console.info("Connection established:", connectionInfo);
         }
+        console.info("Connection established:", connectionInfo);
         
         if (connectionInfo) {
           if (connectionInfo.public_base_url) {
@@ -500,14 +497,14 @@ export class RPC extends MessageEmitter {
           }
           this._fire("connected", connectionInfo);
         }
-      };
-      connection.on_connected(onConnected);
-      onConnected();
-    } else {
-      this._emit_message = function () {
-        console.log("No connection to emit message");
-      };
-    }
+        };
+        connection.on_connected(onConnected);
+        onConnected(connection.connection_info);
+      } else {
+        this._emit_message = function () {
+          console.log("No connection to emit message");
+        };
+      }
   }
 
   register_codec(config) {
@@ -1186,35 +1183,6 @@ export class RPC extends MessageEmitter {
   async disconnect() {
     this.close();
     await this._connection.disconnect();
-  }
-
-  async _get_manager_with_retry(maxRetries = 20) {
-    const baseDelay = 500;
-    const maxDelay = 10000;
-    let lastError = null;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        const svc = await this.get_remote_service(
-          `*/${this._connection.manager_id}:default`,
-          { timeout: 20, case_conversion: "camel" },
-        );
-        return svc;
-      } catch (e) {
-        lastError = e;
-        console.warn(
-          `Failed to get manager service (attempt ${attempt + 1}/${maxRetries}): ${e.message}`,
-        );
-        if (attempt < maxRetries - 1) {
-          // Exponential backoff with maximum delay
-          const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
-    }
-
-    // If we get here, all retries failed
-    throw lastError;
   }
 
   async get_manager_service(config) {
