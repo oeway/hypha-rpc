@@ -207,7 +207,7 @@ def place_order_native(
 
 
 @pytest.mark.asyncio
-async def test_schema_function(websocket_server):
+async def test_schema_function(fastapi_server):
     """Test extract schema from functions."""
     place_order_with_schema = schema_function(place_order)
 
@@ -298,7 +298,7 @@ async def test_schema_function(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_schema_service(websocket_server):
+async def test_schema_service(fastapi_server):
     """Test creating schema service."""
     ws = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
 
@@ -353,7 +353,7 @@ async def test_schema_service(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_schema_service_modes(websocket_server):
+async def test_schema_service_modes(fastapi_server):
     """Test creating schema service with different modes."""
     ws = await connect_to_server({"name": "my app", "server_url": WS_SERVER_URL})
 
@@ -428,7 +428,7 @@ async def test_schema_service_modes(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_schema_artibrary_types(websocket_server):
+async def test_schema_artibrary_types(fastapi_server):
     """Test creating schema service with arbitrary types."""
 
     class MyUserInfo:
@@ -464,7 +464,7 @@ async def test_schema_artibrary_types(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_unlisted_visibility(websocket_server):
+async def test_unlisted_visibility(fastapi_server):
     """Test unlisted visibility type - same as public but not discoverable."""
     from hypha_rpc.rpc import _get_schema, _convert_function_to_schema
 
