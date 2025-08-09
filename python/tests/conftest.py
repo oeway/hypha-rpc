@@ -14,6 +14,8 @@ from . import WS_PORT
 
 JWT_SECRET = str(uuid.uuid4())
 os.environ["JWT_SECRET"] = JWT_SECRET
+# Ensure both env vars are set for Hypha's auth module
+os.environ["HYPHA_JWT_SECRET"] = JWT_SECRET
 test_env = os.environ.copy()
 
 
