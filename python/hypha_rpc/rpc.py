@@ -1179,7 +1179,12 @@ class RPC(MessageEmitter):
             
             async def download_and_process():
                 try:
-                    async with httpx.AsyncClient(timeout=60) as client:
+                    # Disable automatic decompression for range requests
+                    # as we're downloading raw byte ranges that shouldn't be decompressed
+                    async with httpx.AsyncClient(
+                        timeout=60,
+                        headers={"Accept-Encoding": "identity"}  # Prevent server from sending compressed content
+                    ) as client:
                         # For large files, use parallel range requests
                         if content_length > 5 * 1024 * 1024:  # 5MB
                             # Use parallel range requests
@@ -1187,7 +1192,10 @@ class RPC(MessageEmitter):
                             chunk_size = content_length // max_requests
                             
                             async def download_range(start, end):
-                                headers = {"Range": f"bytes={start}-{end}"}
+                                headers = {
+                                    "Range": f"bytes={start}-{end}",
+                                    "Accept-Encoding": "identity"  # Ensure no compression for range requests
+                                }
                                 response = await client.get(presigned_url, headers=headers)
                                 response.raise_for_status()
                                 return response.content
@@ -1207,7 +1215,10 @@ class RPC(MessageEmitter):
                             content = b"".join(chunks)
                         else:
                             # Simple download for small files
-                            response = await client.get(presigned_url)
+                            response = await client.get(
+                                presigned_url,
+                                headers={"Accept-Encoding": "identity"}  # Prevent compression issues
+                            )
                             response.raise_for_status()
                             content = response.content
                         
