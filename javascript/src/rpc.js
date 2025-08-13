@@ -1372,9 +1372,6 @@ export class RPC extends MessageEmitter {
 
     // Clean promise lifecycle management - TYPE-BASED, not string-based
     store._promise_manager = this._create_promise_manager();
-    console.debug(
-      `Created PROMISE session ${session_id} (type-based detection)`,
-    );
 
     let encoded = {};
 
