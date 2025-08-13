@@ -985,6 +985,11 @@ class RPC(MessageEmitter):
         # allow access for the same workspace
         if context["ws"] == ws:
             return service
+        
+        # Check if user is from an authorized workspace
+        authorized_workspaces = service["config"].get("authorized_workspaces")
+        if authorized_workspaces and context["ws"] in authorized_workspaces:
+            return service
 
         raise Exception(
             f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}"
@@ -1037,6 +1042,7 @@ class RPC(MessageEmitter):
         require_context=False,
         run_in_executor=False,
         visibility="protected",
+        authorized_workspaces=None,
     ):
         if callable(a_object):
             # mark the method as a remote method that requires context
@@ -1050,6 +1056,7 @@ class RPC(MessageEmitter):
                 "run_in_executor": run_in_executor,
                 "method_id": "services." + object_id,
                 "visibility": visibility,
+                "authorized_workspaces": authorized_workspaces,
             }
         elif isinstance(a_object, (dict, list, tuple)):
             if isinstance(a_object, ObjectProxy):
@@ -1083,6 +1090,7 @@ class RPC(MessageEmitter):
                     require_context=require_context,
                     run_in_executor=run_in_executor,
                     visibility=visibility,
+                    authorized_workspaces=authorized_workspaces,
                 )
 
     def add_service(self, api, overwrite=False):
@@ -1131,12 +1139,26 @@ class RPC(MessageEmitter):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
         assert visibility in ["protected", "public", "unlisted"]
+        
+        # Validate authorized_workspaces
+        authorized_workspaces = api["config"].get("authorized_workspaces")
+        if authorized_workspaces is not None:
+            if visibility != "protected":
+                raise ValueError(
+                    f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'"
+                )
+            if not isinstance(authorized_workspaces, list):
+                raise ValueError("authorized_workspaces must be a list of workspace ids")
+            for ws_id in authorized_workspaces:
+                if not isinstance(ws_id, str):
+                    raise ValueError(f"Each workspace id in authorized_workspaces must be a string, got {type(ws_id)}")
         self._annotate_service_methods(
             api,
             api["id"],
             require_context=require_context,
             run_in_executor=run_in_executor,
             visibility=visibility,
+            authorized_workspaces=authorized_workspaces,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -1952,10 +1974,19 @@ class RPC(MessageEmitter):
                     self._method_annotations[method].get("visibility", "protected")
                     == "protected"
                 ):
-                    if local_workspace != remote_workspace and (
-                        remote_workspace != "*"
-                        or remote_client_id != self._connection.manager_id
+                    # Allow access from same workspace
+                    if local_workspace == remote_workspace:
+                        pass  # Access granted
+                    # Check if remote workspace is in authorized_workspaces list
+                    elif (
+                        self._method_annotations[method].get("authorized_workspaces")
+                        and remote_workspace in self._method_annotations[method]["authorized_workspaces"]
                     ):
+                        pass  # Access granted
+                    # Allow manager access
+                    elif remote_workspace == "*" and remote_client_id == self._connection.manager_id:
+                        pass  # Access granted
+                    else:
                         raise PermissionError(
                             f"Permission denied for invoking protected method {method_name}, "
                             "workspace mismatch: "

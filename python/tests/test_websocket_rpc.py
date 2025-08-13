@@ -2446,3 +2446,140 @@ def test_rpc_thread_safety_fix(websocket_server):
     
     print("\n✅ RPC THREAD SAFETY FIX TEST PASSED!")
     print("✅ The RPC now properly handles calls from any thread context")
+
+
+@pytest.mark.asyncio
+async def test_authorized_workspaces(websocket_server):
+    """Test the authorized_workspaces feature for protected services."""
+    print("\n=== TESTING AUTHORIZED WORKSPACES ===")
+    
+    # Connect a client to the server
+    ws1 = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "test-auth-client"}
+    )
+    workspace = ws1.config.workspace
+    
+    # Test 1: Validate that authorized_workspaces requires protected visibility
+    print("1. Testing validation: authorized_workspaces with non-protected visibility...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service",
+            "config": {
+                "visibility": "public",
+                "authorized_workspaces": ["some-workspace"]  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "authorized_workspaces can only be set when visibility is 'protected'" in str(e)
+        print(f"   ✅ Validation works: {e}")
+    
+    # Test 2: Test with unlisted visibility should also fail
+    print("2. Testing validation: authorized_workspaces with unlisted visibility...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service-2",
+            "config": {
+                "visibility": "unlisted",
+                "authorized_workspaces": ["some-workspace"]  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "authorized_workspaces can only be set when visibility is 'protected'" in str(e)
+        print(f"   ✅ Validation works for unlisted: {e}")
+    
+    # Test 3: Register service with authorized_workspaces (valid case)
+    print("3. Testing service with authorized_workspaces (valid)...")
+    await ws1.register_service({
+        "id": "authorized-service",
+        "name": "Authorized Test Service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": ["workspace-a", "workspace-b"]  # Allow these workspaces
+        },
+        "test_method": lambda x: f"authorized: {x}"
+    })
+    
+    # Access from same workspace should work
+    svc = await ws1.get_service(f"{workspace}/test-auth-client:authorized-service")
+    result = await svc.test_method("test")
+    assert result == "authorized: test"
+    print("   ✅ Service with authorized_workspaces registered successfully")
+    
+    # Test 4: Validate authorized_workspaces must be a list
+    print("4. Testing validation: authorized_workspaces must be a list...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service-3",
+            "config": {
+                "visibility": "protected",
+                "authorized_workspaces": "not-a-list"  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "authorized_workspaces must be a list" in str(e)
+        print(f"   ✅ List validation works: {e}")
+    
+    # Test 5: Validate workspace ids must be strings
+    print("5. Testing validation: workspace ids must be strings...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service-4",
+            "config": {
+                "visibility": "protected",
+                "authorized_workspaces": ["valid-ws", 123, "another-ws"]  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "must be a string" in str(e)
+        print(f"   ✅ String validation works: {e}")
+    
+    # Test 6: Empty authorized_workspaces list is valid
+    print("6. Testing empty authorized_workspaces list...")
+    await ws1.register_service({
+        "id": "empty-auth-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": []  # Empty list is valid
+        },
+        "test": lambda: "empty-auth"
+    })
+    
+    svc_empty = await ws1.get_service(f"{workspace}/test-auth-client:empty-auth-service")
+    result = await svc_empty.test()
+    assert result == "empty-auth"
+    print("   ✅ Empty authorized_workspaces list works")
+    
+    # Test 7: Method calls are also protected by authorized_workspaces
+    print("7. Testing that method calls respect authorized_workspaces...")
+    # Register a service with methods that should be protected
+    await ws1.register_service({
+        "id": "method-test-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": ["fake-authorized-workspace"]  # Non-existent workspace
+        },
+        "protected_method": lambda x: f"protected: {x}",
+        "another_method": lambda: "also protected"
+    })
+    
+    # Can get the service from same workspace
+    svc_method = await ws1.get_service(f"{workspace}/test-auth-client:method-test-service")
+    # Methods should work from same workspace (even though fake-authorized-workspace is listed)
+    result = await svc_method.protected_method("test")
+    assert result == "protected: test"
+    result2 = await svc_method.another_method()
+    assert result2 == "also protected"
+    print("   ✅ Methods work from same workspace despite authorized_workspaces")
+    
+    # Cleanup
+    await ws1.disconnect()
+    
+    print("✅ AUTHORIZED WORKSPACES VALIDATION TEST PASSED!")
