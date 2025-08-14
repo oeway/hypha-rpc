@@ -1421,4 +1421,245 @@ describe("RPC", async () => {
 
     console.log("✅ All robustness tests passed!");
   });
+  
+  it("should test authorized_workspaces for protected services", async () => {
+    console.log("\n=== TESTING AUTHORIZED WORKSPACES ===");
+    
+    // Connect first client (will be service provider)
+    const ws1 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-auth-client"
+    });
+    const workspace1 = ws1.config.workspace;
+    
+    // Connect second client in a different workspace (authorized)
+    const ws2 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "authorized-client"
+    });
+    const workspace2 = ws2.config.workspace;
+    
+    // Connect third client in another workspace (not authorized)
+    const ws3 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "unauthorized-client"
+    });
+    const workspace3 = ws3.config.workspace;
+    
+    console.log(`Created workspaces: ${workspace1}, ${workspace2}, ${workspace3}`);
+    
+    // Test 1: Validate that authorized_workspaces requires protected visibility
+    console.log("1. Testing validation: authorized_workspaces with non-protected visibility...");
+    try {
+      await ws1.registerService({
+        id: "invalid-service",
+        config: {
+          visibility: "public",
+          authorized_workspaces: ["some-workspace"]  // Should fail
+        },
+        test: () => "test"
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include("authorized_workspaces can only be set when visibility is 'protected'");
+      console.log(`   ✅ Validation works: ${e.message}`);
+    }
+    
+    // Test 2: Test with unlisted visibility should also fail
+    console.log("2. Testing validation: authorized_workspaces with unlisted visibility...");
+    try {
+      await ws1.registerService({
+        id: "invalid-service-2",
+        config: {
+          visibility: "unlisted",
+          authorized_workspaces: ["some-workspace"]  // Should fail
+        },
+        test: () => "test"
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include("authorized_workspaces can only be set when visibility is 'protected'");
+      console.log(`   ✅ Validation works for unlisted: ${e.message}`);
+    }
+    
+    // Test 3: Register service with authorized_workspaces (valid case)
+    console.log("3. Testing service with authorized_workspaces (valid)...");
+    await ws1.registerService({
+      id: "authorized-service",
+      name: "Authorized Test Service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: [workspace2]  // Only allow workspace2
+      },
+      test_method: (x) => `authorized: ${x}`
+    });
+    
+    // Access from same workspace should work
+    const svc = await ws1.getService(`${workspace1}/test-auth-client:authorized-service`);
+    const result = await svc.test_method("test");
+    expect(result).to.equal("authorized: test");
+    console.log("   ✅ Service accessible from same workspace");
+    
+    // Test 4: Validate authorized_workspaces must be an array
+    console.log("4. Testing validation: authorized_workspaces must be an array...");
+    try {
+      await ws1.registerService({
+        id: "invalid-service-3",
+        config: {
+          visibility: "protected",
+          authorized_workspaces: "not-an-array"  // Should fail
+        },
+        test: () => "test"
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include("authorized_workspaces must be an array");
+      console.log(`   ✅ Array validation works: ${e.message}`);
+    }
+    
+    // Test 5: Validate workspace ids must be strings
+    console.log("5. Testing validation: workspace ids must be strings...");
+    try {
+      await ws1.registerService({
+        id: "invalid-service-4",
+        config: {
+          visibility: "protected",
+          authorized_workspaces: ["valid-ws", 123, "another-ws"]  // Should fail
+        },
+        test: () => "test"
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include("must be a string");
+      console.log(`   ✅ String validation works: ${e.message}`);
+    }
+    
+    // Test 6: Empty authorized_workspaces list is valid
+    console.log("6. Testing empty authorized_workspaces list...");
+    await ws1.registerService({
+      id: "empty-auth-service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: []  // Empty list is valid
+      },
+      test: () => "empty-auth"
+    });
+    
+    const svc_empty = await ws1.getService(`${workspace1}/test-auth-client:empty-auth-service`);
+    const result_empty = await svc_empty.test();
+    expect(result_empty).to.equal("empty-auth");
+    console.log("   ✅ Empty authorized_workspaces list works");
+    
+    // Test 7: Method calls are also protected by authorized_workspaces
+    console.log("7. Testing that method calls respect authorized_workspaces...");
+    // Register a service with methods that should be protected
+    await ws1.registerService({
+      id: "method-test-service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: ["fake-authorized-workspace"]  // Non-existent workspace
+      },
+      protected_method: (x) => `protected: ${x}`,
+      another_method: () => "also protected"
+    });
+    
+    // Can get the service from same workspace
+    const svc_method = await ws1.getService(`${workspace1}/test-auth-client:method-test-service`);
+    // Methods should work from same workspace (even though fake-authorized-workspace is listed)
+    const result_method = await svc_method.protected_method("test");
+    expect(result_method).to.equal("protected: test");
+    const result_method2 = await svc_method.another_method();
+    expect(result_method2).to.equal("also protected");
+    console.log("   ✅ Methods work from same workspace despite authorized_workspaces");
+    
+    // Test 8: Cross-workspace access - authorized workspace should have access
+    console.log("\n8. Testing cross-workspace access (authorized)...");
+    // Try to access the service from workspace2 (which is authorized)
+    try {
+      const svc_from_ws2 = await ws2.getService(`${workspace1}/test-auth-client:authorized-service`);
+      const result = await svc_from_ws2.test_method("from-workspace2");
+      expect(result).to.equal("authorized: from-workspace2");
+      console.log("   ✅ Authorized workspace can access protected service");
+    } catch (e) {
+      console.log(`   ❌ Failed to access from authorized workspace: ${e}`);
+      throw new Error(`Authorized workspace should have access: ${e}`);
+    }
+    
+    // Test 9: Cross-workspace access - unauthorized workspace should be denied
+    console.log("9. Testing cross-workspace access (unauthorized)...");
+    // Try to access the service from workspace3 (which is NOT authorized)
+    try {
+      const svc_from_ws3 = await ws3.getService(`${workspace1}/test-auth-client:authorized-service`);
+      // Try to call the method - this should fail
+      await svc_from_ws3.test_method("from-workspace3");
+      throw new Error("Unauthorized workspace should NOT have access");
+    } catch (e) {
+      const errorMsg = e.message.toLowerCase();
+      expect(errorMsg).to.match(/not authorized|permission|denied/);
+      console.log(`   ✅ Unauthorized workspace correctly denied: ${e.message}`);
+    }
+    
+    // Test 10: Service with no authorized workspaces (empty list) - no external access
+    console.log("10. Testing service with empty authorized_workspaces list...");
+    try {
+      // Try to access empty-auth-service from workspace2
+      const svc_empty_from_ws2 = await ws2.getService(`${workspace1}/test-auth-client:empty-auth-service`);
+      await svc_empty_from_ws2.test();
+      throw new Error("Service with empty authorized_workspaces should deny all external access");
+    } catch (e) {
+      const errorMsg = e.message.toLowerCase();
+      expect(errorMsg).to.match(/not authorized|permission|denied/);
+      console.log(`   ✅ Empty authorized_workspaces correctly denies external access: ${e.message}`);
+    }
+    
+    // Test 11: Update authorized_workspaces dynamically
+    console.log("11. Testing dynamic update of authorized_workspaces...");
+    // Register a new service that initially allows workspace2
+    await ws1.registerService({
+      id: "dynamic-auth-service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: [workspace2]
+      },
+      test: () => "dynamic-test"
+    });
+    
+    // Verify workspace2 can access
+    let svc_dynamic = await ws2.getService(`${workspace1}/test-auth-client:dynamic-auth-service`);
+    let dynamic_result = await svc_dynamic.test();
+    expect(dynamic_result).to.equal("dynamic-test");
+    console.log("   ✅ Initial authorized workspace has access");
+    
+    // Now re-register with workspace3 instead
+    await ws1.registerService({
+      id: "dynamic-auth-service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: [workspace3]  // Changed to workspace3
+      },
+      test: () => "dynamic-test-updated"
+    }, { overwrite: true });
+    
+    // workspace2 should now be denied
+    try {
+      svc_dynamic = await ws2.getService(`${workspace1}/test-auth-client:dynamic-auth-service`);
+      await svc_dynamic.test();
+      throw new Error("Previously authorized workspace should now be denied");
+    } catch (e) {
+      console.log(`   ✅ Previously authorized workspace now denied: ${e.message}`);
+    }
+    
+    // workspace3 should now have access
+    const svc_dynamic_ws3 = await ws3.getService(`${workspace1}/test-auth-client:dynamic-auth-service`);
+    dynamic_result = await svc_dynamic_ws3.test();
+    expect(dynamic_result).to.equal("dynamic-test-updated");
+    console.log("   ✅ Newly authorized workspace has access");
+    
+    // Cleanup
+    await ws1.disconnect();
+    await ws2.disconnect();
+    await ws3.disconnect();
+    
+    console.log("✅ AUTHORIZED WORKSPACES FULL TEST PASSED!");
+  }).timeout(20000);
 });

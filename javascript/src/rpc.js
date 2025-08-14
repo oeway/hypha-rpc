@@ -742,6 +742,12 @@ export class RPC extends MessageEmitter {
     if (context["ws"] === ws) {
       return service;
     }
+    
+    // Check if user is from an authorized workspace
+    const authorized_workspaces = service.config.authorized_workspaces;
+    if (authorized_workspaces && authorized_workspaces.includes(context["ws"])) {
+      return service;
+    }
 
     throw new Error(
       `Permission denied for getting protected service: ${service_id}, workspace mismatch: ${ws} != ${context["ws"]}`,
@@ -802,6 +808,7 @@ export class RPC extends MessageEmitter {
     require_context,
     run_in_executor,
     visibility,
+    authorized_workspaces,
   ) {
     if (typeof aObject === "function") {
       // mark the method as a remote method that requires context
@@ -813,6 +820,7 @@ export class RPC extends MessageEmitter {
         run_in_executor: run_in_executor,
         method_id: "services." + object_id,
         visibility: visibility,
+        authorized_workspaces: authorized_workspaces,
       });
     } else if (aObject instanceof Array || aObject instanceof Object) {
       for (let key of Object.keys(aObject)) {
@@ -844,6 +852,7 @@ export class RPC extends MessageEmitter {
           require_context,
           run_in_executor,
           visibility,
+          authorized_workspaces,
         );
       }
     }
@@ -888,12 +897,31 @@ export class RPC extends MessageEmitter {
     if (api.config.run_in_executor) run_in_executor = true;
     const visibility = api.config.visibility || "protected";
     assert(["protected", "public", "unlisted"].includes(visibility));
+    
+    // Validate authorized_workspaces
+    const authorized_workspaces = api.config.authorized_workspaces;
+    if (authorized_workspaces !== undefined) {
+      if (visibility !== "protected") {
+        throw new Error(
+          `authorized_workspaces can only be set when visibility is 'protected', got visibility='${visibility}'`
+        );
+      }
+      if (!Array.isArray(authorized_workspaces)) {
+        throw new Error("authorized_workspaces must be an array of workspace ids");
+      }
+      for (const ws_id of authorized_workspaces) {
+        if (typeof ws_id !== "string") {
+          throw new Error(`Each workspace id in authorized_workspaces must be a string, got ${typeof ws_id}`);
+        }
+      }
+    }
     this._annotate_service_methods(
       api,
       api["id"],
       require_context,
       run_in_executor,
       visibility,
+      authorized_workspaces,
     );
 
     if (this._services[api.id]) {
@@ -1853,11 +1881,22 @@ export class RPC extends MessageEmitter {
       if (this._method_annotations.has(method)) {
         // For services, it should not be protected
         if (this._method_annotations.get(method).visibility === "protected") {
-          if (
-            local_workspace !== remote_workspace &&
-            (remote_workspace !== "*" ||
-              remote_client_id !== this._connection.manager_id)
+          // Allow access from same workspace
+          if (local_workspace === remote_workspace) {
+            // Access granted
+          }
+          // Check if remote workspace is in authorized_workspaces list
+          else if (
+            this._method_annotations.get(method).authorized_workspaces &&
+            this._method_annotations.get(method).authorized_workspaces.includes(remote_workspace)
           ) {
+            // Access granted
+          }
+          // Allow manager access
+          else if (remote_workspace === "*" && remote_client_id === this._connection.manager_id) {
+            // Access granted
+          }
+          else {
             throw new Error(
               "Permission denied for invoking protected method " +
                 method_name +
