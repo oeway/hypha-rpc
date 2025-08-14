@@ -742,10 +742,13 @@ export class RPC extends MessageEmitter {
     if (context["ws"] === ws) {
       return service;
     }
-    
+
     // Check if user is from an authorized workspace
     const authorized_workspaces = service.config.authorized_workspaces;
-    if (authorized_workspaces && authorized_workspaces.includes(context["ws"])) {
+    if (
+      authorized_workspaces &&
+      authorized_workspaces.includes(context["ws"])
+    ) {
       return service;
     }
 
@@ -897,21 +900,25 @@ export class RPC extends MessageEmitter {
     if (api.config.run_in_executor) run_in_executor = true;
     const visibility = api.config.visibility || "protected";
     assert(["protected", "public", "unlisted"].includes(visibility));
-    
+
     // Validate authorized_workspaces
     const authorized_workspaces = api.config.authorized_workspaces;
     if (authorized_workspaces !== undefined) {
       if (visibility !== "protected") {
         throw new Error(
-          `authorized_workspaces can only be set when visibility is 'protected', got visibility='${visibility}'`
+          `authorized_workspaces can only be set when visibility is 'protected', got visibility='${visibility}'`,
         );
       }
       if (!Array.isArray(authorized_workspaces)) {
-        throw new Error("authorized_workspaces must be an array of workspace ids");
+        throw new Error(
+          "authorized_workspaces must be an array of workspace ids",
+        );
       }
       for (const ws_id of authorized_workspaces) {
         if (typeof ws_id !== "string") {
-          throw new Error(`Each workspace id in authorized_workspaces must be a string, got ${typeof ws_id}`);
+          throw new Error(
+            `Each workspace id in authorized_workspaces must be a string, got ${typeof ws_id}`,
+          );
         }
       }
     }
@@ -1888,15 +1895,19 @@ export class RPC extends MessageEmitter {
           // Check if remote workspace is in authorized_workspaces list
           else if (
             this._method_annotations.get(method).authorized_workspaces &&
-            this._method_annotations.get(method).authorized_workspaces.includes(remote_workspace)
+            this._method_annotations
+              .get(method)
+              .authorized_workspaces.includes(remote_workspace)
           ) {
             // Access granted
           }
           // Allow manager access
-          else if (remote_workspace === "*" && remote_client_id === this._connection.manager_id) {
+          else if (
+            remote_workspace === "*" &&
+            remote_client_id === this._connection.manager_id
+          ) {
             // Access granted
-          }
-          else {
+          } else {
             throw new Error(
               "Permission denied for invoking protected method " +
                 method_name +
