@@ -2453,11 +2453,25 @@ async def test_authorized_workspaces(websocket_server):
     """Test the authorized_workspaces feature for protected services."""
     print("\n=== TESTING AUTHORIZED WORKSPACES ===")
     
-    # Connect a client to the server
+    # Connect first client (will be service provider)
     ws1 = await connect_to_server(
         {"server_url": WS_SERVER_URL, "client_id": "test-auth-client"}
     )
-    workspace = ws1.config.workspace
+    workspace1 = ws1.config.workspace
+    
+    # Connect second client in a different workspace (authorized)
+    ws2 = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "authorized-client"}
+    )
+    workspace2 = ws2.config.workspace
+    
+    # Connect third client in another workspace (not authorized)
+    ws3 = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "unauthorized-client"}
+    )
+    workspace3 = ws3.config.workspace
+    
+    print(f"Created workspaces: {workspace1}, {workspace2}, {workspace3}")
     
     # Test 1: Validate that authorized_workspaces requires protected visibility
     print("1. Testing validation: authorized_workspaces with non-protected visibility...")
@@ -2498,16 +2512,16 @@ async def test_authorized_workspaces(websocket_server):
         "name": "Authorized Test Service",
         "config": {
             "visibility": "protected",
-            "authorized_workspaces": ["workspace-a", "workspace-b"]  # Allow these workspaces
+            "authorized_workspaces": [workspace2]  # Only allow workspace2
         },
         "test_method": lambda x: f"authorized: {x}"
     })
     
     # Access from same workspace should work
-    svc = await ws1.get_service(f"{workspace}/test-auth-client:authorized-service")
+    svc = await ws1.get_service(f"{workspace1}/test-auth-client:authorized-service")
     result = await svc.test_method("test")
     assert result == "authorized: test"
-    print("   ✅ Service with authorized_workspaces registered successfully")
+    print("   ✅ Service accessible from same workspace")
     
     # Test 4: Validate authorized_workspaces must be a list
     print("4. Testing validation: authorized_workspaces must be a list...")
@@ -2552,7 +2566,7 @@ async def test_authorized_workspaces(websocket_server):
         "test": lambda: "empty-auth"
     })
     
-    svc_empty = await ws1.get_service(f"{workspace}/test-auth-client:empty-auth-service")
+    svc_empty = await ws1.get_service(f"{workspace1}/test-auth-client:empty-auth-service")
     result = await svc_empty.test()
     assert result == "empty-auth"
     print("   ✅ Empty authorized_workspaces list works")
@@ -2571,7 +2585,7 @@ async def test_authorized_workspaces(websocket_server):
     })
     
     # Can get the service from same workspace
-    svc_method = await ws1.get_service(f"{workspace}/test-auth-client:method-test-service")
+    svc_method = await ws1.get_service(f"{workspace1}/test-auth-client:method-test-service")
     # Methods should work from same workspace (even though fake-authorized-workspace is listed)
     result = await svc_method.protected_method("test")
     assert result == "protected: test"
@@ -2579,7 +2593,86 @@ async def test_authorized_workspaces(websocket_server):
     assert result2 == "also protected"
     print("   ✅ Methods work from same workspace despite authorized_workspaces")
     
+    # Test 8: Cross-workspace access - authorized workspace should have access
+    print("\n8. Testing cross-workspace access (authorized)...")
+    # Try to access the service from workspace2 (which is authorized)
+    try:
+        svc_from_ws2 = await ws2.get_service(f"{workspace1}/test-auth-client:authorized-service")
+        result = await svc_from_ws2.test_method("from-workspace2")
+        assert result == "authorized: from-workspace2"
+        print("   ✅ Authorized workspace can access protected service")
+    except Exception as e:
+        print(f"   ❌ Failed to access from authorized workspace: {e}")
+        assert False, f"Authorized workspace should have access: {e}"
+    
+    # Test 9: Cross-workspace access - unauthorized workspace should be denied
+    print("9. Testing cross-workspace access (unauthorized)...")
+    # Try to access the service from workspace3 (which is NOT authorized)
+    try:
+        svc_from_ws3 = await ws3.get_service(f"{workspace1}/test-auth-client:authorized-service")
+        # Try to call the method - this should fail
+        await svc_from_ws3.test_method("from-workspace3")
+        assert False, "Unauthorized workspace should NOT have access"
+    except Exception as e:
+        assert "not authorized" in str(e).lower() or "permission" in str(e).lower() or "denied" in str(e).lower()
+        print(f"   ✅ Unauthorized workspace correctly denied: {e}")
+    
+    # Test 10: Service with no authorized workspaces (empty list) - no external access
+    print("10. Testing service with empty authorized_workspaces list...")
+    try:
+        # Try to access empty-auth-service from workspace2
+        svc_empty_from_ws2 = await ws2.get_service(f"{workspace1}/test-auth-client:empty-auth-service")
+        await svc_empty_from_ws2.test()
+        assert False, "Service with empty authorized_workspaces should deny all external access"
+    except Exception as e:
+        assert "not authorized" in str(e).lower() or "permission" in str(e).lower() or "denied" in str(e).lower()
+        print(f"   ✅ Empty authorized_workspaces correctly denies external access: {e}")
+    
+    # Test 11: Update authorized_workspaces dynamically
+    print("11. Testing dynamic update of authorized_workspaces...")
+    # Register a new service that initially allows workspace2
+    await ws1.register_service({
+        "id": "dynamic-auth-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace2]
+        },
+        "test": lambda: "dynamic-test"
+    })
+    
+    # Verify workspace2 can access
+    svc_dynamic = await ws2.get_service(f"{workspace1}/test-auth-client:dynamic-auth-service")
+    result = await svc_dynamic.test()
+    assert result == "dynamic-test"
+    print("   ✅ Initial authorized workspace has access")
+    
+    # Now re-register with workspace3 instead
+    await ws1.register_service({
+        "id": "dynamic-auth-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace3]  # Changed to workspace3
+        },
+        "test": lambda: "dynamic-test-updated"
+    }, overwrite=True)
+    
+    # workspace2 should now be denied
+    try:
+        svc_dynamic = await ws2.get_service(f"{workspace1}/test-auth-client:dynamic-auth-service")
+        await svc_dynamic.test()
+        assert False, "Previously authorized workspace should now be denied"
+    except Exception as e:
+        print(f"   ✅ Previously authorized workspace now denied: {e}")
+    
+    # workspace3 should now have access
+    svc_dynamic_ws3 = await ws3.get_service(f"{workspace1}/test-auth-client:dynamic-auth-service")
+    result = await svc_dynamic_ws3.test()
+    assert result == "dynamic-test-updated"
+    print("   ✅ Newly authorized workspace has access")
+    
     # Cleanup
     await ws1.disconnect()
+    await ws2.disconnect()
+    await ws3.disconnect()
     
-    print("✅ AUTHORIZED WORKSPACES VALIDATION TEST PASSED!")
+    print("✅ AUTHORIZED WORKSPACES FULL TEST PASSED!")
