@@ -459,10 +459,12 @@ class RemoteFunction:
         if self._with_promise:
             main_message["session"] = local_session_id
             method_name = f"{self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}"
+            # Timer will be started after message is sent
+            # Heartbeat will keep resetting it, allowing methods to run indefinitely
             timer = Timer(
                 self._rpc._method_timeout,
                 reject,
-                f"Method call time out: {method_name}, context: {self._description}",
+                f"Method call timed out: {method_name}, context: {self._description}",
                 label=method_name,
             )
 
@@ -528,7 +530,7 @@ class RemoteFunction:
                     timer.clear()
             else:
                 if timer:
-                    timer.reset()
+                    timer.start()
         emit_task.add_done_callback(handle_result)
         return fut
 

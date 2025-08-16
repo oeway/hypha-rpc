@@ -1628,10 +1628,13 @@ export class RPC extends MessageEmitter {
           // I.e. the session id won't be passed for promises themselves
           main_message["session"] = local_session_id;
           let method_name = `${target_id}:${method_id}`;
+          
+          // Create a timer that gets reset by heartbeat
+          // Methods can run indefinitely as long as heartbeat keeps resetting the timer
           timer = new Timer(
             self._method_timeout,
             reject,
-            [`Method call time out: ${method_name}, context: ${description}`],
+            [`Method call timed out: ${method_name}, context: ${description}`],
             method_name,
           );
           // By default, hypha will clear the session after the method is called
@@ -1688,8 +1691,8 @@ export class RPC extends MessageEmitter {
             ._emit_message(message_package)
             .then(function () {
               if (timer) {
-                // If resolved successfully, reset the timer
-                timer.reset();
+                // Start the timer after message is sent successfully
+                timer.start();
               }
             })
             .catch(function (err) {
@@ -1710,8 +1713,8 @@ export class RPC extends MessageEmitter {
             ._send_chunks(message_package, target_id, remote_parent)
             .then(function () {
               if (timer) {
-                // If resolved successfully, reset the timer
-                timer.reset();
+                // Start the timer after message is sent successfully
+                timer.start();
               }
             })
             .catch(function (err) {

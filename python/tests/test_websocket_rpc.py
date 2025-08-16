@@ -2676,3 +2676,104 @@ async def test_authorized_workspaces(websocket_server):
     await ws3.disconnect()
     
     print("✅ AUTHORIZED WORKSPACES FULL TEST PASSED!")
+
+
+@pytest.mark.asyncio
+async def test_long_running_method_with_heartbeat(restartable_server):
+    """Test that long-running methods don't timeout as long as heartbeat is active."""
+    print("\n=== LONG RUNNING METHOD WITH HEARTBEAT TEST ===")
+    
+    # Use a SHORT timeout (2 seconds) to verify heartbeat keeps method alive
+    ws = await connect_to_server({
+        "name": "long-running-test",
+        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+        "client_id": "long-running-test",
+        "method_timeout": 2  # 2 second timeout - methods will run LONGER than this
+    })
+    
+    print(f"   ⏱️  Method timeout set to 2 seconds")
+    
+    # Create a service with a long-running method
+    class LongRunningService:
+        async def long_task(self, duration_seconds, callback=None):
+            """Simulates a long-running task that reports progress."""
+            start_time = asyncio.get_event_loop().time()
+            steps = duration_seconds * 2  # Report progress every 0.5 seconds
+            
+            for i in range(steps):
+                await asyncio.sleep(0.5)
+                elapsed = asyncio.get_event_loop().time() - start_time
+                
+                # Report progress via callback if provided
+                if callback:
+                    await callback(f"Progress: {i+1}/{steps}, elapsed: {elapsed:.1f}s")
+            
+            return f"Task completed after {duration_seconds} seconds"
+        
+        async def infinite_stream(self, callback):
+            """Simulates infinite streaming (like terminal attach)."""
+            count = 0
+            while True:
+                await asyncio.sleep(0.5)
+                count += 1
+                await callback(f"Stream update #{count}")
+                # Stop after 5 updates for testing
+                if count >= 5:
+                    return f"Streamed {count} updates"
+    
+    # Register the service
+    await ws.register_service({
+        "id": "long-running-service",
+        "config": {"visibility": "protected"},
+        "long_task": LongRunningService().long_task,
+        "infinite_stream": LongRunningService().infinite_stream
+    })
+    
+    # Test 1: Long-running method with callback (should not timeout)
+    print("\n--- Test 1: Long-running method with progress callback ---")
+    svc = await ws.get_service("long-running-service")
+    
+    progress_updates = []
+    async def progress_callback(msg):
+        progress_updates.append(msg)
+        print(f"   📊 {msg}")
+    
+    # Run a task for 5 seconds - MORE than the 2 second timeout!
+    # This proves heartbeat keeps it alive
+    TASK_DURATION = 5  # 5 seconds > 2 second timeout
+    print(f"   🚀 Starting {TASK_DURATION} second task (timeout is only 2 seconds)")
+    
+    start_time = asyncio.get_event_loop().time()
+    result = await svc.long_task(TASK_DURATION, progress_callback)
+    actual_duration = asyncio.get_event_loop().time() - start_time
+    
+    assert f"Task completed after {TASK_DURATION} seconds" in result
+    assert actual_duration >= TASK_DURATION  # Verify it actually ran for full duration
+    assert actual_duration > 2  # Verify it ran LONGER than the timeout
+    assert len(progress_updates) >= TASK_DURATION * 2 - 1  # Should have ~10 updates
+    print(f"   ✅ Task ran for {actual_duration:.1f}s (>{ws.rpc._method_timeout}s timeout) with {len(progress_updates)} updates")
+    
+    # Test 2: Infinite streaming method (like terminal attach)
+    print("\n--- Test 2: Infinite streaming method ---")
+    stream_updates = []
+    async def stream_callback(msg):
+        stream_updates.append(msg)
+        print(f"   📡 {msg}")
+    
+    # This simulates the terminal attach use case
+    # Runs for ~2.5 seconds (5 updates * 0.5s each) - also longer than timeout
+    print(f"   🚀 Starting streaming (will run >2s timeout)")
+    
+    start_time = asyncio.get_event_loop().time()
+    result = await svc.infinite_stream(stream_callback)
+    stream_duration = asyncio.get_event_loop().time() - start_time
+    
+    assert "Streamed 5 updates" in result
+    assert len(stream_updates) == 5
+    assert stream_duration > 2  # Verify it ran LONGER than the timeout
+    print(f"   ✅ Streaming ran for {stream_duration:.1f}s (>2s timeout) with {len(stream_updates)} updates")
+    
+    # Cleanup
+    await ws.disconnect()
+    
+    print("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!")
