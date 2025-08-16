@@ -461,9 +461,21 @@ class RemoteFunction:
             method_name = f"{self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}"
             # Timer will be started after message is sent
             # Heartbeat will keep resetting it, allowing methods to run indefinitely
+            # IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
+            async def timeout_callback(error_msg):
+                # First reject the promise
+                if asyncio.iscoroutinefunction(reject):
+                    await reject(error_msg)
+                else:
+                    reject(error_msg)
+                # Then clean up the entire session to stop all callbacks
+                if local_session_id in self._rpc._object_store:
+                    del self._rpc._object_store[local_session_id]
+                    logger.debug(f"Cleaned up session {local_session_id} after timeout")
+            
             timer = Timer(
                 self._rpc._method_timeout,
-                reject,
+                timeout_callback,
                 f"Method call timed out: {method_name}, context: {self._description}",
                 label=method_name,
             )

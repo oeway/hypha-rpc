@@ -1712,7 +1712,7 @@ describe("RPC", async () => {
     console.log("\n=== LONG RUNNING METHOD WITH HEARTBEAT TEST ===");
     
     // Use a SHORT timeout (2 seconds) to verify heartbeat keeps method alive
-    const ws = await api.connectToServer({
+    const api = await connectToServer({
       name: "long-running-test",
       server_url: "ws://127.0.0.1:9394/ws",  // Use the test server port
       client_id: "long-running-test",
@@ -1757,15 +1757,15 @@ describe("RPC", async () => {
     };
     
     // Register the service
-    await ws.register_service({
+    await api.registerService({
       id: "long-running-service",
       config: { visibility: "protected" },
-      api: longRunningService
+      ...longRunningService
     });
     
     // Test 1: Long-running method with callback (should not timeout)
     console.log("\n--- Test 1: Long-running method with progress callback ---");
-    const svc = await ws.get_service("long-running-service");
+    const svc = await api.getService("long-running-service");
     
     const progress_updates = [];
     const progress_callback = async (msg) => {
@@ -1810,7 +1810,7 @@ describe("RPC", async () => {
     console.log(`   ✅ Streaming ran for ${stream_duration.toFixed(1)}s (>2s timeout) with ${stream_updates.length} updates`);
     
     // Cleanup
-    await ws.disconnect();
+    await api.disconnect();
     
     console.log("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!");
   }).timeout(30000);

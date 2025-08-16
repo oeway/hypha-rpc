@@ -1631,9 +1631,20 @@ export class RPC extends MessageEmitter {
           
           // Create a timer that gets reset by heartbeat
           // Methods can run indefinitely as long as heartbeat keeps resetting the timer
+          // IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
+          const timeoutCallback = function(error_msg) {
+            // First reject the promise
+            reject(error_msg);
+            // Then clean up the entire session to stop all callbacks
+            if (self._object_store[local_session_id]) {
+              delete self._object_store[local_session_id];
+              console.debug(`Cleaned up session ${local_session_id} after timeout`);
+            }
+          };
+          
           timer = new Timer(
             self._method_timeout,
-            reject,
+            timeoutCallback,
             [`Method call timed out: ${method_name}, context: ${description}`],
             method_name,
           );

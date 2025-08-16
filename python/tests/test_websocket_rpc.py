@@ -2777,3 +2777,5 @@ async def test_long_running_method_with_heartbeat(restartable_server):
     await ws.disconnect()
     
     print("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!")
+
+
