@@ -1189,7 +1189,9 @@ class RPC(MessageEmitter):
             "workspace", self._local_workspace or self._connection.workspace
         )
         skip_context = config.get("require_context", False)
-        service_schema = _get_schema(service, skip_context=skip_context)
+        exclude_keys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+        filtered_service = {k: v for k, v in service.items() if k not in exclude_keys}
+        service_schema = _get_schema(filtered_service, skip_context=skip_context)
         service_info = {
             "config": ObjectProxy.fromDict(config),
             "id": f"{config['workspace']}/{self._client_id}:{service['id']}",

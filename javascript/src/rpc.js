@@ -949,7 +949,14 @@ export class RPC extends MessageEmitter {
     config.workspace =
       config.workspace || this._local_workspace || this._connection.workspace;
     const skipContext = config.require_context;
-    const serviceSchema = _get_schema(service, null, skipContext);
+    const excludeKeys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+    filteredService = {};
+    for (const key of Object.keys(service)) {
+      if (!excludeKeys.includes(key)) {
+        filteredService[key] = service[key];
+      }
+    }
+    const serviceSchema = _get_schema(filteredService, null, skipContext);
     const serviceInfo = {
       config: config,
       id: `${config.workspace}/${this._client_id}:${service["id"]}`,
