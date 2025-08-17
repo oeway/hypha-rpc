@@ -1707,4 +1707,111 @@ describe("RPC", async () => {
 
     console.log("✅ AUTHORIZED WORKSPACES FULL TEST PASSED!");
   }).timeout(20000);
+
+  it("should handle long-running methods with heartbeat", async () => {
+    console.log("\n=== LONG RUNNING METHOD WITH HEARTBEAT TEST ===");
+    
+    // Use a SHORT timeout (2 seconds) to verify heartbeat keeps method alive
+    const api = await connectToServer({
+      name: "long-running-test",
+      server_url: "ws://127.0.0.1:9394/ws",  // Use the test server port
+      client_id: "long-running-test",
+      method_timeout: 2  // 2 second timeout - methods will run LONGER than this
+    });
+    
+    console.log("   ⏱️  Method timeout set to 2 seconds");
+    
+    // Create a service with long-running methods
+    const longRunningService = {
+      async longTask(duration_seconds, callback) {
+        // Simulates a long-running task that reports progress
+        const start_time = Date.now();
+        const steps = duration_seconds * 2; // Report progress every 0.5 seconds
+        
+        for (let i = 0; i < steps; i++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const elapsed = (Date.now() - start_time) / 1000;
+          
+          // Report progress via callback if provided
+          if (callback) {
+            await callback(`Progress: ${i+1}/${steps}, elapsed: ${elapsed.toFixed(1)}s`);
+          }
+        }
+        
+        return `Task completed after ${duration_seconds} seconds`;
+      },
+      
+      async infiniteStream(callback) {
+        // Simulates infinite streaming (like terminal attach)
+        let count = 0;
+        while (true) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          count++;
+          await callback(`Stream update #${count}`);
+          // Stop after 5 updates for testing
+          if (count >= 5) {
+            return `Streamed ${count} updates`;
+          }
+        }
+      }
+    };
+    
+    // Register the service
+    await api.registerService({
+      id: "long-running-service",
+      config: { visibility: "protected" },
+      ...longRunningService
+    });
+    
+    // Test 1: Long-running method with callback (should not timeout)
+    console.log("\n--- Test 1: Long-running method with progress callback ---");
+    const svc = await api.getService("long-running-service");
+    
+    const progress_updates = [];
+    const progress_callback = async (msg) => {
+      progress_updates.push(msg);
+      console.log(`   📊 ${msg}`);
+    };
+    
+    // Run a task for 5 seconds - MORE than the 2 second timeout!
+    // This proves heartbeat keeps it alive
+    const TASK_DURATION = 5;  // 5 seconds > 2 second timeout
+    console.log(`   🚀 Starting ${TASK_DURATION} second task (timeout is only 2 seconds)`);
+    
+    const start_time = Date.now();
+    const result = await svc.longTask(TASK_DURATION, progress_callback);
+    const actual_duration = (Date.now() - start_time) / 1000;
+    
+    expect(result).to.include(`Task completed after ${TASK_DURATION} seconds`);
+    expect(actual_duration).to.be.at.least(TASK_DURATION);  // Verify it actually ran for full duration
+    expect(actual_duration).to.be.greaterThan(2);  // Verify it ran LONGER than the timeout
+    expect(progress_updates.length).to.be.at.least(TASK_DURATION * 2 - 1);  // Should have ~10 updates
+    console.log(`   ✅ Task ran for ${actual_duration.toFixed(1)}s (>2s timeout) with ${progress_updates.length} updates`);
+    
+    // Test 2: Infinite streaming method (like terminal attach)
+    console.log("\n--- Test 2: Infinite streaming method ---");
+    const stream_updates = [];
+    const stream_callback = async (msg) => {
+      stream_updates.push(msg);
+      console.log(`   📡 ${msg}`);
+    };
+    
+    // This simulates the terminal attach use case
+    // Runs for ~2.5 seconds (5 updates * 0.5s each) - also longer than timeout
+    console.log("   🚀 Starting streaming (will run >2s timeout)");
+    
+    const stream_start = Date.now();
+    const stream_result = await svc.infiniteStream(stream_callback);
+    const stream_duration = (Date.now() - stream_start) / 1000;
+    
+    expect(stream_result).to.include("Streamed 5 updates");
+    expect(stream_updates.length).to.equal(5);
+    expect(stream_duration).to.be.greaterThan(2);  // Verify it ran LONGER than the timeout
+    console.log(`   ✅ Streaming ran for ${stream_duration.toFixed(1)}s (>2s timeout) with ${stream_updates.length} updates`);
+    
+    // Cleanup
+    await api.disconnect();
+    
+    console.log("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!");
+  }).timeout(30000);
 });

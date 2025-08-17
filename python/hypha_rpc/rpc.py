@@ -459,10 +459,24 @@ class RemoteFunction:
         if self._with_promise:
             main_message["session"] = local_session_id
             method_name = f"{self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}"
+            # Timer will be started after message is sent
+            # Heartbeat will keep resetting it, allowing methods to run indefinitely
+            # IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
+            async def timeout_callback(error_msg):
+                # First reject the promise
+                if asyncio.iscoroutinefunction(reject):
+                    await reject(error_msg)
+                else:
+                    reject(error_msg)
+                # Then clean up the entire session to stop all callbacks
+                if local_session_id in self._rpc._object_store:
+                    del self._rpc._object_store[local_session_id]
+                    logger.debug(f"Cleaned up session {local_session_id} after timeout")
+            
             timer = Timer(
                 self._rpc._method_timeout,
-                reject,
-                f"Method call time out: {method_name}, context: {self._description}",
+                timeout_callback,
+                f"Method call timed out: {method_name}, context: {self._description}",
                 label=method_name,
             )
 
@@ -528,7 +542,7 @@ class RemoteFunction:
                     timer.clear()
             else:
                 if timer:
-                    timer.reset()
+                    timer.start()
         emit_task.add_done_callback(handle_result)
         return fut
 
@@ -1175,7 +1189,9 @@ class RPC(MessageEmitter):
             "workspace", self._local_workspace or self._connection.workspace
         )
         skip_context = config.get("require_context", False)
-        service_schema = _get_schema(service, skip_context=skip_context)
+        exclude_keys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+        filtered_service = {k: v for k, v in service.items() if k not in exclude_keys}
+        service_schema = _get_schema(filtered_service, skip_context=skip_context)
         service_info = {
             "config": ObjectProxy.fromDict(config),
             "id": f"{config['workspace']}/{self._client_id}:{service['id']}",

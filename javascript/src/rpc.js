@@ -949,7 +949,14 @@ export class RPC extends MessageEmitter {
     config.workspace =
       config.workspace || this._local_workspace || this._connection.workspace;
     const skipContext = config.require_context;
-    const serviceSchema = _get_schema(service, null, skipContext);
+    const excludeKeys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+    const filteredService = {};
+    for (const key of Object.keys(service)) {
+      if (!excludeKeys.includes(key)) {
+        filteredService[key] = service[key];
+      }
+    }
+    const serviceSchema = _get_schema(filteredService, null, skipContext);
     const serviceInfo = {
       config: config,
       id: `${config.workspace}/${this._client_id}:${service["id"]}`,
@@ -1628,10 +1635,24 @@ export class RPC extends MessageEmitter {
           // I.e. the session id won't be passed for promises themselves
           main_message["session"] = local_session_id;
           let method_name = `${target_id}:${method_id}`;
+          
+          // Create a timer that gets reset by heartbeat
+          // Methods can run indefinitely as long as heartbeat keeps resetting the timer
+          // IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
+          const timeoutCallback = function(error_msg) {
+            // First reject the promise
+            reject(error_msg);
+            // Then clean up the entire session to stop all callbacks
+            if (self._object_store[local_session_id]) {
+              delete self._object_store[local_session_id];
+              console.debug(`Cleaned up session ${local_session_id} after timeout`);
+            }
+          };
+          
           timer = new Timer(
             self._method_timeout,
-            reject,
-            [`Method call time out: ${method_name}, context: ${description}`],
+            timeoutCallback,
+            [`Method call timed out: ${method_name}, context: ${description}`],
             method_name,
           );
           // By default, hypha will clear the session after the method is called
@@ -1688,8 +1709,8 @@ export class RPC extends MessageEmitter {
             ._emit_message(message_package)
             .then(function () {
               if (timer) {
-                // If resolved successfully, reset the timer
-                timer.reset();
+                // Start the timer after message is sent successfully
+                timer.start();
               }
             })
             .catch(function (err) {
@@ -1710,8 +1731,8 @@ export class RPC extends MessageEmitter {
             ._send_chunks(message_package, target_id, remote_parent)
             .then(function () {
               if (timer) {
-                // If resolved successfully, reset the timer
-                timer.reset();
+                // Start the timer after message is sent successfully
+                timer.start();
               }
             })
             .catch(function (err) {
