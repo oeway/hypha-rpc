@@ -950,7 +950,7 @@ export class RPC extends MessageEmitter {
       config.workspace || this._local_workspace || this._connection.workspace;
     const skipContext = config.require_context;
     const excludeKeys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
-    filteredService = {};
+    const filteredService = {};
     for (const key of Object.keys(service)) {
       if (!excludeKeys.includes(key)) {
         filteredService[key] = service[key];
