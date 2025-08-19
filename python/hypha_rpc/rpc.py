@@ -765,7 +765,7 @@ class RPC(MessageEmitter):
                     if connection_info.get("workspace"):
                         old_workspace = self._local_workspace
                         self._local_workspace = connection_info.get("workspace")
-                        logger.warning(f"[RECONNECTION DEBUG] Updated local workspace from {old_workspace} to {self._local_workspace}")
+                        logger.info(f"Updated local workspace from {old_workspace} to {self._local_workspace}")
                     
                     self._fire("connected", connection_info)
 

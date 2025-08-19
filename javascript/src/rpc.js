@@ -504,7 +504,7 @@ export class RPC extends MessageEmitter {
           if (connectionInfo.workspace) {
             const oldWorkspace = this._local_workspace;
             this._local_workspace = connectionInfo.workspace;
-            console.warn(`[RECONNECTION DEBUG] Updated local workspace from ${oldWorkspace} to ${this._local_workspace}`);
+            console.info(`Updated local workspace from ${oldWorkspace} to ${this._local_workspace}`);
           }
           
           this._fire("connected", connectionInfo);
