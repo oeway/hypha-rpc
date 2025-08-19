@@ -760,6 +760,13 @@ class RPC(MessageEmitter):
                 if connection_info:
                     if connection_info.get("public_base_url"):
                         self._server_base_url = connection_info.get("public_base_url")
+                    
+                    # Update the local workspace to match the connection workspace (important for reconnection)
+                    if connection_info.get("workspace"):
+                        old_workspace = self._local_workspace
+                        self._local_workspace = connection_info.get("workspace")
+                        logger.warning(f"[RECONNECTION DEBUG] Updated local workspace from {old_workspace} to {self._local_workspace}")
+                    
                     self._fire("connected", connection_info)
 
             connection.on_connected(on_connected)
@@ -895,19 +902,16 @@ class RPC(MessageEmitter):
         )
         main = unpacker.unpack()
         # Make sure the fields are from trusted source
-        # Restore essential fields and add trusted context
-        main.update({
-            "from": context["from"],
-            "to": context["to"], 
-            "ws": context["ws"],
-        })
-        
-        # Preserve authenticated user from the message if available
-        if "user" in context:
-            main["user"] = context["user"]
-            
-        # Add trusted context to the reconstructed message
-        main = self._add_context_to_message(main)
+        main.update(
+            {
+                "from": context["from"],
+                "to": context["to"],
+                "ws": context["ws"],
+                "user": context.get("user"),  # Use get() to handle missing user gracefully
+            }
+        )
+        main["ctx"] = main.copy()
+        main["ctx"].update(self.default_context)
 
         try:
             extra = unpacker.unpack()
@@ -920,19 +924,9 @@ class RPC(MessageEmitter):
     def _add_context_to_message(self, main):
         """Add trusted context to a message if it doesn't already have it."""
         if "ctx" not in main:
-            # Create clean context with only essential fields (not all message fields)
-            main["ctx"] = {}
+            # Create context from message fields + default_context (restore original behavior)
+            main["ctx"] = main.copy()
             main["ctx"].update(self.default_context)
-            
-            # Add essential context fields that services expect
-            essential_fields = ["ws", "from", "to"]
-            for field in essential_fields:
-                if field in main:
-                    main["ctx"][field] = main[field]
-            
-            # Preserve authenticated user context from the message (server-side authenticated)
-            if "user" in main:
-                main["ctx"]["user"] = main["user"]
                 
         return main
 

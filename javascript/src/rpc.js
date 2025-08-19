@@ -499,6 +499,14 @@ export class RPC extends MessageEmitter {
           if (connectionInfo.public_base_url) {
             this._server_base_url = connectionInfo.public_base_url;
           }
+          
+          // Update the local workspace to match the connection workspace (important for reconnection)
+          if (connectionInfo.workspace) {
+            const oldWorkspace = this._local_workspace;
+            this._local_workspace = connectionInfo.workspace;
+            console.warn(`[RECONNECTION DEBUG] Updated local workspace from ${oldWorkspace} to ${this._local_workspace}`);
+          }
+          
           this._fire("connected", connectionInfo);
         }
       };
