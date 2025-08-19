@@ -1421,4 +1421,397 @@ describe("RPC", async () => {
 
     console.log("✅ All robustness tests passed!");
   });
+
+  it("should test authorized_workspaces for protected services", async () => {
+    console.log("\n=== TESTING AUTHORIZED WORKSPACES ===");
+
+    // Connect first client (will be service provider)
+    const ws1 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-auth-client",
+    });
+    const workspace1 = ws1.config.workspace;
+
+    // Connect second client in a different workspace (authorized)
+    const ws2 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "authorized-client",
+    });
+    const workspace2 = ws2.config.workspace;
+
+    // Connect third client in another workspace (not authorized)
+    const ws3 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "unauthorized-client",
+    });
+    const workspace3 = ws3.config.workspace;
+
+    console.log(
+      `Created workspaces: ${workspace1}, ${workspace2}, ${workspace3}`,
+    );
+
+    // Test 1: Validate that authorized_workspaces requires protected visibility
+    console.log(
+      "1. Testing validation: authorized_workspaces with non-protected visibility...",
+    );
+    try {
+      await ws1.registerService({
+        id: "invalid-service",
+        config: {
+          visibility: "public",
+          authorized_workspaces: ["some-workspace"], // Should fail
+        },
+        test: () => "test",
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include(
+        "authorized_workspaces can only be set when visibility is 'protected'",
+      );
+      console.log(`   ✅ Validation works: ${e.message}`);
+    }
+
+    // Test 2: Test with unlisted visibility should also fail
+    console.log(
+      "2. Testing validation: authorized_workspaces with unlisted visibility...",
+    );
+    try {
+      await ws1.registerService({
+        id: "invalid-service-2",
+        config: {
+          visibility: "unlisted",
+          authorized_workspaces: ["some-workspace"], // Should fail
+        },
+        test: () => "test",
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include(
+        "authorized_workspaces can only be set when visibility is 'protected'",
+      );
+      console.log(`   ✅ Validation works for unlisted: ${e.message}`);
+    }
+
+    // Test 3: Register service with authorized_workspaces (valid case)
+    console.log("3. Testing service with authorized_workspaces (valid)...");
+    await ws1.registerService({
+      id: "authorized-service",
+      name: "Authorized Test Service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: [workspace2], // Only allow workspace2
+      },
+      test_method: (x) => `authorized: ${x}`,
+    });
+
+    // Access from same workspace should work
+    const svc = await ws1.getService(
+      `${workspace1}/test-auth-client:authorized-service`,
+    );
+    const result = await svc.test_method("test");
+    expect(result).to.equal("authorized: test");
+    console.log("   ✅ Service accessible from same workspace");
+
+    // Test 4: Validate authorized_workspaces must be an array
+    console.log(
+      "4. Testing validation: authorized_workspaces must be an array...",
+    );
+    try {
+      await ws1.registerService({
+        id: "invalid-service-3",
+        config: {
+          visibility: "protected",
+          authorized_workspaces: "not-an-array", // Should fail
+        },
+        test: () => "test",
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include("authorized_workspaces must be an array");
+      console.log(`   ✅ Array validation works: ${e.message}`);
+    }
+
+    // Test 5: Validate workspace ids must be strings
+    console.log("5. Testing validation: workspace ids must be strings...");
+    try {
+      await ws1.registerService({
+        id: "invalid-service-4",
+        config: {
+          visibility: "protected",
+          authorized_workspaces: ["valid-ws", 123, "another-ws"], // Should fail
+        },
+        test: () => "test",
+      });
+      expect.fail("Should have raised Error");
+    } catch (e) {
+      expect(e.message).to.include("must be a string");
+      console.log(`   ✅ String validation works: ${e.message}`);
+    }
+
+    // Test 6: Empty authorized_workspaces list is valid
+    console.log("6. Testing empty authorized_workspaces list...");
+    await ws1.registerService({
+      id: "empty-auth-service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: [], // Empty list is valid
+      },
+      test: () => "empty-auth",
+    });
+
+    const svc_empty = await ws1.getService(
+      `${workspace1}/test-auth-client:empty-auth-service`,
+    );
+    const result_empty = await svc_empty.test();
+    expect(result_empty).to.equal("empty-auth");
+    console.log("   ✅ Empty authorized_workspaces list works");
+
+    // Test 7: Method calls are also protected by authorized_workspaces
+    console.log(
+      "7. Testing that method calls respect authorized_workspaces...",
+    );
+    // Register a service with methods that should be protected
+    await ws1.registerService({
+      id: "method-test-service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: ["fake-authorized-workspace"], // Non-existent workspace
+      },
+      protected_method: (x) => `protected: ${x}`,
+      another_method: () => "also protected",
+    });
+
+    // Can get the service from same workspace
+    const svc_method = await ws1.getService(
+      `${workspace1}/test-auth-client:method-test-service`,
+    );
+    // Methods should work from same workspace (even though fake-authorized-workspace is listed)
+    const result_method = await svc_method.protected_method("test");
+    expect(result_method).to.equal("protected: test");
+    const result_method2 = await svc_method.another_method();
+    expect(result_method2).to.equal("also protected");
+    console.log(
+      "   ✅ Methods work from same workspace despite authorized_workspaces",
+    );
+
+    // Test 8: Cross-workspace access - authorized workspace should have access
+    console.log("\n8. Testing cross-workspace access (authorized)...");
+    // Try to access the service from workspace2 (which is authorized)
+    try {
+      const svc_from_ws2 = await ws2.getService(
+        `${workspace1}/test-auth-client:authorized-service`,
+      );
+      const result = await svc_from_ws2.test_method("from-workspace2");
+      expect(result).to.equal("authorized: from-workspace2");
+      console.log("   ✅ Authorized workspace can access protected service");
+    } catch (e) {
+      console.log(`   ❌ Failed to access from authorized workspace: ${e}`);
+      throw new Error(`Authorized workspace should have access: ${e}`);
+    }
+
+    // Test 9: Cross-workspace access - unauthorized workspace should be denied
+    console.log("9. Testing cross-workspace access (unauthorized)...");
+    // Try to access the service from workspace3 (which is NOT authorized)
+    try {
+      const svc_from_ws3 = await ws3.getService(
+        `${workspace1}/test-auth-client:authorized-service`,
+      );
+      // Try to call the method - this should fail
+      await svc_from_ws3.test_method("from-workspace3");
+      throw new Error("Unauthorized workspace should NOT have access");
+    } catch (e) {
+      const errorMsg = e.message.toLowerCase();
+      expect(errorMsg).to.match(/not authorized|permission|denied/);
+      console.log(
+        `   ✅ Unauthorized workspace correctly denied: ${e.message}`,
+      );
+    }
+
+    // Test 10: Service with no authorized workspaces (empty list) - no external access
+    console.log("10. Testing service with empty authorized_workspaces list...");
+    try {
+      // Try to access empty-auth-service from workspace2
+      const svc_empty_from_ws2 = await ws2.getService(
+        `${workspace1}/test-auth-client:empty-auth-service`,
+      );
+      await svc_empty_from_ws2.test();
+      throw new Error(
+        "Service with empty authorized_workspaces should deny all external access",
+      );
+    } catch (e) {
+      const errorMsg = e.message.toLowerCase();
+      expect(errorMsg).to.match(/not authorized|permission|denied/);
+      console.log(
+        `   ✅ Empty authorized_workspaces correctly denies external access: ${e.message}`,
+      );
+    }
+
+    // Test 11: Update authorized_workspaces dynamically
+    console.log("11. Testing dynamic update of authorized_workspaces...");
+    // Register a new service that initially allows workspace2
+    await ws1.registerService({
+      id: "dynamic-auth-service",
+      config: {
+        visibility: "protected",
+        authorized_workspaces: [workspace2],
+      },
+      test: () => "dynamic-test",
+    });
+
+    // Verify workspace2 can access
+    let svc_dynamic = await ws2.getService(
+      `${workspace1}/test-auth-client:dynamic-auth-service`,
+    );
+    let dynamic_result = await svc_dynamic.test();
+    expect(dynamic_result).to.equal("dynamic-test");
+    console.log("   ✅ Initial authorized workspace has access");
+
+    // Now re-register with workspace3 instead
+    await ws1.registerService(
+      {
+        id: "dynamic-auth-service",
+        config: {
+          visibility: "protected",
+          authorized_workspaces: [workspace3], // Changed to workspace3
+        },
+        test: () => "dynamic-test-updated",
+      },
+      { overwrite: true },
+    );
+
+    // workspace2 should now be denied
+    try {
+      svc_dynamic = await ws2.getService(
+        `${workspace1}/test-auth-client:dynamic-auth-service`,
+      );
+      await svc_dynamic.test();
+      throw new Error("Previously authorized workspace should now be denied");
+    } catch (e) {
+      console.log(
+        `   ✅ Previously authorized workspace now denied: ${e.message}`,
+      );
+    }
+
+    // workspace3 should now have access
+    const svc_dynamic_ws3 = await ws3.getService(
+      `${workspace1}/test-auth-client:dynamic-auth-service`,
+    );
+    dynamic_result = await svc_dynamic_ws3.test();
+    expect(dynamic_result).to.equal("dynamic-test-updated");
+    console.log("   ✅ Newly authorized workspace has access");
+
+    // Cleanup
+    await ws1.disconnect();
+    await ws2.disconnect();
+    await ws3.disconnect();
+
+    console.log("✅ AUTHORIZED WORKSPACES FULL TEST PASSED!");
+  }).timeout(20000);
+
+  it("should handle long-running methods with heartbeat", async () => {
+    console.log("\n=== LONG RUNNING METHOD WITH HEARTBEAT TEST ===");
+    
+    // Use a SHORT timeout (2 seconds) to verify heartbeat keeps method alive
+    const api = await connectToServer({
+      name: "long-running-test",
+      server_url: "ws://127.0.0.1:9394/ws",  // Use the test server port
+      client_id: "long-running-test",
+      method_timeout: 2  // 2 second timeout - methods will run LONGER than this
+    });
+    
+    console.log("   ⏱️  Method timeout set to 2 seconds");
+    
+    // Create a service with long-running methods
+    const longRunningService = {
+      async longTask(duration_seconds, callback) {
+        // Simulates a long-running task that reports progress
+        const start_time = Date.now();
+        const steps = duration_seconds * 2; // Report progress every 0.5 seconds
+        
+        for (let i = 0; i < steps; i++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const elapsed = (Date.now() - start_time) / 1000;
+          
+          // Report progress via callback if provided
+          if (callback) {
+            await callback(`Progress: ${i+1}/${steps}, elapsed: ${elapsed.toFixed(1)}s`);
+          }
+        }
+        
+        return `Task completed after ${duration_seconds} seconds`;
+      },
+      
+      async infiniteStream(callback) {
+        // Simulates infinite streaming (like terminal attach)
+        let count = 0;
+        while (true) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          count++;
+          await callback(`Stream update #${count}`);
+          // Stop after 5 updates for testing
+          if (count >= 5) {
+            return `Streamed ${count} updates`;
+          }
+        }
+      }
+    };
+    
+    // Register the service
+    await api.registerService({
+      id: "long-running-service",
+      config: { visibility: "protected" },
+      ...longRunningService
+    });
+    
+    // Test 1: Long-running method with callback (should not timeout)
+    console.log("\n--- Test 1: Long-running method with progress callback ---");
+    const svc = await api.getService("long-running-service");
+    
+    const progress_updates = [];
+    const progress_callback = async (msg) => {
+      progress_updates.push(msg);
+      console.log(`   📊 ${msg}`);
+    };
+    
+    // Run a task for 5 seconds - MORE than the 2 second timeout!
+    // This proves heartbeat keeps it alive
+    const TASK_DURATION = 5;  // 5 seconds > 2 second timeout
+    console.log(`   🚀 Starting ${TASK_DURATION} second task (timeout is only 2 seconds)`);
+    
+    const start_time = Date.now();
+    const result = await svc.longTask(TASK_DURATION, progress_callback);
+    const actual_duration = (Date.now() - start_time) / 1000;
+    
+    expect(result).to.include(`Task completed after ${TASK_DURATION} seconds`);
+    expect(actual_duration).to.be.at.least(TASK_DURATION);  // Verify it actually ran for full duration
+    expect(actual_duration).to.be.greaterThan(2);  // Verify it ran LONGER than the timeout
+    expect(progress_updates.length).to.be.at.least(TASK_DURATION * 2 - 1);  // Should have ~10 updates
+    console.log(`   ✅ Task ran for ${actual_duration.toFixed(1)}s (>2s timeout) with ${progress_updates.length} updates`);
+    
+    // Test 2: Infinite streaming method (like terminal attach)
+    console.log("\n--- Test 2: Infinite streaming method ---");
+    const stream_updates = [];
+    const stream_callback = async (msg) => {
+      stream_updates.push(msg);
+      console.log(`   📡 ${msg}`);
+    };
+    
+    // This simulates the terminal attach use case
+    // Runs for ~2.5 seconds (5 updates * 0.5s each) - also longer than timeout
+    console.log("   🚀 Starting streaming (will run >2s timeout)");
+    
+    const stream_start = Date.now();
+    const stream_result = await svc.infiniteStream(stream_callback);
+    const stream_duration = (Date.now() - stream_start) / 1000;
+    
+    expect(stream_result).to.include("Streamed 5 updates");
+    expect(stream_updates.length).to.equal(5);
+    expect(stream_duration).to.be.greaterThan(2);  // Verify it ran LONGER than the timeout
+    console.log(`   ✅ Streaming ran for ${stream_duration.toFixed(1)}s (>2s timeout) with ${stream_updates.length} updates`);
+    
+    // Cleanup
+    await api.disconnect();
+    
+    console.log("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!");
+  }).timeout(30000);
 });

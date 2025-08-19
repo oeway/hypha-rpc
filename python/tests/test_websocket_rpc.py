@@ -2403,3 +2403,336 @@ def test_rpc_thread_safety_fix(fastapi_server):
     
     print("\n✅ RPC THREAD SAFETY FIX TEST PASSED!")
     print("✅ The RPC now properly handles calls from any thread context")
+
+
+@pytest.mark.asyncio
+async def test_authorized_workspaces(websocket_server):
+    """Test the authorized_workspaces feature for protected services."""
+    print("\n=== TESTING AUTHORIZED WORKSPACES ===")
+    
+    # Connect first client (will be service provider)
+    ws1 = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "test-auth-client"}
+    )
+    workspace1 = ws1.config.workspace
+    
+    # Connect second client in a different workspace (authorized)
+    ws2 = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "authorized-client"}
+    )
+    workspace2 = ws2.config.workspace
+    
+    # Connect third client in another workspace (not authorized)
+    ws3 = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "unauthorized-client"}
+    )
+    workspace3 = ws3.config.workspace
+    
+    print(f"Created workspaces: {workspace1}, {workspace2}, {workspace3}")
+    
+    # Test 1: Validate that authorized_workspaces requires protected visibility
+    print("1. Testing validation: authorized_workspaces with non-protected visibility...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service",
+            "config": {
+                "visibility": "public",
+                "authorized_workspaces": ["some-workspace"]  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "authorized_workspaces can only be set when visibility is 'protected'" in str(e)
+        print(f"   ✅ Validation works: {e}")
+    
+    # Test 2: Test with unlisted visibility should also fail
+    print("2. Testing validation: authorized_workspaces with unlisted visibility...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service-2",
+            "config": {
+                "visibility": "unlisted",
+                "authorized_workspaces": ["some-workspace"]  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "authorized_workspaces can only be set when visibility is 'protected'" in str(e)
+        print(f"   ✅ Validation works for unlisted: {e}")
+    
+    # Test 3: Register service with authorized_workspaces (valid case)
+    print("3. Testing service with authorized_workspaces (valid)...")
+    await ws1.register_service({
+        "id": "authorized-service",
+        "name": "Authorized Test Service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace2]  # Only allow workspace2
+        },
+        "test_method": lambda x: f"authorized: {x}"
+    })
+    
+    # Access from same workspace should work
+    svc = await ws1.get_service(f"{workspace1}/test-auth-client:authorized-service")
+    result = await svc.test_method("test")
+    assert result == "authorized: test"
+    print("   ✅ Service accessible from same workspace")
+    
+    # Test 4: Validate authorized_workspaces must be a list
+    print("4. Testing validation: authorized_workspaces must be a list...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service-3",
+            "config": {
+                "visibility": "protected",
+                "authorized_workspaces": "not-a-list"  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "authorized_workspaces must be a list" in str(e)
+        print(f"   ✅ List validation works: {e}")
+    
+    # Test 5: Validate workspace ids must be strings
+    print("5. Testing validation: workspace ids must be strings...")
+    try:
+        await ws1.register_service({
+            "id": "invalid-service-4",
+            "config": {
+                "visibility": "protected",
+                "authorized_workspaces": ["valid-ws", 123, "another-ws"]  # Should fail
+            },
+            "test": lambda: "test"
+        })
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "must be a string" in str(e)
+        print(f"   ✅ String validation works: {e}")
+    
+    # Test 6: Empty authorized_workspaces list is valid
+    print("6. Testing empty authorized_workspaces list...")
+    await ws1.register_service({
+        "id": "empty-auth-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": []  # Empty list is valid
+        },
+        "test": lambda: "empty-auth"
+    })
+    
+    svc_empty = await ws1.get_service(f"{workspace1}/test-auth-client:empty-auth-service")
+    result = await svc_empty.test()
+    assert result == "empty-auth"
+    print("   ✅ Empty authorized_workspaces list works")
+    
+    # Test 7: Method calls are also protected by authorized_workspaces
+    print("7. Testing that method calls respect authorized_workspaces...")
+    # Register a service with methods that should be protected
+    await ws1.register_service({
+        "id": "method-test-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": ["fake-authorized-workspace"]  # Non-existent workspace
+        },
+        "protected_method": lambda x: f"protected: {x}",
+        "another_method": lambda: "also protected"
+    })
+    
+    # Can get the service from same workspace
+    svc_method = await ws1.get_service(f"{workspace1}/test-auth-client:method-test-service")
+    # Methods should work from same workspace (even though fake-authorized-workspace is listed)
+    result = await svc_method.protected_method("test")
+    assert result == "protected: test"
+    result2 = await svc_method.another_method()
+    assert result2 == "also protected"
+    print("   ✅ Methods work from same workspace despite authorized_workspaces")
+    
+    # Test 8: Cross-workspace access - authorized workspace should have access
+    print("\n8. Testing cross-workspace access (authorized)...")
+    # Try to access the service from workspace2 (which is authorized)
+    try:
+        svc_from_ws2 = await ws2.get_service(f"{workspace1}/test-auth-client:authorized-service")
+        result = await svc_from_ws2.test_method("from-workspace2")
+        assert result == "authorized: from-workspace2"
+        print("   ✅ Authorized workspace can access protected service")
+    except Exception as e:
+        print(f"   ❌ Failed to access from authorized workspace: {e}")
+        assert False, f"Authorized workspace should have access: {e}"
+    
+    # Test 9: Cross-workspace access - unauthorized workspace should be denied
+    print("9. Testing cross-workspace access (unauthorized)...")
+    # Try to access the service from workspace3 (which is NOT authorized)
+    try:
+        svc_from_ws3 = await ws3.get_service(f"{workspace1}/test-auth-client:authorized-service")
+        # Try to call the method - this should fail
+        await svc_from_ws3.test_method("from-workspace3")
+        assert False, "Unauthorized workspace should NOT have access"
+    except Exception as e:
+        assert "not authorized" in str(e).lower() or "permission" in str(e).lower() or "denied" in str(e).lower()
+        print(f"   ✅ Unauthorized workspace correctly denied: {e}")
+    
+    # Test 10: Service with no authorized workspaces (empty list) - no external access
+    print("10. Testing service with empty authorized_workspaces list...")
+    try:
+        # Try to access empty-auth-service from workspace2
+        svc_empty_from_ws2 = await ws2.get_service(f"{workspace1}/test-auth-client:empty-auth-service")
+        await svc_empty_from_ws2.test()
+        assert False, "Service with empty authorized_workspaces should deny all external access"
+    except Exception as e:
+        assert "not authorized" in str(e).lower() or "permission" in str(e).lower() or "denied" in str(e).lower()
+        print(f"   ✅ Empty authorized_workspaces correctly denies external access: {e}")
+    
+    # Test 11: Update authorized_workspaces dynamically
+    print("11. Testing dynamic update of authorized_workspaces...")
+    # Register a new service that initially allows workspace2
+    await ws1.register_service({
+        "id": "dynamic-auth-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace2]
+        },
+        "test": lambda: "dynamic-test"
+    })
+    
+    # Verify workspace2 can access
+    svc_dynamic = await ws2.get_service(f"{workspace1}/test-auth-client:dynamic-auth-service")
+    result = await svc_dynamic.test()
+    assert result == "dynamic-test"
+    print("   ✅ Initial authorized workspace has access")
+    
+    # Now re-register with workspace3 instead
+    await ws1.register_service({
+        "id": "dynamic-auth-service",
+        "config": {
+            "visibility": "protected",
+            "authorized_workspaces": [workspace3]  # Changed to workspace3
+        },
+        "test": lambda: "dynamic-test-updated"
+    }, overwrite=True)
+    
+    # workspace2 should now be denied
+    try:
+        svc_dynamic = await ws2.get_service(f"{workspace1}/test-auth-client:dynamic-auth-service")
+        await svc_dynamic.test()
+        assert False, "Previously authorized workspace should now be denied"
+    except Exception as e:
+        print(f"   ✅ Previously authorized workspace now denied: {e}")
+    
+    # workspace3 should now have access
+    svc_dynamic_ws3 = await ws3.get_service(f"{workspace1}/test-auth-client:dynamic-auth-service")
+    result = await svc_dynamic_ws3.test()
+    assert result == "dynamic-test-updated"
+    print("   ✅ Newly authorized workspace has access")
+    
+    # Cleanup
+    await ws1.disconnect()
+    await ws2.disconnect()
+    await ws3.disconnect()
+    
+    print("✅ AUTHORIZED WORKSPACES FULL TEST PASSED!")
+
+
+@pytest.mark.asyncio
+async def test_long_running_method_with_heartbeat(restartable_server):
+    """Test that long-running methods don't timeout as long as heartbeat is active."""
+    print("\n=== LONG RUNNING METHOD WITH HEARTBEAT TEST ===")
+    
+    # Use a SHORT timeout (2 seconds) to verify heartbeat keeps method alive
+    ws = await connect_to_server({
+        "name": "long-running-test",
+        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+        "client_id": "long-running-test",
+        "method_timeout": 2  # 2 second timeout - methods will run LONGER than this
+    })
+    
+    print(f"   ⏱️  Method timeout set to 2 seconds")
+    
+    # Create a service with a long-running method
+    class LongRunningService:
+        async def long_task(self, duration_seconds, callback=None):
+            """Simulates a long-running task that reports progress."""
+            start_time = asyncio.get_event_loop().time()
+            steps = duration_seconds * 2  # Report progress every 0.5 seconds
+            
+            for i in range(steps):
+                await asyncio.sleep(0.5)
+                elapsed = asyncio.get_event_loop().time() - start_time
+                
+                # Report progress via callback if provided
+                if callback:
+                    await callback(f"Progress: {i+1}/{steps}, elapsed: {elapsed:.1f}s")
+            
+            return f"Task completed after {duration_seconds} seconds"
+        
+        async def infinite_stream(self, callback):
+            """Simulates infinite streaming (like terminal attach)."""
+            count = 0
+            while True:
+                await asyncio.sleep(0.5)
+                count += 1
+                await callback(f"Stream update #{count}")
+                # Stop after 5 updates for testing
+                if count >= 5:
+                    return f"Streamed {count} updates"
+    
+    # Register the service
+    await ws.register_service({
+        "id": "long-running-service",
+        "config": {"visibility": "protected"},
+        "long_task": LongRunningService().long_task,
+        "infinite_stream": LongRunningService().infinite_stream
+    })
+    
+    # Test 1: Long-running method with callback (should not timeout)
+    print("\n--- Test 1: Long-running method with progress callback ---")
+    svc = await ws.get_service("long-running-service")
+    
+    progress_updates = []
+    async def progress_callback(msg):
+        progress_updates.append(msg)
+        print(f"   📊 {msg}")
+    
+    # Run a task for 5 seconds - MORE than the 2 second timeout!
+    # This proves heartbeat keeps it alive
+    TASK_DURATION = 5  # 5 seconds > 2 second timeout
+    print(f"   🚀 Starting {TASK_DURATION} second task (timeout is only 2 seconds)")
+    
+    start_time = asyncio.get_event_loop().time()
+    result = await svc.long_task(TASK_DURATION, progress_callback)
+    actual_duration = asyncio.get_event_loop().time() - start_time
+    
+    assert f"Task completed after {TASK_DURATION} seconds" in result
+    assert actual_duration >= TASK_DURATION  # Verify it actually ran for full duration
+    assert actual_duration > 2  # Verify it ran LONGER than the timeout
+    assert len(progress_updates) >= TASK_DURATION * 2 - 1  # Should have ~10 updates
+    print(f"   ✅ Task ran for {actual_duration:.1f}s (>{ws.rpc._method_timeout}s timeout) with {len(progress_updates)} updates")
+    
+    # Test 2: Infinite streaming method (like terminal attach)
+    print("\n--- Test 2: Infinite streaming method ---")
+    stream_updates = []
+    async def stream_callback(msg):
+        stream_updates.append(msg)
+        print(f"   📡 {msg}")
+    
+    # This simulates the terminal attach use case
+    # Runs for ~2.5 seconds (5 updates * 0.5s each) - also longer than timeout
+    print(f"   🚀 Starting streaming (will run >2s timeout)")
+    
+    start_time = asyncio.get_event_loop().time()
+    result = await svc.infinite_stream(stream_callback)
+    stream_duration = asyncio.get_event_loop().time() - start_time
+    
+    assert "Streamed 5 updates" in result
+    assert len(stream_updates) == 5
+    assert stream_duration > 2  # Verify it ran LONGER than the timeout
+    print(f"   ✅ Streaming ran for {stream_duration:.1f}s (>2s timeout) with {len(stream_updates)} updates")
+    
+    # Cleanup
+    await ws.disconnect()
+    
+    print("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!")
+
+

@@ -7,6 +7,7 @@ import io
 import os
 import logging
 import math
+import httpx
 import time
 import sys
 import traceback
@@ -459,10 +460,24 @@ class RemoteFunction:
         if self._with_promise:
             main_message["session"] = local_session_id
             method_name = f"{self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}"
+            # Timer will be started after message is sent
+            # Heartbeat will keep resetting it, allowing methods to run indefinitely
+            # IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
+            async def timeout_callback(error_msg):
+                # First reject the promise
+                if asyncio.iscoroutinefunction(reject):
+                    await reject(error_msg)
+                else:
+                    reject(error_msg)
+                # Then clean up the entire session to stop all callbacks
+                if local_session_id in self._rpc._object_store:
+                    del self._rpc._object_store[local_session_id]
+                    logger.debug(f"Cleaned up session {local_session_id} after timeout")
+            
             timer = Timer(
                 self._rpc._method_timeout,
-                reject,
-                f"Method call time out: {method_name}, context: {self._description}",
+                timeout_callback,
+                f"Method call timed out: {method_name}, context: {self._description}",
                 label=method_name,
             )
 
@@ -528,7 +543,7 @@ class RemoteFunction:
                     timer.clear()
             else:
                 if timer:
-                    timer.reset()
+                    timer.start()
         emit_task.add_done_callback(handle_result)
         return fut
 
@@ -1174,8 +1189,6 @@ class RPC(MessageEmitter):
             logger.info(f"Received HTTP message notification: {content_length} bytes at {presigned_url}")
             
             # Actually download the content from the presigned URL
-            import httpx
-            import asyncio
             
             async def download_and_process():
                 try:
@@ -1363,6 +1376,11 @@ class RPC(MessageEmitter):
         # allow access for the same workspace
         if context["ws"] == ws:
             return service
+        
+        # Check if user is from an authorized workspace
+        authorized_workspaces = service["config"].get("authorized_workspaces")
+        if authorized_workspaces and context["ws"] in authorized_workspaces:
+            return service
 
         raise Exception(
             f"Permission denied for getting protected service: {service_id}, workspace mismatch: {ws} != {context['ws']}"
@@ -1415,6 +1433,7 @@ class RPC(MessageEmitter):
         require_context=False,
         run_in_executor=False,
         visibility="protected",
+        authorized_workspaces=None,
     ):
         if callable(a_object):
             # mark the method as a remote method that requires context
@@ -1428,6 +1447,7 @@ class RPC(MessageEmitter):
                 "run_in_executor": run_in_executor,
                 "method_id": "services." + object_id,
                 "visibility": visibility,
+                "authorized_workspaces": authorized_workspaces,
             }
         elif isinstance(a_object, (dict, list, tuple)):
             if isinstance(a_object, ObjectProxy):
@@ -1461,6 +1481,7 @@ class RPC(MessageEmitter):
                     require_context=require_context,
                     run_in_executor=run_in_executor,
                     visibility=visibility,
+                    authorized_workspaces=authorized_workspaces,
                 )
 
     def add_service(self, api, overwrite=False):
@@ -1509,12 +1530,26 @@ class RPC(MessageEmitter):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
         assert visibility in ["protected", "public", "unlisted"]
+        
+        # Validate authorized_workspaces
+        authorized_workspaces = api["config"].get("authorized_workspaces")
+        if authorized_workspaces is not None:
+            if visibility != "protected":
+                raise ValueError(
+                    f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'"
+                )
+            if not isinstance(authorized_workspaces, list):
+                raise ValueError("authorized_workspaces must be a list of workspace ids")
+            for ws_id in authorized_workspaces:
+                if not isinstance(ws_id, str):
+                    raise ValueError(f"Each workspace id in authorized_workspaces must be a string, got {type(ws_id)}")
         self._annotate_service_methods(
             api,
             api["id"],
             require_context=require_context,
             run_in_executor=run_in_executor,
             visibility=visibility,
+            authorized_workspaces=authorized_workspaces,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -1531,7 +1566,9 @@ class RPC(MessageEmitter):
             "workspace", self._local_workspace or self._connection._workspace
         )
         skip_context = config.get("require_context", False)
-        service_schema = _get_schema(service, skip_context=skip_context)
+        exclude_keys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+        filtered_service = {k: v for k, v in service.items() if k not in exclude_keys}
+        service_schema = _get_schema(filtered_service, skip_context=skip_context)
         service_info = {
             "config": ObjectProxy.fromDict(config),
             "id": f"{config['workspace']}/{self._client_id}:{service['id']}",
@@ -1984,7 +2021,6 @@ class RPC(MessageEmitter):
 
         # Clean promise lifecycle management - TYPE-BASED, not string-based
         store["_promise_manager"] = self._create_promise_manager()
-
         encoded = {}
 
         if timer and reject and self._method_timeout:
@@ -2366,10 +2402,19 @@ class RPC(MessageEmitter):
                     self._method_annotations[method].get("visibility", "protected")
                     == "protected"
                 ):
-                    if local_workspace != remote_workspace and (
-                        remote_workspace != "*"
-                        or remote_client_id != self._connection.manager_id
+                    # Allow access from same workspace
+                    if local_workspace == remote_workspace:
+                        pass  # Access granted
+                    # Check if remote workspace is in authorized_workspaces list
+                    elif (
+                        self._method_annotations[method].get("authorized_workspaces")
+                        and remote_workspace in self._method_annotations[method]["authorized_workspaces"]
                     ):
+                        pass  # Access granted
+                    # Allow manager access
+                    elif remote_workspace == "*" and remote_client_id == self._connection.manager_id:
+                        pass  # Access granted
+                    else:
                         raise PermissionError(
                             f"Permission denied for invoking protected method {method_name}, "
                             "workspace mismatch: "
