@@ -125,7 +125,7 @@ def test_callable_doc():
 
 
 @pytest.mark.asyncio
-async def test_serve_fastapi_app(websocket_server):
+async def test_serve_fastapi_app(fastapi_server):
     """Test the serve command utility function."""
     # Create a FastAPI app instance
     app = FastAPI()
@@ -167,7 +167,7 @@ async def test_serve_fastapi_app(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_openai_server_comprehensive(websocket_server):
+async def test_openai_server_comprehensive(fastapi_server):
     """Test comprehensive OpenAI server proxy with different model registry types."""
 
     # Test different types of model registry functions
@@ -415,7 +415,7 @@ async def test_openai_server_comprehensive(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_openai_server_edge_cases(websocket_server):
+async def test_openai_server_edge_cases(fastapi_server):
     """Test edge cases for OpenAI server including null max_tokens."""
 
     # Model that generates long content to test max_tokens handling
@@ -471,7 +471,7 @@ async def test_openai_server_edge_cases(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_launch_external_services(websocket_server):
+async def test_launch_external_services(fastapi_server):
     """Test the launch command utility fuction."""
     server = await connect_to_server(
         {

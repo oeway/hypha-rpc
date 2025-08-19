@@ -88,7 +88,7 @@ def execute_python(
 
 
 @pytest_asyncio.fixture
-async def hypha_server_with_services(websocket_server):
+async def hypha_server_with_services(fastapi_server):
     """Fixture that creates a Hypha server with calculator and python interpreter services."""
     # Connect to the Hypha server
     server = await connect_to_server({"name": "mcp-test", "server_url": WS_SERVER_URL})
@@ -132,7 +132,7 @@ async def hypha_server_with_services(websocket_server):
 
 
 @pytest_asyncio.fixture
-async def mcp_service_with_all_features(websocket_server):
+async def mcp_service_with_all_features(fastapi_server):
     """Fixture that creates a Hypha server with an MCP service that has tools, resources, and prompts."""
     # Connect to the Hypha server
     server = await connect_to_server(

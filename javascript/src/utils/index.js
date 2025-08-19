@@ -446,6 +446,7 @@ export class MessageEmitter {
     }
   }
   _fire(event, data) {
+    assert(typeof event === "string", "Event name must be a string");
     if (this._event_handlers[event]) {
       var i = this._event_handlers[event].length;
       while (i--) {
