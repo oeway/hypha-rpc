@@ -907,7 +907,7 @@ class RPC(MessageEmitter):
                 "from": context["from"],
                 "to": context["to"],
                 "ws": context["ws"],
-                "user": context.get("user"),  # Use get() to handle missing user gracefully
+                "user": context["user"],
             }
         )
         main["ctx"] = main.copy()

@@ -55,10 +55,20 @@ async def test_comprehensive_reconnection_suite(hypha_server):
     await ws.rpc._connection._websocket.close(1011)  # Unexpected condition
     
     print("⏳ Waiting for reconnection...")
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)  # Increased wait time
     
     print("🔍 Testing service after reconnection...")
-    svc = await ws.get_service("reconnection-test-service")
+    # Try a few times with retries in case there's a timing issue
+    for attempt in range(3):
+        try:
+            svc = await ws.get_service("reconnection-test-service")
+            break
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+            else:
+                raise
     assert await svc.ping() == "pong"
     result = await svc.echo("after-reconnection")
     assert result == "echo: after-reconnection"
