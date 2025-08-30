@@ -657,6 +657,7 @@ async def login(config):
     callback = config.get("login_callback")
     profile = config.get("profile", False)
     ssl = config.get("ssl")
+    additional_headers = config.get("additional_headers")
 
     server = await connect_to_server(
         {
@@ -664,6 +665,7 @@ async def login(config):
             "server_url": server_url,
             "method_timeout": timeout,
             "ssl": ssl,
+            "additional_headers": additional_headers,
         }
     )
     try:

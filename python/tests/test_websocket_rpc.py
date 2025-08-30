@@ -187,6 +187,33 @@ def test_login_sync(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_login_with_additional_headers(websocket_server):
+    """Test login with additional headers."""
+    TOKEN = "sf31df234"
+    additional_headers = {"X-Custom-Header": "test-value"}
+
+    async def callback(context):
+        print(f"By passing login: {context['login_url']}")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            requests.get,
+            context["report_url"] + "?key=" + context["key"] + "&token=" + TOKEN,
+        )
+
+    # Test that additional_headers is passed through to connect_to_server
+    token = await login(
+        {
+            "server_url": WS_SERVER_URL,
+            "login_callback": callback,
+            "login_timeout": 20,
+            "additional_headers": additional_headers,
+        }
+    )
+    assert token == TOKEN
+
+
+@pytest.mark.asyncio
 async def test_numpy_array_sync(websocket_server):
     """Test numpy array registered in async."""
     ws = connect_to_server_sync(

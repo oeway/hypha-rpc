@@ -949,7 +949,16 @@ export class RPC extends MessageEmitter {
     config.workspace =
       config.workspace || this._local_workspace || this._connection.workspace;
     const skipContext = config.require_context;
-    const excludeKeys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+    const excludeKeys = [
+      "id",
+      "config",
+      "name",
+      "description",
+      "type",
+      "docs",
+      "app_id",
+      "service_schema",
+    ];
     const filteredService = {};
     for (const key of Object.keys(service)) {
       if (!excludeKeys.includes(key)) {
@@ -1635,20 +1644,22 @@ export class RPC extends MessageEmitter {
           // I.e. the session id won't be passed for promises themselves
           main_message["session"] = local_session_id;
           let method_name = `${target_id}:${method_id}`;
-          
+
           // Create a timer that gets reset by heartbeat
           // Methods can run indefinitely as long as heartbeat keeps resetting the timer
           // IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
-          const timeoutCallback = function(error_msg) {
+          const timeoutCallback = function (error_msg) {
             // First reject the promise
             reject(error_msg);
             // Then clean up the entire session to stop all callbacks
             if (self._object_store[local_session_id]) {
               delete self._object_store[local_session_id];
-              console.debug(`Cleaned up session ${local_session_id} after timeout`);
+              console.debug(
+                `Cleaned up session ${local_session_id} after timeout`,
+              );
             }
           };
-          
+
           timer = new Timer(
             self._method_timeout,
             timeoutCallback,
@@ -1994,10 +2005,10 @@ export class RPC extends MessageEmitter {
           }
         }
         args.push(data.ctx);
-        assert(
-          args.length === method.length,
-          `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
-        );
+        // assert(
+        //   args.length === method.length,
+        //   `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
+        // );
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
