@@ -714,10 +714,14 @@ class RPC(MessageEmitter):
                                         logger.debug(f"Client {client_id} disconnected, cleaning up sessions")
                                         await self._handle_client_disconnected(client_id)
                                 
-                                self._client_disconnected_subscription = await manager.subscribe(
-                                    "client_disconnected",
-                                    handle_client_disconnected
-                                )
+                                # Subscribe to the event topic first
+                                self._client_disconnected_subscription = await manager.subscribe([
+                                    "client_disconnected"
+                                ])
+                                
+                                # Then register the local event handler
+                                self.on("client_disconnected", handle_client_disconnected)
+                                
                                 logger.debug("Successfully subscribed to client_disconnected events")
                             else:
                                 logger.debug("Manager does not support subscribe method, skipping client_disconnected handling")
@@ -950,10 +954,24 @@ class RPC(MessageEmitter):
         # Unsubscribe from client_disconnected events if subscribed
         if hasattr(self, '_client_disconnected_subscription') and self._client_disconnected_subscription:
             try:
-                if asyncio.iscoroutinefunction(self._client_disconnected_subscription.unsubscribe):
-                    asyncio.create_task(self._client_disconnected_subscription.unsubscribe())
-                elif callable(self._client_disconnected_subscription.unsubscribe):
-                    self._client_disconnected_subscription.unsubscribe()
+                # Get the manager service to unsubscribe (non-blocking)
+                if self._connection and self._connection.manager_id:
+                    async def unsubscribe_async():
+                        try:
+                            manager = await self.get_remote_service(f"*/{self._connection.manager_id}")
+                            if hasattr(manager, 'unsubscribe') and callable(manager.unsubscribe):
+                                if asyncio.iscoroutinefunction(manager.unsubscribe):
+                                    await manager.unsubscribe("client_disconnected")
+                                else:
+                                    manager.unsubscribe("client_disconnected")
+                        except Exception as e:
+                            logger.debug(f"Error unsubscribing from client_disconnected: {e}")
+                    
+                    # Create task to run in background
+                    asyncio.create_task(unsubscribe_async())
+                    
+                # Remove the local event handler
+                self.off("client_disconnected")
             except Exception as e:
                 logger.debug(f"Error unsubscribing from client_disconnected: {e}")
         

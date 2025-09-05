@@ -449,10 +449,14 @@ export class RPC extends MessageEmitter {
                   }
                 };
 
-                this._clientDisconnectedSubscription = await manager.subscribe(
+                // Subscribe to the event topic first
+                this._clientDisconnectedSubscription = await manager.subscribe([
                   "client_disconnected",
-                  handleClientDisconnected,
-                );
+                ]);
+                
+                // Then register the local event handler
+                this.on("client_disconnected", handleClientDisconnected);
+                
                 console.debug(
                   "Successfully subscribed to client_disconnected events",
                 );
@@ -680,11 +684,20 @@ export class RPC extends MessageEmitter {
     // Unsubscribe from client_disconnected events if subscribed
     if (this._clientDisconnectedSubscription) {
       try {
-        if (
-          typeof this._clientDisconnectedSubscription.unsubscribe === "function"
-        ) {
-          this._clientDisconnectedSubscription.unsubscribe();
+        // Get the manager service to unsubscribe (non-blocking)
+        if (this._connection && this._connection.manager_id) {
+          this.get_remote_service("*/" + this._connection.manager_id)
+            .then((manager) => {
+              if (manager.unsubscribe && typeof manager.unsubscribe === "function") {
+                return manager.unsubscribe("client_disconnected");
+              }
+            })
+            .catch((e) => {
+              console.debug(`Error unsubscribing from client_disconnected: ${e}`);
+            });
         }
+        // Remove the local event handler
+        this.off("client_disconnected");
       } catch (e) {
         console.debug(`Error unsubscribing from client_disconnected: ${e}`);
       }

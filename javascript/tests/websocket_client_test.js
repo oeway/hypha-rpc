@@ -1992,7 +1992,7 @@ describe("RPC", async () => {
 
     // Disconnect the local RPC
     console.log("🔌 Disconnecting local RPC...");
-    client.close();
+    await client.disconnect();
 
     // All pending tasks should fail
     let failedCount = 0;
