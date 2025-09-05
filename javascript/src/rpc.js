@@ -440,8 +440,17 @@ export class RPC extends MessageEmitter {
                 console.debug("Subscribing to client_disconnected events");
 
                 const handleClientDisconnected = async (event) => {
-                  const clientId = event.client;
-                  if (clientId) {
+                  // The client ID is in event.data.id based on the event structure
+                  const clientId = event.data?.id || event.client;
+                  const workspace = event.data?.workspace;
+                  if (clientId && workspace) {
+                    // Construct the full client path with workspace prefix
+                    const fullClientId = `${workspace}/${clientId}`;
+                    console.debug(
+                      `Client ${fullClientId} disconnected, cleaning up sessions`,
+                    );
+                    await this._handleClientDisconnected(fullClientId);
+                  } else if (clientId) {
                     console.debug(
                       `Client ${clientId} disconnected, cleaning up sessions`,
                     );
@@ -739,56 +748,66 @@ export class RPC extends MessageEmitter {
   _cleanupSessionsForClient(clientId) {
     let sessionsCleaned = 0;
 
-    const cleanupRecursive = (store, path = "") => {
-      if (typeof store !== "object" || store === null) {
-        return;
+    // Iterate through all top-level session keys
+    for (const sessionKey of Object.keys(this._object_store)) {
+      if (sessionKey === "services" || sessionKey === "message_cache") {
+        continue;
       }
 
-      for (const key of Object.keys(store)) {
-        if (key === "services" || key === "message_cache") {
-          continue;
-        }
+      const session = this._object_store[sessionKey];
+      if (!session || typeof session !== "object") {
+        continue;
+      }
 
-        const value = store[key];
-        const currentPath = path ? `${path}.${key}` : key;
+      // Check if this session belongs to the disconnected client
+      // Sessions have a target_id property that identifies which client they're calling
+      if (session.target_id === clientId) {
+        console.debug(`Found session ${sessionKey} for disconnected client: ${clientId}`);
 
-        // Check if this is a session for the target client
-        // Sessions are typically stored with keys like "client_id.session_id"
-        if (currentPath.startsWith(clientId)) {
-          // Clean up this session
-          if (typeof value === "object" && value !== null) {
-            // Cancel any pending promises
-            if (value.reject && typeof value.reject === "function") {
-              try {
-                value.reject(new Error(`Client ${clientId} disconnected`));
-              } catch (e) {
-                console.debug(
-                  `Error rejecting promise for session ${currentPath}: ${e}`,
-                );
-              }
-            }
-
-            // Clean up timers and tasks
-            if (value.heartbeat_task) {
-              clearInterval(value.heartbeat_task);
-            }
-            if (value.timer) {
-              value.timer.clear();
-            }
+        // Reject any pending promises in this session
+        if (session.reject && typeof session.reject === "function") {
+          console.debug(`Rejecting session ${sessionKey}`);
+          try {
+            session.reject(new Error(`Client disconnected: ${clientId}`));
+          } catch (e) {
+            console.warn(`Error rejecting session ${sessionKey}: ${e}`);
           }
-
-          // Remove the session
-          delete store[key];
-          sessionsCleaned++;
-          console.debug(`Cleaned up session: ${currentPath}`);
-        } else if (typeof value === "object" && value !== null) {
-          // Recursively clean up nested sessions
-          cleanupRecursive(value, currentPath);
         }
-      }
-    };
 
-    cleanupRecursive(this._object_store);
+        if (session.resolve && typeof session.resolve === "function") {
+          console.debug(`Resolving session ${sessionKey} with error`);
+          try {
+            session.resolve(new Error(`Client disconnected: ${clientId}`));
+          } catch (e) {
+            console.warn(`Error resolving session ${sessionKey}: ${e}`);
+          }
+        }
+
+        // Clear any timers
+        if (session.timer && typeof session.timer.clear === "function") {
+          try {
+            session.timer.clear();
+          } catch (e) {
+            console.warn(`Error clearing timer for ${sessionKey}: ${e}`);
+          }
+        }
+
+        // Clear heartbeat tasks
+        if (session.heartbeat_task) {
+          try {
+            clearInterval(session.heartbeat_task);
+          } catch (e) {
+            console.warn(`Error clearing heartbeat for ${sessionKey}: ${e}`);
+          }
+        }
+
+        // Remove the entire session
+        delete this._object_store[sessionKey];
+        sessionsCleaned++;
+        console.debug(`Cleaned up session: ${sessionKey}`);
+      }
+    }
+
     return sessionsCleaned;
   }
 

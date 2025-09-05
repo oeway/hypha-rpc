@@ -1003,45 +1003,54 @@ class RPC(MessageEmitter):
         """Clean up all sessions for a specific client."""
         sessions_cleaned = 0
         
-        def cleanup_recursive(store, path=""):
-            nonlocal sessions_cleaned
-            if not isinstance(store, dict):
-                return
+        # Iterate through all top-level session keys
+        for session_key in list(self._object_store.keys()):
+            if session_key in ("services", "message_cache"):
+                continue
             
-            for key, value in list(store.items()):
-                if key in ("services", "message_cache"):
-                    continue
-                    
-                current_path = f"{path}.{key}" if path else key
+            session = self._object_store.get(session_key)
+            if not isinstance(session, dict):
+                continue
+            
+            # Check if this session belongs to the disconnected client
+            # Sessions have a target_id property that identifies which client they're calling
+            if session.get("target_id") == client_id:
+                logger.debug(f"Found session {session_key} for disconnected client: {client_id}")
                 
-                # Check if this is a session for the target client
-                # Sessions are typically stored with keys like "client_id.session_id"
-                if current_path.startswith(client_id):
-                    # Clean up this session
-                    if isinstance(value, dict):
-                        # Cancel any pending promises
-                        if "reject" in value and callable(value["reject"]):
-                            try:
-                                value["reject"](RemoteException(f"Client {client_id} disconnected"))
-                            except Exception as e:
-                                logger.debug(f"Error rejecting promise for session {current_path}: {e}")
-                        
-                        # Clean up timers and tasks
-                        if value.get("heartbeat_task"):
-                            value["heartbeat_task"].cancel()
-                        if value.get("timer"):
-                            value["timer"].clear()
-                    
-                    # Remove the session
-                    del store[key]
-                    sessions_cleaned += 1
-                    logger.debug(f"Cleaned up session: {current_path}")
-                    
-                elif isinstance(value, dict):
-                    # Recursively clean up nested sessions
-                    cleanup_recursive(value, current_path)
+                # Reject any pending promises in this session
+                if "reject" in session and callable(session["reject"]):
+                    logger.debug(f"Rejecting session {session_key}")
+                    try:
+                        session["reject"](RemoteException(f"Client disconnected: {client_id}"))
+                    except Exception as e:
+                        logger.warning(f"Error rejecting session {session_key}: {e}")
+                
+                if "resolve" in session and callable(session["resolve"]):
+                    logger.debug(f"Resolving session {session_key} with error")
+                    try:
+                        session["resolve"](RemoteException(f"Client disconnected: {client_id}"))
+                    except Exception as e:
+                        logger.warning(f"Error resolving session {session_key}: {e}")
+                
+                # Clear any timers
+                if session.get("timer"):
+                    try:
+                        session["timer"].clear()
+                    except Exception as e:
+                        logger.warning(f"Error clearing timer for {session_key}: {e}")
+                
+                # Clear heartbeat tasks  
+                if session.get("heartbeat_task"):
+                    try:
+                        session["heartbeat_task"].cancel()
+                    except Exception as e:
+                        logger.warning(f"Error clearing heartbeat for {session_key}: {e}")
+                
+                # Remove the entire session
+                del self._object_store[session_key]
+                sessions_cleaned += 1
+                logger.debug(f"Cleaned up session: {session_key}")
         
-        cleanup_recursive(self._object_store)
         return sessions_cleaned
     
     def _cleanup_on_disconnect(self):
