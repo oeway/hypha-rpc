@@ -762,8 +762,6 @@ export class RPC extends MessageEmitter {
       // Check if this session belongs to the disconnected client
       // Sessions have a target_id property that identifies which client they're calling
       if (session.target_id === clientId) {
-        console.debug(`Found session ${sessionKey} for disconnected client: ${clientId}`);
-
         // Reject any pending promises in this session
         if (session.reject && typeof session.reject === "function") {
           console.debug(`Rejecting session ${sessionKey}`);
@@ -859,8 +857,6 @@ export class RPC extends MessageEmitter {
       for (const key of keysToDelete) {
         delete this._object_store[key];
       }
-
-      console.debug(`Cleaned up ${keysToDelete.length} sessions on disconnect`);
     } catch (e) {
       console.error(`Error during cleanup on disconnect: ${e}`);
     }
