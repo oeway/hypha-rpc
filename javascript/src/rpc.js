@@ -817,7 +817,7 @@ export class RPC extends MessageEmitter {
       const keysToDelete = [];
 
       for (const key of Object.keys(this._object_store)) {
-        if (key === "services" || key === "message_cache") {
+        if (key === "services") {
           continue;
         }
 
@@ -844,13 +844,10 @@ export class RPC extends MessageEmitter {
               console.debug(`Error clearing timer: ${e}`);
             }
           }
-
-          // Mark this key for deletion if it's a session
-          // Sessions typically have reject/resolve functions or target_id
-          if (value.reject || value.resolve || value.target_id) {
-            keysToDelete.push(key);
-          }
         }
+
+        // Mark ALL keys for deletion except services
+        keysToDelete.push(key);
       }
 
       // Delete all marked sessions

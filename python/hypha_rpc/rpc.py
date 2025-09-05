@@ -1058,32 +1058,35 @@ class RPC(MessageEmitter):
         try:
             logger.debug("Cleaning up all sessions due to local RPC disconnection")
             
-            def cleanup_all_sessions(store):
-                if not isinstance(store, dict):
-                    return
-                
-                for key, value in list(store.items()):
-                    if key in ("services", "message_cache"):
-                        continue
-                    
-                    if isinstance(value, dict):
-                        # Reject any pending promises
-                        if "reject" in value and callable(value["reject"]):
-                            try:
-                                value["reject"](RemoteException("RPC connection closed"))
-                            except Exception as e:
-                                logger.debug(f"Error rejecting promise during cleanup: {e}")
-                        
-                        # Clean up timers and tasks
-                        if value.get("heartbeat_task"):
-                            value["heartbeat_task"].cancel()
-                        if value.get("timer"):
-                            value["timer"].clear()
-                        
-                        # Recursively clean up nested sessions
-                        cleanup_all_sessions(value)
+            # Get all keys to delete (everything except services)
+            keys_to_delete = []
             
-            cleanup_all_sessions(self._object_store)
+            for key in list(self._object_store.keys()):
+                if key == "services":
+                    continue
+                
+                value = self._object_store.get(key)
+                
+                if isinstance(value, dict):
+                    # Reject any pending promises
+                    if "reject" in value and callable(value["reject"]):
+                        try:
+                            value["reject"](RemoteException("RPC connection closed"))
+                        except Exception as e:
+                            logger.debug(f"Error rejecting promise during cleanup: {e}")
+                    
+                    # Clean up timers and tasks
+                    if value.get("heartbeat_task"):
+                        value["heartbeat_task"].cancel()
+                    if value.get("timer"):
+                        value["timer"].clear()
+                
+                # Mark ALL keys for deletion except services
+                keys_to_delete.append(key)
+            
+            # Delete all marked sessions
+            for key in keys_to_delete:
+                del self._object_store[key]
             
         except Exception as e:
             logger.error(f"Error during cleanup on disconnect: {e}")
