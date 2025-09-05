@@ -815,43 +815,52 @@ export class RPC extends MessageEmitter {
     try {
       console.debug("Cleaning up all sessions due to local RPC disconnection");
 
-      const cleanupAllSessions = (store) => {
-        if (typeof store !== "object" || store === null) {
-          return;
+      // Get all keys to delete after cleanup
+      const keysToDelete = [];
+
+      for (const key of Object.keys(this._object_store)) {
+        if (key === "services" || key === "message_cache") {
+          continue;
         }
 
-        for (const key of Object.keys(store)) {
-          if (key === "services" || key === "message_cache") {
-            continue;
+        const value = this._object_store[key];
+
+        if (typeof value === "object" && value !== null) {
+          // Reject any pending promises
+          if (value.reject && typeof value.reject === "function") {
+            try {
+              value.reject(new Error("RPC connection closed"));
+            } catch (e) {
+              console.debug(`Error rejecting promise during cleanup: ${e}`);
+            }
           }
 
-          const value = store[key];
-
-          if (typeof value === "object" && value !== null) {
-            // Reject any pending promises
-            if (value.reject && typeof value.reject === "function") {
-              try {
-                value.reject(new Error("RPC connection closed"));
-              } catch (e) {
-                console.debug(`Error rejecting promise during cleanup: ${e}`);
-              }
-            }
-
-            // Clean up timers and tasks
-            if (value.heartbeat_task) {
-              clearInterval(value.heartbeat_task);
-            }
-            if (value.timer) {
+          // Clean up timers and tasks
+          if (value.heartbeat_task) {
+            clearInterval(value.heartbeat_task);
+          }
+          if (value.timer && typeof value.timer.clear === "function") {
+            try {
               value.timer.clear();
+            } catch (e) {
+              console.debug(`Error clearing timer: ${e}`);
             }
+          }
 
-            // Recursively clean up nested sessions
-            cleanupAllSessions(value);
+          // Mark this key for deletion if it's a session
+          // Sessions typically have reject/resolve functions or target_id
+          if (value.reject || value.resolve || value.target_id) {
+            keysToDelete.push(key);
           }
         }
-      };
+      }
 
-      cleanupAllSessions(this._object_store);
+      // Delete all marked sessions
+      for (const key of keysToDelete) {
+        delete this._object_store[key];
+      }
+
+      console.debug(`Cleaned up ${keysToDelete.length} sessions on disconnect`);
     } catch (e) {
       console.error(`Error during cleanup on disconnect: ${e}`);
     }
