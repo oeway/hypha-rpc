@@ -1848,24 +1848,29 @@ describe("RPC", async () => {
   it("test client disconnection cleanup", async function () {
     console.log("\n=== CLIENT DISCONNECTION CLEANUP TEST ===");
 
-    // Create first client
+    // Create first client (will create its own workspace)
     const client1 = await connectToServer({
       name: "client1",
       server_url: SERVER_URL,
       client_id: "client1-test",
     });
 
-    // Create second client
+    // Get the workspace from client1 to ensure client2 joins the same workspace
+    const sharedWorkspace = client1.config.workspace;
+    console.log(`Using shared workspace: ${sharedWorkspace}`);
+
+    // Create second client in the same workspace as client1
     const client2 = await connectToServer({
       name: "client2",
       server_url: SERVER_URL,
       client_id: "client2-test",
+      workspace: sharedWorkspace,
     });
 
     // Register a service on client2 that client1 will call
     await client2.registerService({
       id: "test-service",
-      config: { visibility: "protected" },
+      config: { visibility: "protected" },  // Protected is fine since both clients are in same workspace
       slowFunction: async () => {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         return "completed";
