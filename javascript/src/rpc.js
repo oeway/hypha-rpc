@@ -430,6 +430,44 @@ export class RPC extends MessageEmitter {
               registered: registeredCount,
               failed: failedServices,
             });
+
+            // Subscribe to client_disconnected events if the manager supports it
+            try {
+              if (
+                manager.subscribe &&
+                typeof manager.subscribe === "function"
+              ) {
+                console.debug("Subscribing to client_disconnected events");
+
+                const handleClientDisconnected = async (event) => {
+                  const clientId = event.client;
+                  if (clientId) {
+                    console.debug(
+                      `Client ${clientId} disconnected, cleaning up sessions`,
+                    );
+                    await this._handleClientDisconnected(clientId);
+                  }
+                };
+
+                this._clientDisconnectedSubscription = await manager.subscribe(
+                  "client_disconnected",
+                  handleClientDisconnected,
+                );
+                console.debug(
+                  "Successfully subscribed to client_disconnected events",
+                );
+              } else {
+                console.debug(
+                  "Manager does not support subscribe method, skipping client_disconnected handling",
+                );
+                this._clientDisconnectedSubscription = null;
+              }
+            } catch (subscribeError) {
+              console.warn(
+                `Failed to subscribe to client_disconnected events: ${subscribeError}`,
+              );
+              this._clientDisconnectedSubscription = null;
+            }
           } catch (managerError) {
             console.error(
               `Failed to get manager service for registering services: ${managerError}`,
@@ -623,6 +661,9 @@ export class RPC extends MessageEmitter {
   }
 
   close() {
+    // Clean up all pending sessions before closing
+    this._cleanupOnDisconnect();
+
     // Clear all heartbeat intervals
     for (const session_id in this._object_store) {
       if (this._object_store.hasOwnProperty(session_id)) {
@@ -635,7 +676,148 @@ export class RPC extends MessageEmitter {
         }
       }
     }
+
+    // Unsubscribe from client_disconnected events if subscribed
+    if (this._clientDisconnectedSubscription) {
+      try {
+        if (
+          typeof this._clientDisconnectedSubscription.unsubscribe === "function"
+        ) {
+          this._clientDisconnectedSubscription.unsubscribe();
+        }
+      } catch (e) {
+        console.debug(`Error unsubscribing from client_disconnected: ${e}`);
+      }
+    }
+
     this._fire("disconnected");
+  }
+
+  async _handleClientDisconnected(clientId) {
+    try {
+      console.debug(`Handling disconnection for client: ${clientId}`);
+
+      // Clean up all sessions for the disconnected client
+      const sessionsCleaned = this._cleanupSessionsForClient(clientId);
+
+      if (sessionsCleaned > 0) {
+        console.debug(
+          `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
+        );
+      }
+
+      // Fire an event to notify about the client disconnection
+      this._fire("remote_client_disconnected", {
+        client_id: clientId,
+        sessions_cleaned: sessionsCleaned,
+      });
+    } catch (e) {
+      console.error(
+        `Error handling client disconnection for ${clientId}: ${e}`,
+      );
+    }
+  }
+
+  _cleanupSessionsForClient(clientId) {
+    let sessionsCleaned = 0;
+
+    const cleanupRecursive = (store, path = "") => {
+      if (typeof store !== "object" || store === null) {
+        return;
+      }
+
+      for (const key of Object.keys(store)) {
+        if (key === "services" || key === "message_cache") {
+          continue;
+        }
+
+        const value = store[key];
+        const currentPath = path ? `${path}.${key}` : key;
+
+        // Check if this is a session for the target client
+        // Sessions are typically stored with keys like "client_id.session_id"
+        if (currentPath.startsWith(clientId)) {
+          // Clean up this session
+          if (typeof value === "object" && value !== null) {
+            // Cancel any pending promises
+            if (value.reject && typeof value.reject === "function") {
+              try {
+                value.reject(new Error(`Client ${clientId} disconnected`));
+              } catch (e) {
+                console.debug(
+                  `Error rejecting promise for session ${currentPath}: ${e}`,
+                );
+              }
+            }
+
+            // Clean up timers and tasks
+            if (value.heartbeat_task) {
+              clearInterval(value.heartbeat_task);
+            }
+            if (value.timer) {
+              value.timer.clear();
+            }
+          }
+
+          // Remove the session
+          delete store[key];
+          sessionsCleaned++;
+          console.debug(`Cleaned up session: ${currentPath}`);
+        } else if (typeof value === "object" && value !== null) {
+          // Recursively clean up nested sessions
+          cleanupRecursive(value, currentPath);
+        }
+      }
+    };
+
+    cleanupRecursive(this._object_store);
+    return sessionsCleaned;
+  }
+
+  _cleanupOnDisconnect() {
+    try {
+      console.debug("Cleaning up all sessions due to local RPC disconnection");
+
+      const cleanupAllSessions = (store) => {
+        if (typeof store !== "object" || store === null) {
+          return;
+        }
+
+        for (const key of Object.keys(store)) {
+          if (key === "services" || key === "message_cache") {
+            continue;
+          }
+
+          const value = store[key];
+
+          if (typeof value === "object" && value !== null) {
+            // Reject any pending promises
+            if (value.reject && typeof value.reject === "function") {
+              try {
+                value.reject(new Error("RPC connection closed"));
+              } catch (e) {
+                console.debug(`Error rejecting promise during cleanup: ${e}`);
+              }
+            }
+
+            // Clean up timers and tasks
+            if (value.heartbeat_task) {
+              clearInterval(value.heartbeat_task);
+            }
+            if (value.timer) {
+              value.timer.clear();
+            }
+
+            // Recursively clean up nested sessions
+            cleanupAllSessions(value);
+          }
+        }
+      };
+
+      cleanupAllSessions(this._object_store);
+    } catch (e) {
+      console.error(`Error during cleanup on disconnect: ${e}`);
+    }
   }
 
   async disconnect() {

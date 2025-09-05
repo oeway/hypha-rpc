@@ -701,6 +701,31 @@ class RPC(MessageEmitter):
                                 "failed": failed_services,
                             },
                         )
+                        
+                        # Subscribe to client_disconnected events if the manager supports it
+                        try:
+                            manager_dict = ObjectProxy.toDict(manager)
+                            if "subscribe" in manager_dict:
+                                logger.debug("Subscribing to client_disconnected events")
+                                
+                                async def handle_client_disconnected(event):
+                                    client_id = event.get("client")
+                                    if client_id:
+                                        logger.debug(f"Client {client_id} disconnected, cleaning up sessions")
+                                        await self._handle_client_disconnected(client_id)
+                                
+                                self._client_disconnected_subscription = await manager.subscribe(
+                                    "client_disconnected",
+                                    handle_client_disconnected
+                                )
+                                logger.debug("Successfully subscribed to client_disconnected events")
+                            else:
+                                logger.debug("Manager does not support subscribe method, skipping client_disconnected handling")
+                                self._client_disconnected_subscription = None
+                        except Exception as subscribe_error:
+                            logger.warning(f"Failed to subscribe to client_disconnected events: {subscribe_error}")
+                            self._client_disconnected_subscription = None
+                        
                     except Exception as manager_error:
                         logger.error(
                             f"Failed to get manager service for registering services: {manager_error}"
@@ -918,13 +943,123 @@ class RPC(MessageEmitter):
 
     def close(self):
         """Close the RPC connection and clean up resources."""
+        # Clean up all pending sessions before closing
+        self._cleanup_on_disconnect()
         self._close_sessions(self._object_store)
+        
+        # Unsubscribe from client_disconnected events if subscribed
+        if hasattr(self, '_client_disconnected_subscription') and self._client_disconnected_subscription:
+            try:
+                if asyncio.iscoroutinefunction(self._client_disconnected_subscription.unsubscribe):
+                    asyncio.create_task(self._client_disconnected_subscription.unsubscribe())
+                elif callable(self._client_disconnected_subscription.unsubscribe):
+                    self._client_disconnected_subscription.unsubscribe()
+            except Exception as e:
+                logger.debug(f"Error unsubscribing from client_disconnected: {e}")
+        
         self._fire("disconnected")
 
     async def disconnect(self):
         """Disconnect."""
         self.close()
         await self._connection.disconnect()
+    
+    async def _handle_client_disconnected(self, client_id):
+        """Handle cleanup when a remote client disconnects."""
+        try:
+            logger.debug(f"Handling disconnection for client: {client_id}")
+            
+            # Clean up all sessions for the disconnected client
+            sessions_cleaned = self._cleanup_sessions_for_client(client_id)
+            
+            if sessions_cleaned > 0:
+                logger.debug(f"Cleaned up {sessions_cleaned} sessions for disconnected client: {client_id}")
+            
+            # Fire an event to notify about the client disconnection
+            self._fire("remote_client_disconnected", {"client_id": client_id, "sessions_cleaned": sessions_cleaned})
+            
+        except Exception as e:
+            logger.error(f"Error handling client disconnection for {client_id}: {e}")
+    
+    def _cleanup_sessions_for_client(self, client_id):
+        """Clean up all sessions for a specific client."""
+        sessions_cleaned = 0
+        
+        def cleanup_recursive(store, path=""):
+            nonlocal sessions_cleaned
+            if not isinstance(store, dict):
+                return
+            
+            for key, value in list(store.items()):
+                if key in ("services", "message_cache"):
+                    continue
+                    
+                current_path = f"{path}.{key}" if path else key
+                
+                # Check if this is a session for the target client
+                # Sessions are typically stored with keys like "client_id.session_id"
+                if current_path.startswith(client_id):
+                    # Clean up this session
+                    if isinstance(value, dict):
+                        # Cancel any pending promises
+                        if "reject" in value and callable(value["reject"]):
+                            try:
+                                value["reject"](RemoteException(f"Client {client_id} disconnected"))
+                            except Exception as e:
+                                logger.debug(f"Error rejecting promise for session {current_path}: {e}")
+                        
+                        # Clean up timers and tasks
+                        if value.get("heartbeat_task"):
+                            value["heartbeat_task"].cancel()
+                        if value.get("timer"):
+                            value["timer"].clear()
+                    
+                    # Remove the session
+                    del store[key]
+                    sessions_cleaned += 1
+                    logger.debug(f"Cleaned up session: {current_path}")
+                    
+                elif isinstance(value, dict):
+                    # Recursively clean up nested sessions
+                    cleanup_recursive(value, current_path)
+        
+        cleanup_recursive(self._object_store)
+        return sessions_cleaned
+    
+    def _cleanup_on_disconnect(self):
+        """Clean up all pending sessions when the local RPC disconnects."""
+        try:
+            logger.debug("Cleaning up all sessions due to local RPC disconnection")
+            
+            def cleanup_all_sessions(store):
+                if not isinstance(store, dict):
+                    return
+                
+                for key, value in list(store.items()):
+                    if key in ("services", "message_cache"):
+                        continue
+                    
+                    if isinstance(value, dict):
+                        # Reject any pending promises
+                        if "reject" in value and callable(value["reject"]):
+                            try:
+                                value["reject"](RemoteException("RPC connection closed"))
+                            except Exception as e:
+                                logger.debug(f"Error rejecting promise during cleanup: {e}")
+                        
+                        # Clean up timers and tasks
+                        if value.get("heartbeat_task"):
+                            value["heartbeat_task"].cancel()
+                        if value.get("timer"):
+                            value["timer"].clear()
+                        
+                        # Recursively clean up nested sessions
+                        cleanup_all_sessions(value)
+            
+            cleanup_all_sessions(self._object_store)
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup on disconnect: {e}")
 
     async def _get_manager_with_retry(self, max_retries=20):
         """Get manager service with exponential backoff retry."""

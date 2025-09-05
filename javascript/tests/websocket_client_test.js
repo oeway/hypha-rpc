@@ -1844,4 +1844,192 @@ describe("RPC", async () => {
 
     console.log("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!");
   }).timeout(30000);
+
+  it("test client disconnection cleanup", async function () {
+    console.log("\n=== CLIENT DISCONNECTION CLEANUP TEST ===");
+
+    // Create first client
+    const client1 = await api.connectToServer({
+      name: "client1",
+      server_url: SERVER_URL,
+      client_id: "client1-test",
+    });
+
+    // Create second client
+    const client2 = await api.connectToServer({
+      name: "client2",
+      server_url: SERVER_URL,
+      client_id: "client2-test",
+    });
+
+    // Register a service on client2 that client1 will call
+    await client2.registerService({
+      id: "test-service",
+      config: { visibility: "protected" },
+      slowFunction: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return "completed";
+      },
+    });
+
+    // Client1 calls the slow function from client2 (creates a session)
+    const svc = await client1.getService("test-service");
+
+    // Start multiple async calls that will be pending when client2 disconnects
+    const pendingCalls = [
+      svc.slowFunction(),
+      svc.slowFunction(),
+      svc.slowFunction(),
+    ];
+
+    // Give some time for the calls to be initiated
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Check that sessions exist in client1's object store
+    let initialSessions = 0;
+    for (const key in client1.rpc._object_store) {
+      if (
+        key !== "services" &&
+        key !== "message_cache" &&
+        typeof client1.rpc._object_store[key] === "object"
+      ) {
+        initialSessions++;
+      }
+    }
+
+    console.log(`📊 Initial sessions in client1: ${initialSessions}`);
+    expect(initialSessions).to.be.greaterThan(0);
+
+    // Disconnect client2 abruptly (simulating unexpected disconnection)
+    console.log("🔌 Disconnecting client2...");
+    await client2.disconnect();
+
+    // Wait a bit for the disconnection event to propagate
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // All pending calls should fail with an error
+    for (let i = 0; i < pendingCalls.length; i++) {
+      try {
+        await pendingCalls[i];
+        throw new Error(`Call ${i} should have failed due to disconnection`);
+      } catch (e) {
+        console.log(`✅ Call ${i} correctly failed with: ${e.message}`);
+        const errorMsg = e.message.toLowerCase();
+        expect(errorMsg).to.satisfy(
+          (msg) => msg.includes("disconnected") || msg.includes("closed"),
+        );
+      }
+    }
+
+    // Check that sessions have been cleaned up in client1
+    let remainingSessions = 0;
+    for (const key in client1.rpc._object_store) {
+      if (
+        key !== "services" &&
+        key !== "message_cache" &&
+        typeof client1.rpc._object_store[key] === "object"
+      ) {
+        // Check if this is actually a session (has reject/resolve)
+        const session = client1.rpc._object_store[key];
+        if (session.reject || session.resolve) {
+          remainingSessions++;
+        }
+      }
+    }
+
+    console.log(
+      `📊 Remaining sessions in client1 after cleanup: ${remainingSessions}`,
+    );
+
+    // Clean up
+    await client1.disconnect();
+
+    console.log("✅ CLIENT DISCONNECTION CLEANUP TEST PASSED!");
+  }).timeout(10000);
+
+  it("test local RPC disconnection cleanup", async function () {
+    console.log("\n=== LOCAL RPC DISCONNECTION CLEANUP TEST ===");
+
+    // Create a client
+    const client = await api.connectToServer({
+      name: "local-disconnect-test",
+      server_url: SERVER_URL,
+      client_id: "local-disconnect-test",
+    });
+
+    // Register a test service with slow functions
+    await client.registerService({
+      id: "slow-service",
+      config: { visibility: "protected" },
+      slowFunction: async (duration = 2) => {
+        await new Promise((resolve) => setTimeout(resolve, duration * 1000));
+        return `completed after ${duration}s`;
+      },
+    });
+
+    // Get the service and start multiple pending calls
+    const svc = await client.getService("slow-service");
+
+    const pendingTasks = [
+      svc.slowFunction(3),
+      svc.slowFunction(4),
+      svc.slowFunction(5),
+    ];
+
+    // Give time for sessions to be created
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Check initial session count
+    let initialSessions = 0;
+    for (const key in client.rpc._object_store) {
+      if (key !== "services" && key !== "message_cache") {
+        initialSessions++;
+      }
+    }
+
+    console.log(`📊 Active sessions before disconnect: ${initialSessions}`);
+    expect(initialSessions).to.be.greaterThan(0);
+
+    // Disconnect the local RPC
+    console.log("🔌 Disconnecting local RPC...");
+    client.close();
+
+    // All pending tasks should fail
+    let failedCount = 0;
+    for (let i = 0; i < pendingTasks.length; i++) {
+      try {
+        await pendingTasks[i];
+        throw new Error(`Task ${i} should have failed after disconnection`);
+      } catch (e) {
+        failedCount++;
+        console.log(`✅ Task ${i} correctly failed with: ${e.message}`);
+        const errorMsg = e.message.toLowerCase();
+        expect(errorMsg).to.satisfy(
+          (msg) => msg.includes("closed") || msg.includes("disconnected"),
+        );
+      }
+    }
+
+    expect(failedCount).to.equal(pendingTasks.length);
+
+    // Verify all sessions were cleaned up
+    let remainingSessions = 0;
+    for (const key in client.rpc._object_store) {
+      if (
+        key !== "services" &&
+        key !== "message_cache" &&
+        typeof client.rpc._object_store[key] === "object"
+      ) {
+        const session = client.rpc._object_store[key];
+        if (session && (session.reject || session.resolve)) {
+          remainingSessions++;
+        }
+      }
+    }
+
+    console.log(`📊 Remaining sessions after cleanup: ${remainingSessions}`);
+    expect(remainingSessions).to.equal(0);
+
+    console.log("✅ LOCAL RPC DISCONNECTION CLEANUP TEST PASSED!");
+  }).timeout(10000);
 });

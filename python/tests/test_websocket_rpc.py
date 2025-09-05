@@ -2806,3 +2806,173 @@ async def test_long_running_method_with_heartbeat(restartable_server):
     print("✅ LONG RUNNING METHOD WITH HEARTBEAT TEST PASSED!")
 
 
+@pytest.mark.asyncio
+async def test_client_disconnection_cleanup(websocket_server):
+    """Test that sessions are properly cleaned up when clients disconnect."""
+    print("\n=== CLIENT DISCONNECTION CLEANUP TEST ===")
+    
+    # Create first client
+    client1 = await connect_to_server({
+        "name": "client1",
+        "server_url": WS_SERVER_URL,
+        "client_id": "client1-test"
+    })
+    
+    # Create second client
+    client2 = await connect_to_server({
+        "name": "client2", 
+        "server_url": WS_SERVER_URL,
+        "client_id": "client2-test"
+    })
+    
+    # Register a service on client2 that client1 will call
+    pending_calls = []
+    
+    async def slow_function():
+        """Function that takes time to complete."""
+        await asyncio.sleep(2)
+        return "completed"
+    
+    await client2.register_service({
+        "id": "test-service-client2",
+        "config": {"visibility": "protected"},
+        "slow_function": slow_function
+    })
+    
+    # Give time for service to register
+    await asyncio.sleep(0.1)
+    
+    # Client1 calls the slow function from client2 (creates a session)
+    # Need to use the full service ID with the client ID
+    svc = await client1.get_service(f"{client2.config.workspace}/{client2.config.client_id}:test-service-client2")
+    
+    # Start multiple async calls that will be pending when client2 disconnects
+    # RPC calls already return futures, no need for create_task
+    pending_calls = [
+        svc.slow_function(),
+        svc.slow_function(),
+        svc.slow_function()
+    ]
+    
+    # Give some time for the calls to be initiated
+    await asyncio.sleep(0.1)
+    
+    # Check that sessions exist in client1's object store
+    initial_sessions = 0
+    for key in client1.rpc._object_store:
+        if key not in ("services", "message_cache") and isinstance(client1.rpc._object_store[key], dict):
+            initial_sessions += 1
+    
+    print(f"📊 Initial sessions in client1: {initial_sessions}")
+    assert initial_sessions > 0, "Should have active sessions"
+    
+    # Disconnect client2 abruptly (simulating unexpected disconnection)
+    print("🔌 Disconnecting client2...")
+    await client2.disconnect()
+    
+    # Wait a bit for the disconnection event to propagate
+    await asyncio.sleep(0.5)
+    
+    # All pending calls should fail with an error
+    for i, task in enumerate(pending_calls):
+        try:
+            await task
+            assert False, f"Call {i} should have failed due to disconnection"
+        except Exception as e:
+            print(f"✅ Call {i} correctly failed with: {str(e)}")
+            assert "disconnected" in str(e).lower() or "closed" in str(e).lower()
+    
+    # Check that sessions have been cleaned up in client1
+    remaining_sessions = 0
+    for key in client1.rpc._object_store:
+        if key not in ("services", "message_cache") and isinstance(client1.rpc._object_store[key], dict):
+            # Check if this is actually a session (has reject/resolve)
+            if "reject" in client1.rpc._object_store[key] or "resolve" in client1.rpc._object_store[key]:
+                remaining_sessions += 1
+    
+    print(f"📊 Remaining sessions in client1 after cleanup: {remaining_sessions}")
+    
+    # Clean up
+    await client1.disconnect()
+    
+    print("✅ CLIENT DISCONNECTION CLEANUP TEST PASSED!")
+
+
+@pytest.mark.asyncio  
+async def test_local_rpc_disconnection_cleanup(websocket_server):
+    """Test that all pending sessions are cleaned up when local RPC disconnects."""
+    print("\n=== LOCAL RPC DISCONNECTION CLEANUP TEST ===")
+    
+    # Create a client
+    client = await connect_to_server({
+        "name": "local-disconnect-test",
+        "server_url": WS_SERVER_URL,
+        "client_id": "local-disconnect-test"
+    })
+    
+    # Register a test service with slow functions
+    async def slow_function(duration=2):
+        await asyncio.sleep(duration)
+        return f"completed after {duration}s"
+    
+    await client.register_service({
+        "id": "slow-service-local",
+        "config": {"visibility": "protected"},
+        "slow_function": slow_function
+    })
+    
+    # Give time for service to register
+    await asyncio.sleep(0.1)
+    
+    # Get the service and start multiple pending calls
+    svc = await client.get_service(f"{client.config.workspace}/{client.config.client_id}:slow-service-local")
+    
+    # RPC calls already return futures, no need for create_task
+    pending_tasks = [
+        svc.slow_function(3),
+        svc.slow_function(4),
+        svc.slow_function(5)
+    ]
+    
+    # Give time for sessions to be created
+    await asyncio.sleep(0.1)
+    
+    # Check initial session count
+    initial_sessions = 0
+    for key in client.rpc._object_store:
+        if key not in ("services", "message_cache"):
+            initial_sessions += 1
+    
+    print(f"📊 Active sessions before disconnect: {initial_sessions}")
+    assert initial_sessions > 0, "Should have active sessions"
+    
+    # Disconnect the local RPC
+    print("🔌 Disconnecting local RPC...")
+    client.rpc.close()
+    
+    # All pending tasks should fail
+    failed_count = 0
+    for i, task in enumerate(pending_tasks):
+        try:
+            await task
+            assert False, f"Task {i} should have failed after disconnection"
+        except Exception as e:
+            failed_count += 1
+            print(f"✅ Task {i} correctly failed with: {str(e)}")
+            assert "closed" in str(e).lower() or "disconnected" in str(e).lower()
+    
+    assert failed_count == len(pending_tasks), f"All {len(pending_tasks)} tasks should have failed"
+    
+    # Verify all sessions were cleaned up
+    remaining_sessions = 0
+    for key in client.rpc._object_store:
+        if key not in ("services", "message_cache") and isinstance(client.rpc._object_store.get(key), dict):
+            if "reject" in client.rpc._object_store[key] or "resolve" in client.rpc._object_store[key]:
+                remaining_sessions += 1
+    
+    print(f"📊 Remaining sessions after cleanup: {remaining_sessions}")
+    assert remaining_sessions == 0, "All sessions should be cleaned up after disconnection"
+    
+    print("✅ LOCAL RPC DISCONNECTION CLEANUP TEST PASSED!")
+
+
