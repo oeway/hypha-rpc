@@ -1849,14 +1849,14 @@ describe("RPC", async () => {
     console.log("\n=== CLIENT DISCONNECTION CLEANUP TEST ===");
 
     // Create first client
-    const client1 = await api.connectToServer({
+    const client1 = await connectToServer({
       name: "client1",
       server_url: SERVER_URL,
       client_id: "client1-test",
     });
 
     // Create second client
-    const client2 = await api.connectToServer({
+    const client2 = await connectToServer({
       name: "client2",
       server_url: SERVER_URL,
       client_id: "client2-test",
@@ -1951,7 +1951,7 @@ describe("RPC", async () => {
     console.log("\n=== LOCAL RPC DISCONNECTION CLEANUP TEST ===");
 
     // Create a client
-    const client = await api.connectToServer({
+    const client = await connectToServer({
       name: "local-disconnect-test",
       server_url: SERVER_URL,
       client_id: "local-disconnect-test",
