@@ -1858,7 +1858,7 @@ describe("RPC", async () => {
     // Get the workspace from client1 to ensure client2 joins the same workspace
     const sharedWorkspace = client1.config.workspace;
     console.log(`Using shared workspace: ${sharedWorkspace}`);
-    const token = client1.generateToken();
+    const token = await client1.generateToken();
     // Create second client in the same workspace as client1
     const client2 = await connectToServer({
       name: "client2",
