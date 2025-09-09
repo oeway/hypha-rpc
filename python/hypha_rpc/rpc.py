@@ -742,6 +742,34 @@ class RPC(MessageEmitter):
                             except Exception as e:
                                 logger.debug(f"Failed to initialize HTTP message transmission: {e}")
                                 
+                        # Subscribe to client_disconnected events if the manager supports it
+                        try:
+                            manager_dict = ObjectProxy.toDict(manager)
+                            if "subscribe" in manager_dict:
+                                logger.debug("Subscribing to client_disconnected events")
+                                
+                                async def handle_client_disconnected(event):
+                                    client_id = event.get("client")
+                                    if client_id:
+                                        logger.debug(f"Client {client_id} disconnected, cleaning up sessions")
+                                        await self._handle_client_disconnected(client_id)
+                                
+                                # Subscribe to the event topic first
+                                self._client_disconnected_subscription = await manager.subscribe([
+                                    "client_disconnected"
+                                ])
+                                
+                                # Then register the local event handler
+                                self.on("client_disconnected", handle_client_disconnected)
+                                
+                                logger.debug("Successfully subscribed to client_disconnected events")
+                            else:
+                                logger.debug("Manager does not support subscribe method, skipping client_disconnected handling")
+                                self._client_disconnected_subscription = None
+                        except Exception as subscribe_error:
+                            logger.warning(f"Failed to subscribe to client_disconnected events: {subscribe_error}")
+                            self._client_disconnected_subscription = None
+                        
                     except Exception as manager_error:
                         logger.error(
                             f"Failed to get manager service for registering services: {manager_error}"
@@ -1319,13 +1347,149 @@ class RPC(MessageEmitter):
 
     def close(self):
         """Close the RPC connection and clean up resources."""
+        # Clean up all pending sessions before closing
+        self._cleanup_on_disconnect()
         self._close_sessions(self._object_store)
+        
+        # Unsubscribe from client_disconnected events if subscribed
+        if hasattr(self, '_client_disconnected_subscription') and self._client_disconnected_subscription:
+            try:
+                # Get the manager service to unsubscribe (non-blocking)
+                if self._connection and self._connection.manager_id:
+                    async def unsubscribe_async():
+                        try:
+                            manager = await self.get_remote_service(f"*/{self._connection.manager_id}")
+                            if hasattr(manager, 'unsubscribe') and callable(manager.unsubscribe):
+                                if asyncio.iscoroutinefunction(manager.unsubscribe):
+                                    await manager.unsubscribe("client_disconnected")
+                                else:
+                                    manager.unsubscribe("client_disconnected")
+                        except Exception as e:
+                            logger.debug(f"Error unsubscribing from client_disconnected: {e}")
+                    
+                    # Create task to run in background
+                    asyncio.create_task(unsubscribe_async())
+                    
+                # Remove the local event handler
+                self.off("client_disconnected")
+            except Exception as e:
+                logger.debug(f"Error unsubscribing from client_disconnected: {e}")
+        
         self._fire("disconnected")
 
     async def disconnect(self):
         """Disconnect."""
         self.close()
         await self._connection.disconnect()
+    
+    async def _handle_client_disconnected(self, client_id):
+        """Handle cleanup when a remote client disconnects."""
+        try:
+            logger.debug(f"Handling disconnection for client: {client_id}")
+            
+            # Clean up all sessions for the disconnected client
+            sessions_cleaned = self._cleanup_sessions_for_client(client_id)
+            
+            if sessions_cleaned > 0:
+                logger.debug(f"Cleaned up {sessions_cleaned} sessions for disconnected client: {client_id}")
+            
+            # Fire an event to notify about the client disconnection
+            self._fire("remote_client_disconnected", {"client_id": client_id, "sessions_cleaned": sessions_cleaned})
+            
+        except Exception as e:
+            logger.error(f"Error handling client disconnection for {client_id}: {e}")
+    
+    def _cleanup_sessions_for_client(self, client_id):
+        """Clean up all sessions for a specific client."""
+        sessions_cleaned = 0
+        
+        # Iterate through all top-level session keys
+        for session_key in list(self._object_store.keys()):
+            if session_key in ("services", "message_cache"):
+                continue
+            
+            session = self._object_store.get(session_key)
+            if not isinstance(session, dict):
+                continue
+            
+            # Check if this session belongs to the disconnected client
+            # Sessions have a target_id property that identifies which client they're calling
+            if session.get("target_id") == client_id:
+                logger.debug(f"Found session {session_key} for disconnected client: {client_id}")
+                
+                # Reject any pending promises in this session
+                if "reject" in session and callable(session["reject"]):
+                    logger.debug(f"Rejecting session {session_key}")
+                    try:
+                        session["reject"](RemoteException(f"Client disconnected: {client_id}"))
+                    except Exception as e:
+                        logger.warning(f"Error rejecting session {session_key}: {e}")
+                
+                if "resolve" in session and callable(session["resolve"]):
+                    logger.debug(f"Resolving session {session_key} with error")
+                    try:
+                        session["resolve"](RemoteException(f"Client disconnected: {client_id}"))
+                    except Exception as e:
+                        logger.warning(f"Error resolving session {session_key}: {e}")
+                
+                # Clear any timers
+                if session.get("timer"):
+                    try:
+                        session["timer"].clear()
+                    except Exception as e:
+                        logger.warning(f"Error clearing timer for {session_key}: {e}")
+                
+                # Clear heartbeat tasks  
+                if session.get("heartbeat_task"):
+                    try:
+                        session["heartbeat_task"].cancel()
+                    except Exception as e:
+                        logger.warning(f"Error clearing heartbeat for {session_key}: {e}")
+                
+                # Remove the entire session
+                del self._object_store[session_key]
+                sessions_cleaned += 1
+                logger.debug(f"Cleaned up session: {session_key}")
+        
+        return sessions_cleaned
+    
+    def _cleanup_on_disconnect(self):
+        """Clean up all pending sessions when the local RPC disconnects."""
+        try:
+            logger.debug("Cleaning up all sessions due to local RPC disconnection")
+            
+            # Get all keys to delete (everything except services)
+            keys_to_delete = []
+            
+            for key in list(self._object_store.keys()):
+                if key == "services":
+                    continue
+                
+                value = self._object_store.get(key)
+                
+                if isinstance(value, dict):
+                    # Reject any pending promises
+                    if "reject" in value and callable(value["reject"]):
+                        try:
+                            value["reject"](RemoteException("RPC connection closed"))
+                        except Exception as e:
+                            logger.debug(f"Error rejecting promise during cleanup: {e}")
+                    
+                    # Clean up timers and tasks
+                    if value.get("heartbeat_task"):
+                        value["heartbeat_task"].cancel()
+                    if value.get("timer"):
+                        value["timer"].clear()
+                
+                # Mark ALL keys for deletion except services
+                keys_to_delete.append(key)
+            
+            # Delete all marked sessions
+            for key in keys_to_delete:
+                del self._object_store[key]
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup on disconnect: {e}")
 
     async def get_manager_service(self, config=None):
         """Get remote root service."""

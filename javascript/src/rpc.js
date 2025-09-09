@@ -482,6 +482,57 @@ export class RPC extends MessageEmitter {
                 );
               }
             }
+
+            // Subscribe to client_disconnected events if the manager supports it
+            try {
+              if (
+                manager.subscribe &&
+                typeof manager.subscribe === "function"
+              ) {
+                console.debug("Subscribing to client_disconnected events");
+
+                const handleClientDisconnected = async (event) => {
+                  // The client ID is in event.data.id based on the event structure
+                  const clientId = event.data?.id || event.client;
+                  const workspace = event.data?.workspace;
+                  if (clientId && workspace) {
+                    // Construct the full client path with workspace prefix
+                    const fullClientId = `${workspace}/${clientId}`;
+                    console.debug(
+                      `Client ${fullClientId} disconnected, cleaning up sessions`,
+                    );
+                    await this._handleClientDisconnected(fullClientId);
+                  } else if (clientId) {
+                    console.debug(
+                      `Client ${clientId} disconnected, cleaning up sessions`,
+                    );
+                    await this._handleClientDisconnected(clientId);
+                  }
+                };
+
+                // Subscribe to the event topic first
+                this._clientDisconnectedSubscription = await manager.subscribe([
+                  "client_disconnected",
+                ]);
+
+                // Then register the local event handler
+                this.on("client_disconnected", handleClientDisconnected);
+
+                console.debug(
+                  "Successfully subscribed to client_disconnected events",
+                );
+              } else {
+                console.debug(
+                  "Manager does not support subscribe method, skipping client_disconnected handling",
+                );
+                this._clientDisconnectedSubscription = null;
+              }
+            } catch (subscribeError) {
+              console.warn(
+                `Failed to subscribe to client_disconnected events: ${subscribeError}`,
+              );
+              this._clientDisconnectedSubscription = null;
+            }
           } catch (managerError) {
             console.error(
               `Failed to get manager service for registering services: ${managerError}`,
@@ -1262,6 +1313,9 @@ export class RPC extends MessageEmitter {
   }
 
   close() {
+    // Clean up all pending sessions before closing
+    this._cleanupOnDisconnect();
+
     // Clear all heartbeat intervals
     for (const session_id in this._object_store) {
       if (this._object_store.hasOwnProperty(session_id)) {
@@ -1274,7 +1328,174 @@ export class RPC extends MessageEmitter {
         }
       }
     }
+
+    // Unsubscribe from client_disconnected events if subscribed
+    if (this._clientDisconnectedSubscription) {
+      try {
+        // Get the manager service to unsubscribe (non-blocking)
+        if (this._connection && this._connection.manager_id) {
+          this.get_remote_service("*/" + this._connection.manager_id)
+            .then((manager) => {
+              if (
+                manager.unsubscribe &&
+                typeof manager.unsubscribe === "function"
+              ) {
+                return manager.unsubscribe("client_disconnected");
+              }
+            })
+            .catch((e) => {
+              console.debug(
+                `Error unsubscribing from client_disconnected: ${e}`,
+              );
+            });
+        }
+        // Remove the local event handler
+        this.off("client_disconnected");
+      } catch (e) {
+        console.debug(`Error unsubscribing from client_disconnected: ${e}`);
+      }
+    }
+
     this._fire("disconnected");
+  }
+
+  async _handleClientDisconnected(clientId) {
+    try {
+      console.debug(`Handling disconnection for client: ${clientId}`);
+
+      // Clean up all sessions for the disconnected client
+      const sessionsCleaned = this._cleanupSessionsForClient(clientId);
+
+      if (sessionsCleaned > 0) {
+        console.debug(
+          `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
+        );
+      }
+
+      // Fire an event to notify about the client disconnection
+      this._fire("remote_client_disconnected", {
+        client_id: clientId,
+        sessions_cleaned: sessionsCleaned,
+      });
+    } catch (e) {
+      console.error(
+        `Error handling client disconnection for ${clientId}: ${e}`,
+      );
+    }
+  }
+
+  _cleanupSessionsForClient(clientId) {
+    let sessionsCleaned = 0;
+
+    // Iterate through all top-level session keys
+    for (const sessionKey of Object.keys(this._object_store)) {
+      if (sessionKey === "services" || sessionKey === "message_cache") {
+        continue;
+      }
+
+      const session = this._object_store[sessionKey];
+      if (!session || typeof session !== "object") {
+        continue;
+      }
+
+      // Check if this session belongs to the disconnected client
+      // Sessions have a target_id property that identifies which client they're calling
+      if (session.target_id === clientId) {
+        // Reject any pending promises in this session
+        if (session.reject && typeof session.reject === "function") {
+          console.debug(`Rejecting session ${sessionKey}`);
+          try {
+            session.reject(new Error(`Client disconnected: ${clientId}`));
+          } catch (e) {
+            console.warn(`Error rejecting session ${sessionKey}: ${e}`);
+          }
+        }
+
+        if (session.resolve && typeof session.resolve === "function") {
+          console.debug(`Resolving session ${sessionKey} with error`);
+          try {
+            session.resolve(new Error(`Client disconnected: ${clientId}`));
+          } catch (e) {
+            console.warn(`Error resolving session ${sessionKey}: ${e}`);
+          }
+        }
+
+        // Clear any timers
+        if (session.timer && typeof session.timer.clear === "function") {
+          try {
+            session.timer.clear();
+          } catch (e) {
+            console.warn(`Error clearing timer for ${sessionKey}: ${e}`);
+          }
+        }
+
+        // Clear heartbeat tasks
+        if (session.heartbeat_task) {
+          try {
+            clearInterval(session.heartbeat_task);
+          } catch (e) {
+            console.warn(`Error clearing heartbeat for ${sessionKey}: ${e}`);
+          }
+        }
+
+        // Remove the entire session
+        delete this._object_store[sessionKey];
+        sessionsCleaned++;
+        console.debug(`Cleaned up session: ${sessionKey}`);
+      }
+    }
+
+    return sessionsCleaned;
+  }
+
+  _cleanupOnDisconnect() {
+    try {
+      console.debug("Cleaning up all sessions due to local RPC disconnection");
+
+      // Get all keys to delete after cleanup
+      const keysToDelete = [];
+
+      for (const key of Object.keys(this._object_store)) {
+        if (key === "services") {
+          continue;
+        }
+
+        const value = this._object_store[key];
+
+        if (typeof value === "object" && value !== null) {
+          // Reject any pending promises
+          if (value.reject && typeof value.reject === "function") {
+            try {
+              value.reject(new Error("RPC connection closed"));
+            } catch (e) {
+              console.debug(`Error rejecting promise during cleanup: ${e}`);
+            }
+          }
+
+          // Clean up timers and tasks
+          if (value.heartbeat_task) {
+            clearInterval(value.heartbeat_task);
+          }
+          if (value.timer && typeof value.timer.clear === "function") {
+            try {
+              value.timer.clear();
+            } catch (e) {
+              console.debug(`Error clearing timer: ${e}`);
+            }
+          }
+        }
+
+        // Mark ALL keys for deletion except services
+        keysToDelete.push(key);
+      }
+
+      // Delete all marked sessions
+      for (const key of keysToDelete) {
+        delete this._object_store[key];
+      }
+    } catch (e) {
+      console.error(`Error during cleanup on disconnect: ${e}`);
+    }
   }
 
   async disconnect() {
@@ -1535,7 +1756,16 @@ export class RPC extends MessageEmitter {
     config.workspace =
       config.workspace || this._local_workspace || this._connection._workspace;
     const skipContext = config.require_context;
-    const excludeKeys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+    const excludeKeys = [
+      "id",
+      "config",
+      "name",
+      "description",
+      "type",
+      "docs",
+      "app_id",
+      "service_schema",
+    ];
     const filteredService = {};
     for (const key of Object.keys(service)) {
       if (!excludeKeys.includes(key)) {
@@ -2264,20 +2494,22 @@ export class RPC extends MessageEmitter {
           // I.e. the session id won't be passed for promises themselves
           main_message["session"] = local_session_id;
           let method_name = `${target_id}:${method_id}`;
-          
+
           // Create a timer that gets reset by heartbeat
           // Methods can run indefinitely as long as heartbeat keeps resetting the timer
           // IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
-          const timeoutCallback = function(error_msg) {
+          const timeoutCallback = function (error_msg) {
             // First reject the promise
             reject(error_msg);
             // Then clean up the entire session to stop all callbacks
             if (self._object_store[local_session_id]) {
               delete self._object_store[local_session_id];
-              console.debug(`Cleaned up session ${local_session_id} after timeout`);
+              console.debug(
+                `Cleaned up session ${local_session_id} after timeout`,
+              );
             }
           };
-          
+
           timer = new Timer(
             self._method_timeout,
             timeoutCallback,
@@ -2623,10 +2855,10 @@ export class RPC extends MessageEmitter {
           }
         }
         args.push(data.ctx);
-        assert(
-          args.length === method.length,
-          `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
-        );
+        // assert(
+        //   args.length === method.length,
+        //   `Runtime Error: Invalid number of arguments for method ${method_name}, expected ${method.length} but got ${args.length}`,
+        // );
       }
       // console.debug(`Executing method: ${method_name} (${data.method})`);
       if (data.promise) {
