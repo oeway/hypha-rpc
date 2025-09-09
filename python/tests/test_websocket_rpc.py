@@ -2476,6 +2476,120 @@ def test_rpc_thread_safety_fix(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_rpc_memory_leak_fix():
+    """Test the RPC memory leak fix with mock connection."""
+    from hypha_rpc.rpc import RPC
+    
+    class MockConnection:
+        """Mock connection for testing."""
+        def __init__(self):
+            self.manager_id = "test_manager"
+            self._workspace = "test_workspace"
+            
+        async def emit_message(self, data):
+            """Mock emit message."""
+            pass
+            
+        def on_message(self, handler):
+            """Mock on message."""
+            pass
+            
+        def on_connected(self, handler):
+            """Mock on connected."""
+            pass
+            
+        def on_disconnected(self, handler):
+            """Mock on disconnected."""
+            pass
+            
+        async def disconnect(self):
+            """Mock disconnect."""
+            pass
+
+    print("🧪 TESTING RPC MEMORY LEAK FIX")
+    print("=" * 50)
+    
+    # Create mock connection
+    mock_connection = MockConnection()
+    
+    # Create RPC instance
+    print("📋 Test 1: Creating RPC instance...")
+    rpc = RPC(
+        connection=mock_connection,
+        client_id="test_client",
+        workspace="test_workspace"
+    )
+    print("✅ RPC instance created")
+    
+    # Verify references are set up
+    print("\n📋 Test 2: Checking initial references...")
+    has_connection_before = hasattr(rpc, '_connection') and rpc._connection is not None
+    has_emit_message_before = hasattr(rpc, '_emit_message') and rpc._emit_message is not None
+    
+    print(f"  Before close:")
+    print(f"    has _connection: {has_connection_before}")
+    print(f"    has _emit_message: {has_emit_message_before}")
+    print(f"    _connection is mock: {rpc._connection is mock_connection}")
+    
+    assert has_connection_before and has_emit_message_before, "Initial setup failed"
+    
+    # Test close method
+    print("\n📋 Test 3: Testing RPC.close() cleanup...")
+    rpc.close()
+    
+    # Check references after close
+    has_connection_after = hasattr(rpc, '_connection') and rpc._connection is not None
+    has_emit_message_after = hasattr(rpc, '_emit_message') and rpc._emit_message is not None
+    
+    print(f"  After close:")
+    print(f"    has _connection: {has_connection_after}")
+    print(f"    has _emit_message: {has_emit_message_after}")
+    
+    # Test that _emit_message is replaced with stub
+    if has_emit_message_after:
+        try:
+            await rpc._emit_message({"test": "data"})
+            assert False, "_emit_message should have been replaced with disconnected stub"
+        except RuntimeError as e:
+            assert "disconnected" in str(e), f"Unexpected error: {e}"
+            print("✅ _emit_message correctly replaced with disconnected stub")
+        except Exception as e:
+            assert False, f"Unexpected error type: {e}"
+    
+    # Test disconnect method  
+    print("\n📋 Test 4: Testing RPC.disconnect() method...")
+    
+    # Create new instance for disconnect test
+    mock_connection2 = MockConnection()
+    rpc2 = RPC(
+        connection=mock_connection2,
+        client_id="test_client_2", 
+        workspace="test_workspace"
+    )
+    
+    # Test disconnect
+    await rpc2.disconnect()
+    
+    has_connection_after_disconnect = hasattr(rpc2, '_connection') and rpc2._connection is not None
+    print(f"  After disconnect: has _connection: {has_connection_after_disconnect}")
+    
+    # Final results
+    print("\n🎯 RPC MEMORY LEAK FIX TEST RESULTS:")
+    print("=" * 40)
+    
+    success = (
+        not has_connection_after and  # Connection cleared
+        not has_connection_after_disconnect  # Disconnect works
+    )
+    
+    assert success, "Memory leak fix tests failed"
+    print("✅ ALL TESTS PASSED")
+    print("✅ RPC memory leak fix working correctly")
+    print("✅ Connection references properly cleared")
+    print("✅ Ready for production!")
+
+
+@pytest.mark.asyncio
 async def test_authorized_workspaces(websocket_server):
     """Test the authorized_workspaces feature for protected services."""
     print("\n=== TESTING AUTHORIZED WORKSPACES ===")

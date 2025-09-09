@@ -319,6 +319,9 @@ export class RPC extends MessageEmitter {
       services: this._services,
     };
 
+    // Track background tasks for proper cleanup
+    this._background_tasks = new Set();
+
     // Set up global unhandled promise rejection handler for RPC-related errors
     const handleUnhandledRejection = (event) => {
       const reason = event.reason;
@@ -717,6 +720,37 @@ export class RPC extends MessageEmitter {
       }
     }
 
+    // Clean up background tasks
+    try {
+      // Cancel all background tasks
+      for (const task of this._background_tasks) {
+        if (task && typeof task.cancel === "function") {
+          try {
+            task.cancel();
+          } catch (e) {
+            console.debug(`Error canceling background task: ${e}`);
+          }
+        }
+      }
+      this._background_tasks.clear();
+    } catch (e) {
+      console.debug(`Error cleaning up background tasks: ${e}`);
+    }
+
+    // Clean up connection references to prevent circular references
+    try {
+      // Clear connection reference to break circular references
+      this._connection = null;
+
+      // Replace emit_message with a no-op to prevent further calls
+      this._emit_message = function () {
+        console.debug("RPC connection closed, ignoring message");
+        return Promise.reject(new Error("Connection is closed"));
+      };
+    } catch (e) {
+      console.debug(`Error during connection cleanup: ${e}`);
+    }
+
     this._fire("disconnected");
   }
 
@@ -860,8 +894,18 @@ export class RPC extends MessageEmitter {
   }
 
   async disconnect() {
+    // Store connection reference before closing
+    const connection = this._connection;
     this.close();
-    await this._connection.disconnect();
+
+    // Disconnect the underlying connection if it exists
+    if (connection) {
+      try {
+        await connection.disconnect();
+      } catch (e) {
+        console.debug(`Error disconnecting underlying connection: ${e}`);
+      }
+    }
   }
 
   async _get_manager_with_retry(maxRetries = 20) {
