@@ -179,25 +179,37 @@ class ObjectProxy(Munch):
 
     def _render_html(self, data, level=0, label="dict"):
         parts = [f'<details><summary>{html.escape(label)}</summary><ul>']
-        for key, value in data.items():
-            key_str = html.escape(str(key))
-            if isinstance(value, dict):
-                nested_label = f"{type(value).__name__} at {hex(id(value))}"
-                nested = self._render_html(value, level + 1, label=nested_label)
-                parts.append(f"<li><strong>{key_str}</strong>: {nested}</li>")
-            elif isinstance(value, list):
-                nested_label = f"list at {hex(id(value))}"
-                nested_items = ""
-                for item in value:
-                    if isinstance(item, (dict, list)):
-                        item_label = f"{type(item).__name__} at {hex(id(item))}"
-                        nested_items += f"<li>{self._render_html(item, level + 2, label=item_label)}</li>"
-                    else:
-                        nested_items += f"<li>{html.escape(str(item))}</li>"
-                parts.append(f"<li><strong>{key_str}</strong>: <details><summary>{html.escape(nested_label)}</summary><ul>{nested_items}</ul></details></li>")
-            else:
-                val_str = html.escape(str(value))
-                parts.append(f"<li><strong>{key_str}</strong>: {val_str}</li>")
+
+        # Handle lists
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    item_label = f"{type(item).__name__} at {hex(id(item))}"
+                    parts.append(f"<li>{self._render_html(item, level + 1, label=item_label)}</li>")
+                elif isinstance(item, list):
+                    item_label = f"list at {hex(id(item))}"
+                    parts.append(f"<li>{self._render_html(item, level + 1, label=item_label)}</li>")
+                else:
+                    parts.append(f"<li>{html.escape(str(item))}</li>")
+        # Handle dicts
+        elif isinstance(data, dict):
+            for key, value in data.items():
+                key_str = html.escape(str(key))
+                if isinstance(value, dict):
+                    nested_label = f"{type(value).__name__} at {hex(id(value))}"
+                    nested = self._render_html(value, level + 1, label=nested_label)
+                    parts.append(f"<li><strong>{key_str}</strong>: {nested}</li>")
+                elif isinstance(value, list):
+                    nested_label = f"list at {hex(id(value))}"
+                    nested = self._render_html(value, level + 1, label=nested_label)
+                    parts.append(f"<li><strong>{key_str}</strong>: {nested}</li>")
+                else:
+                    val_str = html.escape(str(value))
+                    parts.append(f"<li><strong>{key_str}</strong>: {val_str}</li>")
+        else:
+            # Handle primitive values
+            parts.append(f"<li>{html.escape(str(data))}</li>")
+
         parts.append("</ul></details>")
         return "\n".join(parts)
 
