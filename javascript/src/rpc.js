@@ -2632,7 +2632,7 @@ export class RPC extends MessageEmitter {
           local_workspace,
         ),
       };
-    } else if (aObject.constructor === Object || Array.isArray(aObject)) {
+    } else if (aObject.constructor === Object || Array.isArray(aObject) || aObject instanceof RemoteService) {
       bObject = isarray ? [] : {};
       const keys = Object.keys(aObject);
       for (let k of keys) {
