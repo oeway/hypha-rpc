@@ -1408,6 +1408,10 @@ class RPC(MessageEmitter):
         config["workspace"] = config.get(
             "workspace", self._local_workspace or self._connection.workspace
         )
+        if config["workspace"] is None:
+            raise ValueError(
+                "Workspace is not set. Please ensure the connection has a workspace or set local_workspace."
+            )
         skip_context = config.get("require_context", False)
         exclude_keys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
         filtered_service = {k: v for k, v in service.items() if k not in exclude_keys}

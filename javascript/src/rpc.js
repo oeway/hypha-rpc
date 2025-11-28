@@ -1213,6 +1213,11 @@ export class RPC extends MessageEmitter {
     const config = service.config || {};
     config.workspace =
       config.workspace || this._local_workspace || this._connection.workspace;
+    if (!config.workspace) {
+      throw new Error(
+        "Workspace is not set. Please ensure the connection has a workspace or set local_workspace."
+      );
+    }
     const skipContext = config.require_context;
     const excludeKeys = [
       "id",
