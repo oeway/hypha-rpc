@@ -516,6 +516,42 @@ export async function login(config) {
   }
 }
 
+export async function logout(config) {
+  const service_id = config.login_service_id || "public/hypha-login";
+  const callback = config.logout_callback;
+  const additional_headers = config.additional_headers;
+
+  const server = await connectToServer({
+    name: "initial logout client",
+    server_url: config.server_url,
+    additional_headers: additional_headers,
+  });
+  try {
+    const svc = await server.getService(service_id);
+    assert(svc, `Failed to get the login service: ${service_id}`);
+
+    // Check if logout function exists for backward compatibility
+    if (!svc.logout) {
+      throw new Error(
+        "Logout is not supported by this server. " +
+        "Please upgrade the Hypha server to a version that supports logout."
+      );
+    }
+
+    const context = await svc.logout({});
+    if (callback) {
+      await callback(context);
+    } else {
+      console.log(`Please open your browser to logout at ${context.logout_url}`);
+    }
+    return context;
+  } catch (error) {
+    throw error;
+  } finally {
+    await server.disconnect();
+  }
+}
+
 async function webrtcGetService(wm, rtc_service_id, query, config) {
   config = config || {};
   const webrtc = config.webrtc;
