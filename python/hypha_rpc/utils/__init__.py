@@ -74,6 +74,41 @@ def safe_create_future():
             return asyncio.Future()
 
 
+async def run_in_executor(func, *args, executor=None, **kwargs):
+    """
+    Run a synchronous CPU-bound function in an executor to avoid blocking the event loop.
+
+    This is critical for maintaining RPC stability when services perform CPU-intensive
+    operations. Blocking the event loop can prevent:
+    - Heartbeat messages from being sent/received
+    - Reconnection logic from executing
+    - Other concurrent RPC calls from progressing
+
+    Example usage:
+        # Instead of:
+        result = cpu_intensive_function(data)
+
+        # Use:
+        from hypha_rpc.utils import run_in_executor
+        result = await run_in_executor(cpu_intensive_function, data)
+
+    Args:
+        func: The synchronous function to run
+        *args: Positional arguments to pass to the function
+        executor: Optional concurrent.futures.Executor. If None, uses the default
+                  ThreadPoolExecutor. For truly CPU-bound tasks, consider using
+                  a ProcessPoolExecutor.
+        **kwargs: Keyword arguments to pass to the function
+
+    Returns:
+        The result of calling func(*args, **kwargs)
+    """
+    loop = asyncio.get_running_loop()
+    if kwargs:
+        func = partial(func, **kwargs)
+    return await loop.run_in_executor(executor, func, *args)
+
+
 # The following code adopted from the munch library,
 # By Copyright (c) 2010 David Schoonover
 # We changed the way the keys being generated to cope with

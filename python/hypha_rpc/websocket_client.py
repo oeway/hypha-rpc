@@ -219,6 +219,12 @@ class WebsocketRPCConnection:
         except asyncio.CancelledError:
             # Task was cancelled, cleanup or exit gracefully
             logger.info("Refresh token task was cancelled.")
+        except RuntimeError as e:
+            # Handle event loop closed error gracefully
+            if "Event loop is closed" in str(e) or "cannot schedule new futures" in str(e):
+                logger.debug("Event loop closed during refresh token task")
+            else:
+                logger.error(f"RuntimeError in refresh token task: {e}")
         except Exception as exp:
             logger.error(f"Failed to send refresh token: {exp}")
 
@@ -427,7 +433,13 @@ class WebsocketRPCConnection:
                                 )
                                 break
                             except ConnectionAbortedError as e:
-                                logger.warning("Server refuse to reconnect: %s", e)
+                                logger.warning("Server refused to reconnect: %s", e)
+                                # Mark as closed and notify the application
+                                self._closed = True
+                                if self._handle_disconnected:
+                                    self._handle_disconnected(
+                                        f"Server refused reconnection: {e}"
+                                    )
                                 break
                             except (ConnectionRefusedError, OSError) as e:
                                 # Network-related errors that might be temporary
@@ -483,19 +495,18 @@ class WebsocketRPCConnection:
 
                         if retry >= MAX_RETRY and not self._closed:
                             logger.error(
-                                f"Failed to reconnect after {MAX_RETRY} attempts, giving up. Exiting process."
+                                f"Failed to reconnect after {MAX_RETRY} attempts, giving up."
                             )
+                            # Mark as closed to prevent further reconnection attempts
+                            self._closed = True
                             if self._handle_disconnected:
                                 self._handle_disconnected(
                                     "Max reconnection attempts exceeded"
                                 )
-                            # Exit process to prevent stuck event loop
-                            import os
-
-                            logger.error(
-                                "Forcing process exit due to unrecoverable connection failure"
-                            )
-                            os._exit(1)
+                            # Note: We intentionally do NOT call os._exit() here.
+                            # Instead, we mark the connection as closed and let the
+                            # application handle the failure through the disconnected
+                            # handler or by checking connection state.
 
                     # Create and track the reconnection task
                     reconnect_task = asyncio.create_task(reconnect_with_retry())
