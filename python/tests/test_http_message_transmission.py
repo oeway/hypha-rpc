@@ -887,9 +887,9 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
     print("\n=== TESTING CONFIGURABLE HTTP TRANSMISSION PARAMETERS ===")
     
     # Test with custom thresholds
-    custom_http_threshold = 512 * 1024  # 512KB (lower than default 1MB)
+    custom_http_threshold = 256 * 1024  # 256KB (much lower than default 1MB)
     custom_multipart_threshold = 5 * 1024 * 1024  # 5MB (lower than default 10MB)
-    
+
     client = await connect_to_server({
         "name": "configurable-params-test",
         "server_url": WS_SERVER_URL,
@@ -898,10 +898,10 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
         "http_transmission_threshold": custom_http_threshold,
         "multipart_threshold": custom_multipart_threshold,
     })
-    
+
     # Track HTTP transmission events
     http_transmission_events = []
-    
+
     def on_http_transmission_stats(event):
         http_transmission_events.append(event)
         print(f"   📊 HTTP transmission event: {event['content_length'] / (1024*1024):.1f}MB")
@@ -909,9 +909,9 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
         print(f"      Used multipart: {event['used_multipart']}")
         print(f"      Part size: {event['part_size'] / (1024*1024):.1f}MB")
         print(f"      Multipart threshold: {event['multipart_threshold'] / (1024*1024):.1f}MB")
-    
+
     client.rpc.on("http_transmission_stats", on_http_transmission_stats)
-    
+
     # Register a service that analyzes data
     def analyze_data(data):
         return {
@@ -919,25 +919,26 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
             "analyzed": True,
             "checksum": hash(data) % 1000000  # Simple checksum
         }
-    
+
     service_info = await client.register_service({
         "id": "analyze-service",
         "name": "Analyze Service",
         "config": {"visibility": "public"},
         "analyze_data": analyze_data
     })
-    
+
     print(f"✅ Service registered: {service_info['id']}")
-    
+
     # Get the service
     service = await client.get_service("analyze-service")
-    
+
     # Test 1: Small message (should use HTTP single upload due to lowered threshold)
+    # Using 500KB which is well above 256KB threshold
     print("📤 Testing small message (should use HTTP due to lowered threshold)...")
-    small_data = generate_test_data(0.5)  # 500KB
+    small_data = generate_test_data(0.5)  # 500KB - above 256KB threshold
     result = await service.analyze_data(small_data)
     assert result["size"] == len(small_data)
-    assert len(http_transmission_events) == 1, "Small message should trigger HTTP transmission with lowered threshold"
+    assert len(http_transmission_events) == 1, "Small message should trigger HTTP transmission with lowered threshold (500KB > 256KB)"
     
     event = http_transmission_events[0]
     assert event["transmission_method"] == "single_upload"
