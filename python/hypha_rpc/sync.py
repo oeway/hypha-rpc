@@ -240,6 +240,40 @@ def login(config):
         server.disconnect()
 
 
+def logout(config):
+    """Logout from the Hypha server."""
+    server_url = normalize_server_url(config.get("server_url"))
+    service_id = config.get("login_service_id", "public/hypha-login")
+    callback = config.get("logout_callback")
+    ssl = config.get("ssl")
+
+    server = connect_to_server(
+        {"name": "initial logout client", "server_url": server_url, "ssl": ssl}
+    )
+    try:
+        svc = server.get_service(service_id)
+        assert svc, f"Service {service_id} not found on the server."
+
+        # Check if logout function exists for backward compatibility
+        if "logout" not in svc:
+            raise RuntimeError(
+                "Logout is not supported by this server. "
+                "Please upgrade the Hypha server to a version that supports logout."
+            )
+
+        context = svc.logout({})
+        if callback:
+            callback(context)
+        else:
+            print(f"Please open your browser to logout at {context['logout_url']}")
+
+        return context
+    except Exception as error:
+        raise error
+    finally:
+        server.disconnect()
+
+
 def register_rtc_service(server, service_id, config=None):
     """Register an RTC service on the Hypha server."""
     assert isinstance(

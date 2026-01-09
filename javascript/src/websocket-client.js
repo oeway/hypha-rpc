@@ -25,6 +25,7 @@ class WebsocketRPCConnection {
     timeout = 60,
     WebSocketClass = null,
     token_refresh_interval = 2 * 60 * 60,
+    additional_headers = null,
   ) {
     assert(server_url && client_id, "server_url and client_id are required");
     this._server_url = server_url;
@@ -47,6 +48,7 @@ class WebsocketRPCConnection {
     this._refresh_token_task = null;
     this._last_message = null; // Store the last sent message
     this._reconnect_timeouts = new Set(); // Track reconnection timeouts
+    this._additional_headers = additional_headers;
   }
 
   /**
@@ -490,10 +492,12 @@ export async function login(config) {
   const timeout = config.login_timeout || 60;
   const callback = config.login_callback;
   const profile = config.profile;
+  const additional_headers = config.additional_headers;
 
   const server = await connectToServer({
     name: "initial login client",
     server_url: config.server_url,
+    additional_headers: additional_headers,
   });
   try {
     const svc = await server.getService(service_id);
@@ -510,6 +514,42 @@ export async function login(config) {
       console.log(`Please open your browser and login at ${context.login_url}`);
     }
     return await svc.check(context.key, { timeout, profile, _rkwargs: true });
+  } catch (error) {
+    throw error;
+  } finally {
+    await server.disconnect();
+  }
+}
+
+export async function logout(config) {
+  const service_id = config.login_service_id || "public/hypha-login";
+  const callback = config.logout_callback;
+  const additional_headers = config.additional_headers;
+
+  const server = await connectToServer({
+    name: "initial logout client",
+    server_url: config.server_url,
+    additional_headers: additional_headers,
+  });
+  try {
+    const svc = await server.getService(service_id);
+    assert(svc, `Failed to get the login service: ${service_id}`);
+
+    // Check if logout function exists for backward compatibility
+    if (!svc.logout) {
+      throw new Error(
+        "Logout is not supported by this server. " +
+        "Please upgrade the Hypha server to a version that supports logout."
+      );
+    }
+
+    const context = await svc.logout({});
+    if (callback) {
+      await callback(context);
+    } else {
+      console.log(`Please open your browser to logout at ${context.logout_url}`);
+    }
+    return context;
   } catch (error) {
     throw error;
   } finally {
@@ -596,6 +636,8 @@ export async function connectToServer(config) {
     config.reconnection_token,
     config.method_timeout || 60,
     config.WebSocketClass,
+    config.token_refresh_interval,
+    config.additional_headers,
   );
   const connection_info = await connection.open();
   assert(

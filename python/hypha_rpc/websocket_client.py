@@ -699,6 +699,7 @@ async def login(config):
     callback = config.get("login_callback")
     profile = config.get("profile", False)
     ssl = config.get("ssl")
+    additional_headers = config.get("additional_headers")
 
     server = await connect_to_server(
         {
@@ -706,6 +707,7 @@ async def login(config):
             "server_url": server_url,
             "method_timeout": timeout,
             "ssl": ssl,
+            "additional_headers": additional_headers,
         }
     )
     try:
@@ -721,6 +723,46 @@ async def login(config):
             print(f"Please open your browser and login at {context['login_url']}")
 
         return await svc.check(context["key"], timeout=timeout, profile=profile)
+    except Exception as error:
+        raise error
+    finally:
+        await server.disconnect()
+
+
+async def logout(config):
+    """Logout from the hypha server."""
+    server_url = config.get("server_url")
+    service_id = config.get("login_service_id", "public/hypha-login")
+    callback = config.get("logout_callback")
+    ssl = config.get("ssl")
+    additional_headers = config.get("additional_headers")
+
+    server = await connect_to_server(
+        {
+            "name": "initial logout client",
+            "server_url": server_url,
+            "ssl": ssl,
+            "additional_headers": additional_headers,
+        }
+    )
+    try:
+        svc = await server.get_service(service_id)
+        assert svc, f"Failed to get the login service: {service_id}"
+
+        # Check if logout function exists for backward compatibility
+        if "logout" not in svc:
+            raise RuntimeError(
+                "Logout is not supported by this server. "
+                "Please upgrade the Hypha server to a version that supports logout."
+            )
+
+        context = await svc.logout({})
+        if callback:
+            await callback(context)
+        else:
+            print(f"Please open your browser to logout at {context['logout_url']}")
+
+        return context
     except Exception as error:
         raise error
     finally:
