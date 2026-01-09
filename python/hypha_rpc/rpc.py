@@ -805,6 +805,10 @@ class RPC(MessageEmitter):
                 task = self.loop.create_task(on_connected(connection.connection_info))
             else:
                 task = self.loop.create_task(on_connected(None))
+            # Store the background task reference for proper cleanup
+            self._background_task = task
+            # Mark the task with RPC reference for easier cleanup
+            task._rpc_ref = self
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
         else:
@@ -1351,6 +1355,41 @@ class RPC(MessageEmitter):
         self._cleanup_on_disconnect()
         self._close_sessions(self._object_store)
         
+        # Clean up background tasks to prevent memory leaks
+        # Cancel any background tasks that might be holding references to this RPC
+        if hasattr(self, '_background_task') and self._background_task:
+            try:
+                if not self._background_task.done():
+                    self._background_task.cancel()
+                background_tasks.discard(self._background_task)
+            except Exception as e:
+                logger.debug(f"Error cleaning up background task: {e}")
+        
+        # Clean up any other background tasks that might reference this RPC
+        tasks_to_remove = []
+        for task in list(background_tasks):
+            try:
+                if hasattr(task, '_rpc_ref') and task._rpc_ref is self:
+                    tasks_to_remove.append(task)
+                elif hasattr(task, 'get_coro') and task.get_coro():
+                    # Check if task is related to this RPC by examining the coroutine
+                    coro = task.get_coro()
+                    if hasattr(coro, 'cr_frame') and coro.cr_frame:
+                        # Look for references to this RPC in the task's frame
+                        frame_locals = coro.cr_frame.f_locals
+                        if 'self' in frame_locals and frame_locals['self'] is self:
+                            tasks_to_remove.append(task)
+            except Exception as e:
+                logger.debug(f"Error checking background task: {e}")
+        
+        for task in tasks_to_remove:
+            try:
+                if not task.done():
+                    task.cancel()
+                background_tasks.discard(task)
+            except Exception as e:
+                logger.debug(f"Error removing background task: {e}")
+        
         # Unsubscribe from client_disconnected events if subscribed
         if hasattr(self, '_client_disconnected_subscription') and self._client_disconnected_subscription:
             try:
@@ -1375,12 +1414,28 @@ class RPC(MessageEmitter):
             except Exception as e:
                 logger.debug(f"Error unsubscribing from client_disconnected: {e}")
         
+        # Clear connection reference to break circular references
+        if hasattr(self, '_connection'):
+            self._connection = None
+        
+        # Clear emit_message reference to break circular references
+        if hasattr(self, '_emit_message'):
+            self._emit_message = None
+        
         self._fire("disconnected")
 
     async def disconnect(self):
         """Disconnect."""
+        # Store connection reference before closing
+        connection = getattr(self, '_connection', None)
         self.close()
-        await self._connection.disconnect()
+        
+        # Disconnect the underlying connection if it exists
+        if connection:
+            try:
+                await connection.disconnect()
+            except Exception as e:
+                logger.debug(f"Error disconnecting underlying connection: {e}")
     
     async def _handle_client_disconnected(self, client_id):
         """Handle cleanup when a remote client disconnects."""
@@ -1723,6 +1778,10 @@ class RPC(MessageEmitter):
         config["workspace"] = config.get(
             "workspace", self._local_workspace or self._connection._workspace
         )
+        if config["workspace"] is None:
+            raise ValueError(
+                "Workspace is not set. Please ensure the connection has a workspace or set local_workspace."
+            )
         skip_context = config.get("require_context", False)
         exclude_keys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
         filtered_service = {k: v for k, v in service.items() if k not in exclude_keys}

@@ -2093,4 +2093,371 @@ describe("RPC", async () => {
 
     console.log("✅ LOCAL RPC DISCONNECTION CLEANUP TEST PASSED!");
   }).timeout(10000);
+
+  // Test RPC memory leak fix (similar to Python version)
+  it("test RPC memory leak fix", async function () {
+    console.log("\n=== RPC MEMORY LEAK FIX TEST ===");
+    this.timeout(60000);
+
+    function getDetailedSessionAnalysis(rpc) {
+      /**
+       * Comprehensive session analysis for JavaScript RPC.
+       */
+      const analysis = {
+        total_sessions: 0,
+        session_details: [],
+        system_stores: {},
+        memory_usage: 0, // Approximate
+        promise_sessions: 0,
+        regular_sessions: 0,
+        sessions_with_timers: 0,
+        sessions_with_heartbeat: 0,
+        background_tasks: 0,
+        connection_references: 0,
+      };
+
+      if (!rpc._object_store) {
+        analysis.error = "No object store";
+        return analysis;
+      }
+
+      // Count background tasks
+      if (rpc._background_tasks && rpc._background_tasks.size) {
+        analysis.background_tasks = rpc._background_tasks.size;
+      }
+
+      // Check connection references
+      if (rpc._connection) {
+        analysis.connection_references = 1;
+      }
+
+      for (const key in rpc._object_store) {
+        const value = rpc._object_store[key];
+
+        if (["services", "message_cache"].includes(key)) {
+          // System stores - don't count these as sessions
+          analysis.system_stores[key] = {
+            size:
+              typeof value === "object" && value
+                ? Object.keys(value).length
+                : 0,
+          };
+          continue;
+        }
+
+        // Count all non-system non-empty objects as sessions
+        if (value && typeof value === "object") {
+          const sessionKeys = Object.keys(value);
+
+          // Only skip completely empty objects
+          if (sessionKeys.length > 0) {
+            analysis.total_sessions++;
+
+            const sessionInfo = {
+              id: key,
+              keys: sessionKeys,
+              has_promise_manager: !!value._promise_manager,
+              has_callbacks: !!value._callbacks,
+              has_timer: !!value._timer,
+              has_heartbeat: !!value._heartbeat,
+              callback_count: value._callbacks
+                ? Object.keys(value._callbacks).length
+                : 0,
+            };
+
+            analysis.session_details.push(sessionInfo);
+
+            if (value._promise_manager) {
+              analysis.promise_sessions++;
+            } else {
+              analysis.regular_sessions++;
+            }
+
+            if (value._timer) analysis.sessions_with_timers++;
+            if (value._heartbeat) analysis.sessions_with_heartbeat++;
+
+            // Estimate memory usage
+            analysis.memory_usage += JSON.stringify(value).length;
+          }
+        }
+      }
+
+      return analysis;
+    }
+
+    function assertSessionDelta(label, before, after, expected_delta = 0) {
+      const actual_delta = after - before;
+      console.log(`\n=== ${label} ===`);
+
+      // Be more lenient with service registration sessions
+      if (label.includes("Service Registration")) {
+        if (actual_delta >= expected_delta) {
+          console.log(
+            `✅ ${label} passed: delta ${actual_delta} >= expected ${expected_delta}`,
+          );
+          return;
+        }
+      } else {
+        // For regular operation tests, be lenient about baseline sessions
+        const tolerance = 1; // Allow up to 1 session difference due to service cleanup timing
+        if (Math.abs(actual_delta - expected_delta) <= tolerance) {
+          console.log(
+            `✅ ${label} passed: delta ${actual_delta} (within tolerance of ${expected_delta})`,
+          );
+          return;
+        }
+      }
+
+      console.error(`=== ${label} FAILED ===`);
+      console.error(
+        `Expected session delta: ${expected_delta}, got: ${actual_delta}`,
+      );
+      console.error(`Before: ${before} sessions, After: ${after} sessions`);
+      throw new Error(`Session leak detected in ${label}`);
+    }
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rpc-memory-leak-test-client",
+    });
+
+    // Test 1: Initial baseline check
+    console.log("\n=== Test 1: Baseline Check ===");
+    const baseline = getDetailedSessionAnalysis(client.rpc);
+    console.log(
+      `Baseline: ${baseline.total_sessions} sessions, ${baseline.memory_usage} bytes`,
+    );
+    console.log(`Background tasks: ${baseline.background_tasks}`);
+    console.log(`Connection references: ${baseline.connection_references}`);
+
+    const baseline_count = baseline.total_sessions;
+
+    // Test 2: Simple operations
+    console.log("\n=== Test 2: Simple Operations ===");
+    const pre_simple = getDetailedSessionAnalysis(client.rpc);
+
+    for (let i = 0; i < 10; i++) {
+      const result = await client.echo(`test_${i}`);
+      expect(result).to.equal(`test_${i}`);
+    }
+
+    // Small delay for cleanup
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const post_simple = getDetailedSessionAnalysis(client.rpc);
+    assertSessionDelta(
+      "Simple Operations",
+      pre_simple.total_sessions,
+      post_simple.total_sessions,
+      0,
+    );
+
+    // Test 3: Stress test with concurrent operations
+    console.log("\n=== Test 3: Stress Test (Concurrent Operations) ===");
+    const pre_stress = getDetailedSessionAnalysis(client.rpc);
+
+    const concurrent_promises = [];
+    for (let i = 0; i < 20; i++) {
+      concurrent_promises.push(client.echo(`concurrent_${i}`));
+    }
+
+    const results = await Promise.all(concurrent_promises);
+    results.forEach((result, i) => {
+      expect(result).to.equal(`concurrent_${i}`);
+    });
+
+    // Wait for cleanup
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const post_stress = getDetailedSessionAnalysis(client.rpc);
+    assertSessionDelta(
+      "Stress Test",
+      pre_stress.total_sessions,
+      post_stress.total_sessions,
+      0,
+    );
+
+    // Test 4: Exception handling
+    console.log("\n=== Test 4: Exception Handling ===");
+    const pre_exception = getDetailedSessionAnalysis(client.rpc);
+
+    try {
+      // Try to call a method that doesn't exist - this should fail
+      await client.nonExistentMethod(
+        "This will cause an error because the method doesn't exist",
+      );
+      throw new Error("Expected an error but didn't get one");
+    } catch (error) {
+      expect(error.message).to.include("not a function");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const post_exception = getDetailedSessionAnalysis(client.rpc);
+    assertSessionDelta(
+      "Exception Handling",
+      pre_exception.total_sessions,
+      post_exception.total_sessions,
+      0,
+    );
+
+    // Test 5: Large data operations
+    console.log("\n=== Test 5: Large Data Operations ===");
+    const pre_large = getDetailedSessionAnalysis(client.rpc);
+
+    const large_data = "x".repeat(10000); // 10KB string
+    const echo_result = await client.echo(large_data);
+    expect(echo_result).to.equal(large_data);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const post_large = getDetailedSessionAnalysis(client.rpc);
+    assertSessionDelta(
+      "Large Data Operations",
+      pre_large.total_sessions,
+      post_large.total_sessions,
+      0,
+    );
+
+    // Test 6: Service registration and cleanup
+    console.log("\n=== Test 6: Service Registration and Cleanup ===");
+    const pre_service_analysis = getDetailedSessionAnalysis(client.rpc);
+
+    const test_services = [];
+    for (let i = 0; i < 3; i++) {
+      const service_info = await client.registerService({
+        id: `temp_service_${i}`,
+        config: { visibility: "protected" },
+        test_method: function (x) {
+          return `test_${x}`;
+        },
+      });
+      test_services.push(service_info.id);
+    }
+
+    // Use the services
+    for (const service_id of test_services) {
+      try {
+        const local_id = service_id.split(":").pop(); // Get local part
+        const svc = await client.getService(local_id);
+        const result = await svc.test_method("hello");
+        expect(result).to.equal("test_hello");
+      } catch (error) {
+        console.log(`Service ${service_id} test failed:`, error.message);
+      }
+    }
+
+    // Clean up services
+    for (const service_id of test_services) {
+      try {
+        await client.unregisterService(service_id);
+      } catch (error) {
+        console.log(`Failed to unregister ${service_id}:`, error.message);
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const service_analysis = getDetailedSessionAnalysis(client.rpc);
+    console.log(
+      `Service registration: ${service_analysis.total_sessions} sessions`,
+    );
+
+    // Test 7: Connection cleanup test
+    console.log("\n=== Test 7: Connection Cleanup Test ===");
+    const pre_cleanup = getDetailedSessionAnalysis(client.rpc);
+
+    // Test that connection references are properly managed
+    expect(pre_cleanup.connection_references).to.equal(1);
+    console.log(
+      `✅ Connection reference exists before cleanup: ${pre_cleanup.connection_references}`,
+    );
+
+    // Test close method
+    console.log("Testing RPC.close() method...");
+    client.rpc.close();
+
+    const post_close = getDetailedSessionAnalysis(client.rpc);
+    console.log(
+      `Connection references after close: ${post_close.connection_references}`,
+    );
+    console.log(`Background tasks after close: ${post_close.background_tasks}`);
+
+    // Connection should be cleared
+    expect(post_close.connection_references).to.equal(0);
+    console.log("✅ Connection reference cleared after close");
+
+    // Background tasks should be cleared
+    expect(post_close.background_tasks).to.equal(0);
+    console.log("✅ Background tasks cleared after close");
+
+    // Test disconnect method
+    console.log("Testing RPC.disconnect() method...");
+
+    // Create new client for disconnect test
+    const client2 = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rpc-disconnect-test-client",
+    });
+
+    const pre_disconnect = getDetailedSessionAnalysis(client2.rpc);
+    expect(pre_disconnect.connection_references).to.equal(1);
+    console.log(
+      `✅ Connection reference exists before disconnect: ${pre_disconnect.connection_references}`,
+    );
+
+    await client2.disconnect();
+
+    const post_disconnect = getDetailedSessionAnalysis(client2.rpc);
+    console.log(
+      `Connection references after disconnect: ${post_disconnect.connection_references}`,
+    );
+    console.log(
+      `Background tasks after disconnect: ${post_disconnect.background_tasks}`,
+    );
+
+    // Connection should be cleared
+    expect(post_disconnect.connection_references).to.equal(0);
+    console.log("✅ Connection reference cleared after disconnect");
+
+    // Background tasks should be cleared
+    expect(post_disconnect.background_tasks).to.equal(0);
+    console.log("✅ Background tasks cleared after disconnect");
+
+    // Final comprehensive check
+    console.log("\n=== Final Comprehensive Analysis ===");
+    const final_analysis = getDetailedSessionAnalysis(client.rpc);
+
+    console.log(`\n--- Final State Analysis ---`);
+    console.log(`Total sessions: ${final_analysis.total_sessions}`);
+    console.log(`Memory usage: ${final_analysis.memory_usage} bytes`);
+    console.log(`Background tasks: ${final_analysis.background_tasks}`);
+    console.log(
+      `Connection references: ${final_analysis.connection_references}`,
+    );
+
+    if (final_analysis.session_details.length > 0) {
+      console.log("Final session details:");
+      for (const session of final_analysis.session_details) {
+        console.log(`  - ${session.id}: ${JSON.stringify(session)}`);
+      }
+    }
+
+    // Final state should not have more sessions than after service registration
+    expect(final_analysis.total_sessions).to.be.at.most(
+      service_analysis.total_sessions + 2,
+    );
+
+    // Connection and background tasks should be cleaned up
+    expect(final_analysis.connection_references).to.equal(0);
+    expect(final_analysis.background_tasks).to.equal(0);
+
+    console.log("✅ RPC memory leak fix test passed!");
+    console.log("✅ Connection references properly cleaned up");
+    console.log("✅ Background tasks properly cleaned up");
+    console.log("✅ Session cleanup working correctly");
+
+    // Clean up
+    await client.disconnect();
+  }).timeout(60000);
 });
