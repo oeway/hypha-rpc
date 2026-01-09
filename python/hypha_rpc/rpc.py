@@ -1204,10 +1204,13 @@ class RPC(MessageEmitter):
         """Handle incoming HTTP message."""
         # Store the original message context for reconstructed HTTP messages
         original_context = data.get("ctx", {})
-        
+
         try:
-            assert "type" in data and data["type"] == "http-message"
-            assert "presigned_url" in data and "content_length" in data
+            # Validate message format
+            if data.get("type") != "http-message":
+                raise ValueError(f"Invalid message type: expected 'http-message', got '{data.get('type')}'")
+            if "presigned_url" not in data or "content_length" not in data:
+                raise ValueError("Missing required fields 'presigned_url' or 'content_length' in HTTP message")
             
             presigned_url = data["presigned_url"]
             content_length = data["content_length"]

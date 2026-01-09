@@ -1180,8 +1180,17 @@ export class RPC extends MessageEmitter {
 
   _handle_http_message(data) {
     try {
-      assert(data.type === "http-message");
-      assert(data.presigned_url && data.content_length !== undefined);
+      // Validate message format
+      if (data.type !== "http-message") {
+        throw new Error(
+          `Invalid message type: expected 'http-message', got '${data.type}'`,
+        );
+      }
+      if (!data.presigned_url || data.content_length === undefined) {
+        throw new Error(
+          "Missing required fields 'presigned_url' or 'content_length' in HTTP message",
+        );
+      }
 
       // Store the original message context for reconstructed HTTP messages
       const original_context = data.ctx || {};
