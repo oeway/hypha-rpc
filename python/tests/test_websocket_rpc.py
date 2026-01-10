@@ -187,7 +187,7 @@ def test_login_sync(fastapi_server):
 
 
 @pytest.mark.asyncio
-async def test_login_with_additional_headers(websocket_server):
+async def test_login_with_additional_headers(fastapi_server):
     """Test login with additional headers."""
     TOKEN = "sf31df234"
     additional_headers = {"X-Custom-Header": "test-value"}
@@ -214,7 +214,7 @@ async def test_login_with_additional_headers(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_numpy_array_sync(websocket_server):
+async def test_numpy_array_sync(fastapi_server):
     """Test numpy array registered in async."""
     ws = connect_to_server_sync(
         {"client_id": "test-plugin", "server_url": WS_SERVER_URL}
@@ -2547,7 +2547,7 @@ async def test_rpc_memory_leak_fix():
 
 
 @pytest.mark.asyncio
-async def test_authorized_workspaces(websocket_server):
+async def test_authorized_workspaces(fastapi_server):
     """Test the authorized_workspaces feature for protected services."""
     print("\n=== TESTING AUTHORIZED WORKSPACES ===")
     
@@ -2878,7 +2878,7 @@ async def test_long_running_method_with_heartbeat(restartable_server):
 
 
 @pytest.mark.asyncio
-async def test_client_disconnection_cleanup(websocket_server):
+async def test_client_disconnection_cleanup(fastapi_server):
     """Test that sessions are properly cleaned up when RPC disconnects."""
     print("\n=== CLIENT DISCONNECTION CLEANUP TEST ===")
     
@@ -2973,8 +2973,8 @@ async def test_client_disconnection_cleanup(websocket_server):
     print("✅ CLIENT DISCONNECTION CLEANUP TEST PASSED!")
 
 
-@pytest.mark.asyncio  
-async def test_local_rpc_disconnection_cleanup(websocket_server):
+@pytest.mark.asyncio
+async def test_local_rpc_disconnection_cleanup(fastapi_server):
     """Test that all pending sessions are cleaned up when local RPC disconnects."""
     print("\n=== LOCAL RPC DISCONNECTION CLEANUP TEST ===")
     
