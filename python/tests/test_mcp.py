@@ -247,6 +247,7 @@ async def workspace_mcp(hypha_server_with_services):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_service_mcp_creation(service_mcp):
     """Test that an MCP server can be created from a single service."""
     # Assert that the MCP server has been created
@@ -265,6 +266,7 @@ async def test_service_mcp_creation(service_mcp):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_service_mcp_client(service_mcp):
     """Test that a client can connect to a service MCP and use its tools."""
     # Define test values
@@ -335,6 +337,7 @@ async def test_service_mcp_client(service_mcp):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_workspace_mcp_creation(workspace_mcp):
     """Test that an MCP server can be created from all services in a workspace."""
     # Assert that the MCP server has been created
@@ -359,6 +362,7 @@ async def test_workspace_mcp_creation(workspace_mcp):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_workspace_mcp_calculator_client(workspace_mcp):
     """Test that a client can access calculator tools from the workspace MCP."""
     # Connect a client to the MCP server
@@ -421,6 +425,7 @@ async def test_workspace_mcp_calculator_client(workspace_mcp):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_workspace_mcp_interpreter_client(workspace_mcp):
     """Test that a client can access interpreter tools from the workspace MCP."""
     # Connect a client to the MCP server
@@ -483,6 +488,7 @@ __result__ = factorial(5)
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_json_schema_conversion(service_mcp):
     """Test that JSON schema from Hypha services is properly converted to MCP schema."""
     # Connect a client to the MCP server
@@ -516,6 +522,7 @@ async def test_json_schema_conversion(service_mcp):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_workspace_mcp_interpreter_tool_schema(workspace_mcp):
     """Test that the interpreter tool schema correctly includes parameter descriptions."""
     # Connect a client to the MCP server
@@ -561,6 +568,7 @@ async def test_workspace_mcp_interpreter_tool_schema(workspace_mcp):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_serve_mcp_calculator(hypha_server_with_services):
     """Test that an MCP service can be created and served using serve_mcp."""
     from hypha_rpc.utils.mcp import serve_mcp
@@ -636,6 +644,7 @@ async def test_serve_mcp_calculator(hypha_server_with_services):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes - allows time for session fixture startup
 async def test_mcp_service_with_all_features(mcp_service_with_all_features):
     """Test that a service with type=mcp can handle tools, resources, and prompts."""
     server, service_info = mcp_service_with_all_features
