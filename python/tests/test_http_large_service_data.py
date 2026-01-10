@@ -1,4 +1,8 @@
-"""Test HTTP transmission with large datasets in service registration and calling."""
+"""Test HTTP transmission with large datasets in service registration and calling.
+
+NOTE: These tests use a module-scoped isolated server (http_test_server) to prevent
+HTTP transmission operations from affecting other test modules.
+"""
 
 import asyncio
 import pytest
@@ -6,7 +10,11 @@ import time
 import numpy as np
 
 from hypha_rpc import connect_to_server
-from . import WS_SERVER_URL
+from .conftest import HTTP_TEST_PORT
+
+
+# Use isolated server URL for HTTP tests
+HTTP_SERVER_URL = f"http://127.0.0.1:{HTTP_TEST_PORT}"
 
 
 def generate_large_dataset(size_mb):
@@ -21,15 +29,15 @@ def generate_large_numpy_dataset(shape):
 
 
 @pytest.mark.asyncio
-async def test_large_dataset_service_workflow(fastapi_server, test_user_token):
+async def test_large_dataset_service_workflow(http_test_server, http_test_user_token):
     """Test complete workflow with large datasets: register service and call with large data."""
     print("\n=== TESTING LARGE DATASET SERVICE WORKFLOW ===")
     
     # Connect client
     client = await connect_to_server({
         "name": "large-dataset-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -215,14 +223,14 @@ async def test_large_dataset_service_workflow(fastapi_server, test_user_token):
 
 
 @pytest.mark.asyncio
-async def test_mixed_small_large_data_service(fastapi_server, test_user_token):
+async def test_mixed_small_large_data_service(http_test_server, http_test_user_token):
     """Test service with mixed small and large data to verify HTTP transmission only for large data."""
     print("\n=== TESTING MIXED SMALL/LARGE DATA SERVICE ===")
     
     client = await connect_to_server({
         "name": "mixed-data-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:

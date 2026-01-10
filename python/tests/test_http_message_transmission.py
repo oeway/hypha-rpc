@@ -1,4 +1,10 @@
-"""Test HTTP message transmission using S3 storage for large messages."""
+"""Test HTTP message transmission using S3 storage for large messages.
+
+NOTE: These tests use a module-scoped isolated server (http_test_server) to prevent
+HTTP transmission operations from affecting other test modules. Large data transfers
+via HTTP can cause server instability, so isolating these tests protects the main
+session-scoped hypha_server used by other tests.
+"""
 
 import asyncio
 import pytest
@@ -7,7 +13,11 @@ import time
 import numpy as np
 
 from hypha_rpc import connect_to_server
-from . import WS_SERVER_URL
+from .conftest import HTTP_TEST_PORT
+
+
+# Use isolated server URL for HTTP tests
+HTTP_SERVER_URL = f"http://127.0.0.1:{HTTP_TEST_PORT}"
 
 
 # ============================================================================
@@ -34,12 +44,12 @@ def generate_large_string(size_mb):
 # ============================================================================
 
 @pytest.fixture
-async def http_client(fastapi_server, test_user_token):
+async def http_client(http_test_server, http_test_user_token):
     """Create a client for HTTP transmission testing."""
     client = await connect_to_server({
         "name": "http-test-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     try:
         yield client
@@ -52,14 +62,14 @@ async def http_client(fastapi_server, test_user_token):
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_http_transmission_availability(fastapi_server, test_user_token):
+async def test_http_transmission_availability(http_test_server, http_test_user_token):
     """Test that HTTP transmission is properly initialized and available."""
     print("\n=== TESTING HTTP TRANSMISSION AVAILABILITY ===")
     
     client = await connect_to_server({
         "name": "http-test-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -82,14 +92,14 @@ async def test_http_transmission_availability(fastapi_server, test_user_token):
 
 
 @pytest.mark.asyncio
-async def test_small_message_below_threshold(fastapi_server, test_user_token):
+async def test_small_message_below_threshold(http_test_server, http_test_user_token):
     """Test that messages below 1MB threshold use regular WebSocket transmission."""
     print("\n=== TESTING SMALL MESSAGE (BELOW 1MB THRESHOLD) ===")
     
     client = await connect_to_server({
         "name": "http-test-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -135,14 +145,14 @@ async def test_small_message_below_threshold(fastapi_server, test_user_token):
 
 
 @pytest.mark.asyncio
-async def test_medium_message_single_upload(fastapi_server, test_user_token):
+async def test_medium_message_single_upload(http_test_server, http_test_user_token):
     """Test that messages between 1MB and 10MB use single upload HTTP transmission."""
     print("\n=== TESTING MEDIUM MESSAGE (1MB-10MB, SINGLE UPLOAD) ===")
     
     client = await connect_to_server({
         "name": "http-test-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -196,14 +206,14 @@ async def test_medium_message_single_upload(fastapi_server, test_user_token):
 
 
 @pytest.mark.asyncio
-async def test_large_message_multipart_upload(fastapi_server, test_user_token):
+async def test_large_message_multipart_upload(http_test_server, http_test_user_token):
     """Test that messages above 10MB use multipart upload HTTP transmission."""
     print("\n=== TESTING LARGE MESSAGE (ABOVE 10MB, MULTIPART UPLOAD) ===")
     
     client = await connect_to_server({
         "name": "http-test-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -265,14 +275,14 @@ async def test_large_message_multipart_upload(fastapi_server, test_user_token):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)  # 5 minutes for 50MB upload
-async def test_very_large_message_multipart_upload(fastapi_server, test_user_token):
+async def test_very_large_message_multipart_upload(http_test_server, http_test_user_token):
     """Test that very large messages (50MB+) use multipart upload with many parts."""
     print("\n=== TESTING VERY LARGE MESSAGE (50MB+, MULTIPART UPLOAD) ===")
     
     client = await connect_to_server({
         "name": "very-http-message-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -341,14 +351,14 @@ async def test_very_large_message_multipart_upload(fastapi_server, test_user_tok
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)  # 5 minutes for 32MB numpy array
-async def test_numpy_array_transmission(fastapi_server, test_user_token):
+async def test_numpy_array_transmission(http_test_server, http_test_user_token):
     """Test HTTP transmission with numpy arrays."""
     print("\n=== TESTING NUMPY ARRAY TRANSMISSION ===")
     
     client = await connect_to_server({
         "name": "http-test-client",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -410,14 +420,14 @@ async def test_numpy_array_transmission(fastapi_server, test_user_token):
 
 
 @pytest.mark.asyncio
-async def test_string_data_transmission(fastapi_server, test_user_token):
+async def test_string_data_transmission(http_test_server, http_test_user_token):
     """Test HTTP transmission with large string data."""
     print("\n=== TESTING LARGE STRING TRANSMISSION ===")
     
     client = await connect_to_server({
         "name": "string-data-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -485,14 +495,14 @@ async def test_string_data_transmission(fastapi_server, test_user_token):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(420)  # 7 minutes for 40MB (2+5+8+10+15) uploads
-async def test_http_vs_websocket_performance(fastapi_server, test_user_token):
+async def test_http_vs_websocket_performance(http_test_server, http_test_user_token):
     """Compare performance between HTTP transmission and WebSocket fallback."""
     print("\n=== TESTING HTTP VS WEBSOCKET PERFORMANCE ===")
     
     client = await connect_to_server({
         "name": "performance-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -592,14 +602,14 @@ async def test_http_vs_websocket_performance(fastapi_server, test_user_token):
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_http_transmission_fallback(fastapi_server, test_user_token):
+async def test_http_transmission_fallback(http_test_server, http_test_user_token):
     """Test that system falls back to WebSocket when HTTP transmission fails."""
     print("\n=== TESTING HTTP TRANSMISSION FALLBACK ===")
     
     client = await connect_to_server({
         "name": "fallback-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -644,14 +654,14 @@ async def test_http_transmission_fallback(fastapi_server, test_user_token):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)  # 5 minutes for 28MB concurrent uploads
-async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
+async def test_concurrent_large_transmissions(http_test_server, http_test_user_token):
     """Test concurrent large data transmissions."""
     print("\n=== TESTING CONCURRENT LARGE TRANSMISSIONS ===")
     
     client = await connect_to_server({
         "name": "concurrent-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -732,14 +742,14 @@ async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(420)  # 7 minutes for comprehensive multi-upload test
-async def test_comprehensive_integration(fastapi_server, test_user_token):
+async def test_comprehensive_integration(http_test_server, http_test_user_token):
     """Comprehensive integration test covering all aspects of HTTP transmission."""
     print("\n=== COMPREHENSIVE INTEGRATION TEST ===")
     
     client = await connect_to_server({
         "name": "integration-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
     })
     
     try:
@@ -890,7 +900,7 @@ async def test_comprehensive_integration(fastapi_server, test_user_token):
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_configurable_http_transmission_parameters(fastapi_server, test_user_token):
+async def test_configurable_http_transmission_parameters(http_test_server, http_test_user_token):
     """Verify that HTTP transmission parameters can be configured via RPC constructor."""
     print("\n=== TESTING CONFIGURABLE HTTP TRANSMISSION PARAMETERS ===")
     
@@ -900,8 +910,8 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
 
     client = await connect_to_server({
         "name": "configurable-params-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
         "enable_http_transmission": True,
         "http_transmission_threshold": custom_http_threshold,
         "multipart_threshold": custom_multipart_threshold,
@@ -990,14 +1000,14 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)  # 5 minutes for 32MB upload with configurable parts
-async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, test_user_token):
+async def test_configurable_multipart_size_and_parallel_uploads(http_test_server, http_test_user_token):
     """Test configurable multipart size and parallel upload functionality."""
     print("\n=== TESTING CONFIGURABLE MULTIPART SIZE AND PARALLEL UPLOADS ===")
     
     client = await connect_to_server({
         "name": "configurable-multipart-test",
-        "server_url": WS_SERVER_URL,
-        "token": test_user_token,
+        "server_url": HTTP_SERVER_URL,
+        "token": http_test_user_token,
         # Test with custom multipart configuration
         "multipart_size": 5 * 1024 * 1024,  # 5MB parts (minimum for S3)
         "max_parallel_uploads": 3,  # 3 parallel uploads
@@ -1079,7 +1089,7 @@ async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)  # 5 minutes for 30MB (15MB x 2 configs) uploads
-async def test_parallel_upload_performance(fastapi_server, test_user_token):
+async def test_parallel_upload_performance(http_test_server, http_test_user_token):
     """Test parallel upload performance with different configurations."""
     print("\n=== TESTING PARALLEL UPLOAD PERFORMANCE ===")
 
@@ -1099,8 +1109,8 @@ async def test_parallel_upload_performance(fastapi_server, test_user_token):
 
         client = await connect_to_server({
             "name": f"parallel-test-{config['max_parallel_uploads']}",
-            "server_url": WS_SERVER_URL,
-            "token": test_user_token,
+            "server_url": HTTP_SERVER_URL,
+            "token": http_test_user_token,
             "multipart_size": 5 * 1024 * 1024,  # 5MB parts (minimum for S3)
             "max_parallel_uploads": config["max_parallel_uploads"],
         })

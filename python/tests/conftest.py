@@ -213,7 +213,7 @@ def fastapi_server_fixture(hypha_server):
 def generate_test_user_token():
     """Generate a test user token."""
     from hypha.core.auth import generate_presigned_token, create_scope, UserInfo, UserPermission
-    
+
     user_info = UserInfo(
         id="test-user",
         is_anonymous=False,
@@ -221,6 +221,109 @@ def generate_test_user_token():
         parent=None,
         roles=[],
         scope=create_scope(workspaces={"ws-user-test-user": UserPermission.admin}),
+        expires_at=None,
+    )
+    token = generate_presigned_token(user_info, 1800)
+    yield token
+
+
+# HTTP-specific port for isolated server to avoid conflicts with session-scoped hypha_server
+HTTP_TEST_PORT = 3829
+
+
+@pytest.fixture(name="http_test_server", scope="module")
+def http_test_server_fixture():
+    """Start an isolated Hypha server for HTTP transmission tests.
+
+    This module-scoped fixture provides a separate server instance for HTTP tests
+    to prevent HTTP transmission operations from affecting other test modules.
+    The HTTP tests can cause server instability due to large data transfers,
+    so isolating them protects the main session-scoped server.
+    """
+    minio_port = 9003  # Different port from session-scoped server
+    server_args = [
+        sys.executable,
+        "-m", "hypha.server",
+        f"--port={HTTP_TEST_PORT}",
+        "--workspace-bucket=test-http-workspaces",
+        "--start-minio-server",
+        "--minio-workdir=/tmp/minio_http_data",
+        f"--minio-port={minio_port}",
+        "--minio-root-user=httpuser",
+        "--minio-root-password=httppassword",
+        "--s3-cleanup-period=3",
+        "--enable-s3",
+        "--enable-s3-for-anonymous-users"
+    ]
+
+    # Clean up any stale data
+    import shutil
+    try:
+        shutil.rmtree("/tmp/minio_http_data", ignore_errors=True)
+    except Exception:
+        pass
+
+    proc = subprocess.Popen(server_args, env=test_env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # Check if process failed immediately
+    time.sleep(0.5)
+    if proc.poll() is not None:
+        stdout, stderr = proc.communicate()
+        raise RuntimeError(f"Failed to start HTTP test server. Exit code: {proc.returncode}\n"
+                          f"STDOUT: {stdout.decode()}\n"
+                          f"STDERR: {stderr.decode()}")
+
+    # Wait for server to be ready
+    timeout = 120
+    while timeout > 0:
+        try:
+            response = requests.get(f"http://127.0.0.1:{HTTP_TEST_PORT}/health/readiness", timeout=5)
+            if response.ok:
+                break
+        except RequestException as exc:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
+                raise RuntimeError(f"HTTP test server died during startup. Exit code: {proc.returncode}\n"
+                                  f"STDOUT: {stdout.decode()}\n"
+                                  f"STDERR: {stderr.decode()}") from exc
+        timeout -= 0.1
+        time.sleep(0.1)
+
+    if timeout <= 0:
+        proc.terminate()
+        stdout, stderr = proc.communicate(timeout=5)
+        raise RuntimeError(f"Failed to start HTTP test server within timeout\n"
+                          f"STDOUT: {stdout.decode()}\n"
+                          f"STDERR: {stderr.decode()}")
+
+    try:
+        yield proc
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        # Clean up minio data
+        try:
+            shutil.rmtree("/tmp/minio_http_data", ignore_errors=True)
+        except Exception:
+            pass
+
+
+@pytest.fixture(name="http_test_user_token", scope="module")
+def generate_http_test_user_token():
+    """Generate a test user token for HTTP tests."""
+    from hypha.core.auth import generate_presigned_token, create_scope, UserInfo, UserPermission
+
+    user_info = UserInfo(
+        id="http-test-user",
+        is_anonymous=False,
+        email="http-test-user@test.com",
+        parent=None,
+        roles=[],
+        scope=create_scope(workspaces={"ws-user-http-test-user": UserPermission.admin}),
         expires_at=None,
     )
     token = generate_presigned_token(user_info, 1800)
