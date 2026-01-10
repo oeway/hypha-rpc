@@ -264,6 +264,7 @@ async def test_large_message_multipart_upload(fastapi_server, test_user_token):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes for 50MB upload
 async def test_very_large_message_multipart_upload(fastapi_server, test_user_token):
     """Test that very large messages (50MB+) use multipart upload with many parts."""
     print("\n=== TESTING VERY LARGE MESSAGE (50MB+, MULTIPART UPLOAD) ===")
@@ -338,6 +339,7 @@ async def test_very_large_message_multipart_upload(fastapi_server, test_user_tok
 # ============================================================================
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes for 32MB numpy array
 async def test_numpy_array_transmission(fastapi_server, test_user_token):
     """Test HTTP transmission with numpy arrays."""
     print("\n=== TESTING NUMPY ARRAY TRANSMISSION ===")
@@ -480,6 +482,7 @@ async def test_string_data_transmission(fastapi_server, test_user_token):
 # ============================================================================
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(420)  # 7 minutes for 40MB (2+5+8+10+15) uploads
 async def test_http_vs_websocket_performance(fastapi_server, test_user_token):
     """Compare performance between HTTP transmission and WebSocket fallback."""
     print("\n=== TESTING HTTP VS WEBSOCKET PERFORMANCE ===")
@@ -638,6 +641,7 @@ async def test_http_transmission_fallback(fastapi_server, test_user_token):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes for 28MB concurrent uploads
 async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
     """Test concurrent large data transmissions."""
     print("\n=== TESTING CONCURRENT LARGE TRANSMISSIONS ===")
@@ -724,6 +728,7 @@ async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
 # ============================================================================
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(420)  # 7 minutes for comprehensive multi-upload test
 async def test_comprehensive_integration(fastapi_server, test_user_token):
     """Comprehensive integration test covering all aspects of HTTP transmission."""
     print("\n=== COMPREHENSIVE INTEGRATION TEST ===")
@@ -981,6 +986,7 @@ async def test_configurable_http_transmission_parameters(fastapi_server, test_us
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)  # 5 minutes for 32MB upload with configurable parts
 async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, test_user_token):
     """Test configurable multipart size and parallel upload functionality."""
     print("\n=== TESTING CONFIGURABLE MULTIPART SIZE AND PARALLEL UPLOADS ===")
@@ -1069,6 +1075,7 @@ async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(600)  # 10 minutes for 75MB (25MB x 3 configs) uploads
 async def test_parallel_upload_performance(fastapi_server, test_user_token):
     """Test parallel upload performance with different configurations."""
     print("\n=== TESTING PARALLEL UPLOAD PERFORMANCE ===")
