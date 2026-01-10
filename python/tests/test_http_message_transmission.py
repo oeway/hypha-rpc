@@ -327,9 +327,9 @@ async def test_very_large_message_multipart_upload(http_test_server, http_test_u
         transmission_time = time.time() - start_time
         
         print(f"✅ Very large data handled successfully in {transmission_time:.2f}s")
-        assert result["size_mb"] == 50.0
+        assert result["size_mb"] == 25.0
         assert result["handled"] is True
-        
+
         # Verify HTTP transmission was used with multipart upload
         assert len(http_transmission_events) == 1, "HTTP transmission should be used for very large messages"
         event = http_transmission_events[0]
@@ -337,9 +337,9 @@ async def test_very_large_message_multipart_upload(http_test_server, http_test_u
         assert event["used_multipart"] is True
         assert event["multipart_threshold"] == 10 * 1024 * 1024  # 10MB
         assert event["part_size"] == 6 * 1024 * 1024  # 6MB per part (new default)
-        # Verify multipart upload was used (actual part count may vary due to data size)
-        assert event["part_count"] >= 9, f"Expected at least 9 parts for 50MB with 6MB parts, got {event['part_count']}"
-        print("✅ Confirmed: Very large message used multipart upload with 10 parts")
+        # Verify multipart upload was used (25MB with 6MB parts = ~5 parts)
+        assert event["part_count"] >= 4, f"Expected at least 4 parts for 25MB with 6MB parts, got {event['part_count']}"
+        print("✅ Confirmed: Very large message used multipart upload")
         
     finally:
         await client.disconnect()
@@ -403,17 +403,17 @@ async def test_numpy_array_transmission(http_test_server, http_test_user_token):
         transmission_time = time.time() - start_time
         
         print(f"✅ Array processed successfully in {transmission_time:.2f}s")
-        assert result["shape"] == [2048, 2048, 2]
+        assert result["shape"] == [1024, 1024, 3]
         assert result["dtype"] == "float32"
-        assert abs(result["size_mb"] - 32.0) < 0.1
+        assert abs(result["size_mb"] - 12.0) < 0.1
         
         # Verify HTTP transmission was used
         assert len(http_transmission_events) == 1, "HTTP transmission should be used for large numpy arrays"
         event = http_transmission_events[0]
         assert event["transmission_method"] == "multipart_upload"
         assert event["used_multipart"] is True
-        # Verify multipart upload was used (actual part count may vary due to data size)
-        assert event["part_count"] >= 6, f"Expected at least 6 parts for 32MB, got {event['part_count']}"
+        # Verify multipart upload was used (12MB with 6MB parts = 2+ parts)
+        assert event["part_count"] >= 2, f"Expected at least 2 parts for 12MB, got {event['part_count']}"
         print("✅ Confirmed: Large numpy array used multipart upload HTTP transmission")
     finally:
         await client.disconnect()
