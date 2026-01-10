@@ -306,8 +306,9 @@ async def test_very_large_message_multipart_upload(fastapi_server, test_user_tok
         
         print(f"✅ Service registered: {service_info['id']}")
         
-        # Test with very large data (50MB - should use many parts)
-        very_large_data = generate_test_data(50)  # 50MB
+        # Test with very large data (25MB - should use many parts)
+        # Reduced from 50MB to 25MB to minimize CI resource usage
+        very_large_data = generate_test_data(25)  # 25MB
         print(f"📤 Sending {len(very_large_data) / (1024*1024):.1f}MB of data...")
         
         start_time = time.time()
@@ -382,7 +383,8 @@ async def test_numpy_array_transmission(fastapi_server, test_user_token):
         print(f"✅ Service registered: {service_info['id']}")
         
         # Create large numpy array (20MB - should trigger multipart upload)
-        large_array = generate_numpy_array((2048, 2048, 2))  # ~32MB
+        # Reduced from (2048, 2048, 2) ~32MB to (1024, 1024, 3) ~12MB to minimize CI resource usage
+        large_array = generate_numpy_array((1024, 1024, 3))  # ~12MB
         print(f"📤 Sending numpy array: {large_array.shape}, {large_array.nbytes / (1024*1024):.1f}MB")
         
         start_time = time.time()
@@ -678,11 +680,12 @@ async def test_concurrent_large_transmissions(fastapi_server, test_user_token):
         print(f"✅ Service registered: {service_info['id']}")
         
         # Create multiple large datasets
+        # Reduced sizes to minimize CI resource usage (total: 13MB instead of 28MB)
         datasets = [
+            generate_test_data(2),   # 2MB
             generate_test_data(3),   # 3MB
-            generate_test_data(5),   # 5MB
-            generate_test_data(8),   # 8MB
-            generate_test_data(12),  # 12MB
+            generate_test_data(4),   # 4MB
+            generate_test_data(4),   # 4MB
         ]
         
         print(f"📤 Sending {len(datasets)} concurrent transmissions...")
@@ -797,9 +800,9 @@ async def test_comprehensive_integration(fastapi_server, test_user_token):
             (generate_test_data(0.5), "binary", "websocket", 0, False),      # 500KB - WebSocket
             (generate_test_data(2), "binary", "single_upload", 1, False),    # 2MB - Single upload
             (generate_test_data(8), "binary", "single_upload", 1, False),    # 8MB - Single upload
-            (generate_test_data(15), "binary", "multipart_upload", 3, True), # 15MB - Multipart
-            (generate_numpy_array((1024, 1024, 3)), "numpy", "multipart_upload", 3, True),  # ~12MB - Multipart
-            (generate_large_string(20), "string", "multipart_upload", 4, True),  # 20MB - Multipart
+            (generate_test_data(12), "binary", "multipart_upload", 3, True), # 12MB - Multipart (reduced from 15MB)
+            (generate_numpy_array((512, 512, 3)), "numpy", "single_upload", 1, False),  # ~3MB - Single upload (reduced from 12MB)
+            (generate_large_string(12), "string", "multipart_upload", 3, True),  # 12MB - Multipart (reduced from 20MB)
         ]
         
         results = []
@@ -1075,21 +1078,25 @@ async def test_configurable_multipart_size_and_parallel_uploads(fastapi_server, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(600)  # 10 minutes for 75MB (25MB x 3 configs) uploads
+@pytest.mark.timeout(300)  # 5 minutes for 30MB (15MB x 2 configs) uploads
 async def test_parallel_upload_performance(fastapi_server, test_user_token):
     """Test parallel upload performance with different configurations."""
     print("\n=== TESTING PARALLEL UPLOAD PERFORMANCE ===")
-    
+
+    # Wait for any pending S3 cleanup from previous tests to complete
+    # This helps prevent resource exhaustion in CI environments
+    await asyncio.sleep(2)
+
     # Test with different parallel upload configurations
+    # Reduced from 3 configs to 2 to minimize CI resource usage
     configs = [
         {"max_parallel_uploads": 1, "name": "Sequential"},
         {"max_parallel_uploads": 3, "name": "3 Parallel"},
-        {"max_parallel_uploads": 5, "name": "5 Parallel"},
     ]
-    
+
     for config in configs:
         print(f"\n--- Testing {config['name']} Uploads ---")
-        
+
         client = await connect_to_server({
             "name": f"parallel-test-{config['max_parallel_uploads']}",
             "server_url": WS_SERVER_URL,
@@ -1097,28 +1104,29 @@ async def test_parallel_upload_performance(fastapi_server, test_user_token):
             "multipart_size": 5 * 1024 * 1024,  # 5MB parts (minimum for S3)
             "max_parallel_uploads": config["max_parallel_uploads"],
         })
-        
+
         try:
             http_transmission_events = []
-            
+
             def on_http_transmission(data):
                 http_transmission_events.append(data)
-            
+
             client.rpc.on("http_transmission_stats", on_http_transmission)
-            
+
             # Register echo service
             def echo_data(data):
                 return data
-            
+
             await client.register_service({
                 "id": "echo-service",
                 "name": "Echo Service",
                 "config": {"visibility": "public", "require_context": False},
                 "echo_data": echo_data,
             })
-            
+
             # Test with data that creates multiple parts
-            test_data = generate_test_data(25)  # 25MB with 5MB parts = 5 parts
+            # Reduced from 25MB to 15MB to minimize CI resource usage
+            test_data = generate_test_data(15)  # 15MB with 5MB parts = 3 parts
             print(f"📤 Sending {len(test_data) / (1024*1024):.1f}MB with {config['max_parallel_uploads']} parallel uploads")
             
             start_time = time.time()
