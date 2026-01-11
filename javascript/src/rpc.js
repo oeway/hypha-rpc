@@ -34,6 +34,31 @@ function _appendBuffer(buffer1, buffer2) {
   return tmp.buffer;
 }
 
+/**
+ * Wrap a promise with a timeout.
+ * @param {Promise} promise - The promise to wrap.
+ * @param {number} timeoutMs - The timeout in milliseconds.
+ * @param {string} message - Optional error message for timeout.
+ * @returns {Promise} - The wrapped promise that will reject on timeout.
+ */
+function withTimeout(promise, timeoutMs, message = "Operation timed out") {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`TimeoutError: ${message}`));
+    }, timeoutMs);
+
+    promise
+      .then((result) => {
+        clearTimeout(timeoutId);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
+
 function indexObject(obj, is) {
   if (!is) throw new Error("undefined index");
   if (typeof is === "string") return indexObject(obj, is.split("."));
@@ -438,19 +463,35 @@ export class RPC extends MessageEmitter {
             let registeredCount = 0;
             const failedServices = [];
 
+            // Use timeout for service registration to prevent hanging
+            const serviceRegistrationTimeout = this._method_timeout || 30000;
+
             for (let service of services) {
               try {
                 const serviceInfo = this._extract_service_info(service);
-                await manager.register_service(serviceInfo);
+                await withTimeout(
+                  manager.registerService(serviceInfo),
+                  serviceRegistrationTimeout,
+                  `Timeout registering service ${service.id || "unknown"}`,
+                );
                 registeredCount++;
                 console.debug(
                   `Successfully registered service: ${service.id || "unknown"}`,
                 );
               } catch (serviceError) {
                 failedServices.push(service.id || "unknown");
-                console.error(
-                  `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
-                );
+                if (
+                  serviceError.message &&
+                  serviceError.message.includes("TimeoutError")
+                ) {
+                  console.error(
+                    `Timeout registering service ${service.id || "unknown"}`,
+                  );
+                } else {
+                  console.error(
+                    `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
+                  );
+                }
               }
             }
 
@@ -512,10 +553,12 @@ export class RPC extends MessageEmitter {
                   }
                 };
 
-                // Subscribe to the event topic first
-                this._clientDisconnectedSubscription = await manager.subscribe([
-                  "client_disconnected",
-                ]);
+                // Subscribe to the event topic first with timeout
+                this._clientDisconnectedSubscription = await withTimeout(
+                  manager.subscribe(["client_disconnected"]),
+                  serviceRegistrationTimeout,
+                  "Timeout subscribing to client_disconnected events",
+                );
 
                 // Then register the local event handler
                 this.on("client_disconnected", handleClientDisconnected);
