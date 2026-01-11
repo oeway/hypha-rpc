@@ -7,7 +7,7 @@ import asyncio
 import sys
 
 from .rpc import RPC
-from .utils import ObjectProxy
+from .utils import ObjectProxy, run_in_executor
 from .sync import connect_to_server as connect_to_server_sync
 from .sync import get_remote_service as get_remote_service_sync
 from .sync import get_rtc_service as get_rtc_service_sync
@@ -127,4 +127,5 @@ __all__ = [
     "register_rtc_service_sync",
     "get_rtc_service_sync",
     "setup_local_client",
+    "run_in_executor",
 ]

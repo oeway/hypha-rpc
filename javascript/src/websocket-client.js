@@ -344,12 +344,22 @@ class WebsocketRPCConnection {
             }
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
-              console.warn("Failed to reconnect, connection aborted:", e);
+              console.warn("Server refused to reconnect:", e);
+              // Mark as closed and notify the application
+              this._closed = true;
+              if (this._handle_disconnected) {
+                this._handle_disconnected(`Server refused reconnection: ${e}`);
+              }
               return;
             } else if (`${e}`.includes("NotImplementedError:")) {
               console.error(
                 `${e}\nIt appears that you are trying to connect to a hypha server that is older than 0.20.0, please upgrade the hypha server or use the websocket client in imjoy-rpc(https://www.npmjs.com/package/imjoy-rpc) instead`,
               );
+              // Mark as closed to prevent further reconnection attempts
+              this._closed = true;
+              if (this._handle_disconnected) {
+                this._handle_disconnected(`Server too old: ${e}`);
+              }
               return;
             }
 
@@ -403,21 +413,20 @@ class WebsocketRPCConnection {
                 await reconnect();
               } else {
                 console.error(
-                  `Failed to reconnect after ${MAX_RETRY} attempts, giving up. Exiting process.`,
+                  `Failed to reconnect after ${MAX_RETRY} attempts, giving up.`,
                 );
+                // Mark as closed to prevent further reconnection attempts
+                this._closed = true;
                 // Notify about max retry exceeded
                 if (this._handle_disconnected) {
                   this._handle_disconnected(
                     "Max reconnection attempts exceeded",
                   );
                 }
-                // Exit process to prevent stuck event loop
-                if (typeof process !== "undefined" && process.exit) {
-                  console.error(
-                    "Forcing process exit due to unrecoverable connection failure",
-                  );
-                  process.exit(1);
-                }
+                // Note: We intentionally do NOT call process.exit() here.
+                // Instead, we mark the connection as closed and let the
+                // application handle the failure through the disconnected
+                // handler or by checking connection state.
               }
             }, finalDelay);
             this._reconnect_timeouts.add(timeoutId);
