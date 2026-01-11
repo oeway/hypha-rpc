@@ -1029,7 +1029,7 @@ export class RPC extends MessageEmitter {
     const [ws, client_id] = context["to"].split("/");
     assert(
       client_id === this._client_id,
-      "Services can only be accessed locally",
+      `Services can only be accessed locally, client_id mismatch: ${client_id} != ${this._client_id}`,
     );
 
     const service = this._services[service_id];
@@ -1096,7 +1096,9 @@ export class RPC extends MessageEmitter {
       let svc = await waitFor(
         method(service_id),
         timeout,
-        "Timeout Error: Failed to get remote service: " + service_uri,
+        new Error(
+          "Timeout Error: Failed to get remote service: " + service_uri,
+        ),
       );
       svc.id = `${provider}:${service_id}`;
       if (kwargs_expansion) {

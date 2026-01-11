@@ -1232,7 +1232,7 @@ class RPC(MessageEmitter):
         """Get a local service."""
         assert service_id is not None and context is not None
         ws, client_id = context["to"].split("/")
-        assert client_id == self._client_id, "Services can only be accessed locally"
+        assert client_id == self._client_id, f"Services can only be accessed locally, client_id mismatch: {client_id} != {self._client_id}"
 
         service = self._services.get(service_id)
         if not service:

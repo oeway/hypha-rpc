@@ -133,13 +133,15 @@ async def _setup_rpc(config):
         channel,
         logger=config.get("logger"),
     )
-    config["context"] = config.get("context") or {}
-    config["context"]["connection_type"] = "webrtc"
-    config["context"]["ws"] = config.get("workspace")
+    # Preserve existing context and add WebRTC-specific fields
+    context = config.get("context", {}).copy()  # Make a copy to avoid modifying original
+    context["connection_type"] = "webrtc"
+    context["ws"] = config.get("workspace")
+    
     rpc = RPC(
         connection,
         client_id=client_id,
-        default_context=config["context"],
+        default_context=context,
         name=config.get("name"),
         method_timeout=config.get("method_timeout", 10.0),
         loop=config.get("loop"),
@@ -167,19 +169,38 @@ async def _create_offer(params, server=None, config=None, on_init=None, context=
 
         @pc.on("datachannel")
         async def on_datachannel(channel):
-            ctx = None
-            if context and context.get("user"):
-                ctx = {"user": context["user"], "ws": context["ws"]}
-            rpc = await _setup_rpc(
-                {
-                    "channel": channel,
-                    "client_id": channel.label,
-                    "workspace": server.config["workspace"],
-                    "context": ctx,
-                }
-            )
-            # Map all the local services to the webrtc client
-            rpc._services = server.rpc._services
+            # Minimal context for WebRTC - just enough to satisfy require_context services
+            ctx = {"connection_type": "webrtc"}
+            if context and "user" in context:
+                ctx["user"] = context["user"]
+            
+            print(f"WebRTC context setup: {ctx}")
+
+            rpc = await _setup_rpc({
+                "channel": channel,
+                "client_id": server.config.get("client_id", channel.label),
+                "workspace": server.config["workspace"],
+                "context": ctx,
+                "logger": config.get("logger"),
+                "on_init": on_init
+            })
+            
+            # Override get_local_service to forward requests to the server's RPC
+            original_get_local_service = rpc.get_local_service
+            
+            async def forwarding_get_local_service(service_id):
+                # First try to get it locally
+                try:
+                    return await original_get_local_service(service_id)
+                except Exception as e:
+                    # If not found locally, forward to the server's RPC
+                    if "Service not found" in str(e) and hasattr(server, 'rpc'):
+                        return await server.rpc.get_local_service(service_id)
+                    raise
+            
+            rpc.get_local_service = forwarding_get_local_service
+            
+            print(f"WebRTC RPC default_context: {rpc.default_context}")
 
     if on_init:
         await on_init(pc)
@@ -228,14 +249,25 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
         async def on_open():
             config["channel"] = dc
             config["workspace"] = server.config["workspace"]
+            
+            # Minimal context for WebRTC client - just enough to satisfy require_context services
+            webrtc_context = {"connection_type": "webrtc"}
+            if hasattr(server, 'rpc') and hasattr(server.rpc, 'default_context'):
+                if "user" in server.rpc.default_context:
+                    webrtc_context["user"] = server.rpc.default_context["user"]
+            
+            config["context"] = webrtc_context
+            
             rpc = await _setup_rpc(config)
             pc.rpc = rpc
 
             async def get_service(name, *args, **kwargs):
                 assert ":" not in name, "Service name cannot contain ':'"
                 assert "/" not in name, "Service name cannot contain '/'"
+                # Use the server's client_id to access its services
+                server_client_id = server.config.get("client_id", server.rpc._client_id)
                 return await rpc.get_remote_service(
-                    config["workspace"] + "/" + config["peer_id"] + ":" + name,
+                    config["workspace"] + "/" + server_client_id + ":" + name,
                     *args,
                     **kwargs,
                 )
