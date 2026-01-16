@@ -949,6 +949,43 @@ async def _connect_to_server(config):
     )
     wm.rpc = rpc
 
+    # Store the current manager service for refreshing after reconnection
+    # We need to keep a mutable container to update the reference
+    _manager_service_ref = {"current": wm, "needs_refresh": False}
+
+    async def _refresh_manager_service():
+        """Refresh the workspace manager service after reconnection.
+
+        This updates the remote method references which may have stale _rtarget
+        pointing to the old manager_id.
+        """
+        try:
+            new_wm = await rpc.get_manager_service(
+                {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
+            )
+            # Update the remote methods on the existing wm object
+            # This preserves the wm reference that was returned to the user
+            for key in list(wm.keys()):
+                if key in new_wm and hasattr(new_wm[key], '__rpc_object__'):
+                    wm[key] = new_wm[key]
+            _manager_service_ref["current"] = new_wm
+            _manager_service_ref["needs_refresh"] = False
+            logger.info("Refreshed workspace manager service after reconnection")
+        except Exception as e:
+            logger.warning(f"Failed to refresh workspace manager service: {e}")
+            _manager_service_ref["needs_refresh"] = False
+
+    # Listen for connected event which indicates reconnection is happening
+    # Mark that we need to refresh the manager service
+    def _on_connected(info):
+        # Only mark for refresh if this is a reconnection (not initial connection)
+        if hasattr(rpc, '_initial_connection_done') and rpc._initial_connection_done:
+            _manager_service_ref["needs_refresh"] = True
+            logger.debug("Marked workspace manager for refresh after reconnection")
+
+    rpc.on("connected", _on_connected)
+    rpc._initial_connection_done = True
+
     def export(api: dict):
         """Export the api."""
         # Convert class instance to a dict
@@ -1203,14 +1240,25 @@ async def _connect_to_server(config):
             },
         )
     else:
-        _get_service = wm.get_service
+        # Store the original get_service schema for the wrapper
+        _get_service_schema = wm.get_service.__schema__
+        # Store reference to the manager service ref so we can use the refreshed version
+        _wm_ref = _manager_service_ref
+        _refresh_func = _refresh_manager_service
 
         async def get_service(query, config=None, **kwargs):
             config = config or {}
             config.update(kwargs)
+            # Check if we need to refresh the manager service after reconnection
+            if _wm_ref["needs_refresh"]:
+                await _refresh_func()
+            # Use the current manager service's get_service method
+            # This ensures we use the refreshed reference after reconnection
+            current_wm = _wm_ref["current"]
+            _get_service = current_wm.get_service
             return await _get_service(query, config=config)
 
-        get_service.__schema__ = wm.get_service.__schema__
+        get_service.__schema__ = _get_service_schema
         wm.get_service = get_service
 
     async def serve():
