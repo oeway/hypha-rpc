@@ -7,6 +7,7 @@ import io
 import os
 import logging
 import math
+import httpx
 import time
 import sys
 import traceback
@@ -573,6 +574,11 @@ class RPC(MessageEmitter):
         app_id=None,
         server_base_url=None,
         long_message_chunk_size=None,
+        enable_http_transmission=True,
+        http_transmission_threshold=1024 * 1024,  # 1MB default
+        multipart_threshold=10 * 1024 * 1024,  # 10MB default
+        multipart_size=6 * 1024 * 1024,  # 6MB default
+        max_parallel_uploads=5,  # 5 parallel uploads default
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -593,7 +599,6 @@ class RPC(MessageEmitter):
         self.loop = loop or asyncio.get_event_loop()
         self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
         super().__init__(self._remote_logger)
-
         # Set up exception handler for unhandled asyncio futures
         def handle_exception(loop, context):
             exception = context.get('exception')
@@ -610,6 +615,15 @@ class RPC(MessageEmitter):
         if not hasattr(self.loop, '_hypha_exception_handler_set'):
             self.loop.set_exception_handler(handle_exception)
             self.loop._hypha_exception_handler_set = True
+        # Initialize HTTP message transmission configuration
+        self._enable_http_transmission = enable_http_transmission
+        self._http_transmission_threshold = http_transmission_threshold
+        self._multipart_threshold = multipart_threshold
+        # Ensure multipart_size is at least 5MB (S3 minimum requirement)
+        self._multipart_size = max(multipart_size, 5 * 1024 * 1024)
+        self._max_parallel_uploads = max_parallel_uploads
+        self._http_message_transmission_available = False
+        self._s3controller = None
 
         self._services = {}
         self._object_store = {
@@ -649,6 +663,7 @@ class RPC(MessageEmitter):
                 }
             )
             self.on("method", self._handle_method)
+            self.on("http-message", self._handle_http_message)
             self.on("error", self._error)
 
             assert hasattr(connection, "emit_message") and hasattr(
@@ -660,11 +675,26 @@ class RPC(MessageEmitter):
             self._connection = connection
 
             async def on_connected(connection_info):
-                if not self._silent and self._connection.manager_id:
+                # Extract manager_id from connection_info if available
+                if not self._silent:
+                    # Only try to register services if we have connection info or manager_id
+                    if connection_info:
+                        logger.info(f"Connection info received in on_connected: {connection_info}")
+                        # Update the connection's manager_id from connection_info if available
+                        if connection_info.get("manager_id") and not self._connection.manager_id:
+                            self._connection.manager_id = connection_info.get("manager_id")
+                    
+                    # Manager ID must always be available after connection
+                    assert self._connection.manager_id, f"Manager ID must be available after connection, connection_info: {connection_info}"
+                    logger.debug(f"Manager ID available: {self._connection.manager_id}")
+                    
+                    # Always register services since manager_id is guaranteed to be present
                     logger.info("Connection established, reporting services...")
                     try:
-                        # Retry getting manager service with exponential backoff
-                        manager = await self._get_manager_with_retry()
+                        # Get manager service with proper config
+                        manager = await self.get_manager_service(
+                            {"timeout": 20, "case_conversion": "snake"}
+                        )
                         services_count = len(self._services)
                         registered_count = 0
                         failed_services = []
@@ -713,6 +743,16 @@ class RPC(MessageEmitter):
                             },
                         )
                         
+                        # Initialize HTTP message transmission AFTER services are registered
+                        # This ensures the manager service is fully available
+                        if self._enable_http_transmission:
+                            self._http_message_transmission_available = False
+                            self._s3controller = None
+                            try:
+                                await self._initialize_http_message_transmission()
+                            except Exception as e:
+                                logger.debug(f"Failed to initialize HTTP message transmission: {e}")
+                                
                         # Subscribe to client_disconnected events if the manager supports it
                         try:
                             manager_dict = ObjectProxy.toDict(manager)
@@ -759,13 +799,27 @@ class RPC(MessageEmitter):
                         )
                 else:
                     logger.info("Connection established: %s", connection_info)
+                    
                 if connection_info:
                     if connection_info.get("public_base_url"):
                         self._server_base_url = connection_info.get("public_base_url")
+                    
+                    # Update the local workspace to match the connection workspace (important for reconnection)
+                    if connection_info.get("workspace"):
+                        old_workspace = self._local_workspace
+                        self._local_workspace = connection_info.get("workspace")
+                        logger.info(f"Updated local workspace from {old_workspace} to {self._local_workspace}")
+                    
                     self._fire("connected", connection_info)
 
             connection.on_connected(on_connected)
-            task = self.loop.create_task(on_connected(None))
+            # Call on_connected with the connection info, matching JavaScript implementation
+            # For WebSocket connections, connection_info is set after open()
+            # For other connections (like RedisRPCConnection), we pass None
+            if hasattr(connection, 'connection_info'):
+                task = self.loop.create_task(on_connected(connection.connection_info))
+            else:
+                task = self.loop.create_task(on_connected(None))
             # Store the background task reference for proper cleanup
             self._background_task = task
             # Mark the task with RPC reference for easier cleanup
@@ -775,7 +829,7 @@ class RPC(MessageEmitter):
         else:
 
             async def _emit_message(_):
-                logger.info("No connection to emit message")
+                raise RuntimeError("No connection to emit message")
 
             self._emit_message = _emit_message
 
@@ -873,6 +927,7 @@ class RPC(MessageEmitter):
 
     def _process_message(self, key: str, heartbeat: bool = False, context=None):
         """Process a message."""
+
         if heartbeat:
             if key not in self._object_store:
                 raise Exception(f"session does not exist anymore: {key}")
@@ -904,6 +959,7 @@ class RPC(MessageEmitter):
         )
         main["ctx"] = main.copy()
         main["ctx"].update(self.default_context)
+
         try:
             extra = unpacker.unpack()
             main.update(extra)
@@ -915,10 +971,357 @@ class RPC(MessageEmitter):
     def _add_context_to_message(self, main):
         """Add trusted context to a message if it doesn't already have it."""
         if "ctx" not in main:
-            # Create context from message fields + default_context
+            # Create context from message fields + default_context (restore original behavior)
             main["ctx"] = main.copy()
             main["ctx"].update(self.default_context)
+                
         return main
+
+    async def _initialize_http_message_transmission(self):
+        """Initialize HTTP message transmission and check S3 availability."""
+        try:
+            # Get the manager service to access S3 controller
+            manager = await self.get_manager_service()
+            self._s3controller = await manager.get_service("public/s3-storage")
+            
+            # Check if required methods are available and callable
+            required_methods = ["put_file", "get_file", "put_file_start_multipart", "put_file_complete_multipart"]
+            all_methods_available = True
+            
+            for method_name in required_methods:
+                if not hasattr(self._s3controller, method_name):
+                    all_methods_available = False
+                    break
+                method = getattr(self._s3controller, method_name)
+                if not callable(method):
+                    all_methods_available = False
+                    break
+            
+            if all_methods_available:
+                self._http_message_transmission_available = True
+                logger.info("✅ HTTP message transmission is available")
+            else:
+                logger.debug("❌ HTTP message transmission not available - missing S3 methods")
+                
+        except Exception as e:
+            logger.debug(f"❌ HTTP message transmission not available - S3 service error: {e}")
+            self._http_message_transmission_available = False
+
+    async def _send_chunks_http(self, package, target_id, session_id=None):
+        """Send large message using HTTP transmission with S3 storage."""
+        if not self._http_message_transmission_available:
+            raise RuntimeError("HTTP message transmission not available")
+        
+        if not self._s3controller:
+            raise RuntimeError("S3 controller not initialized")
+        
+        # Generate unique file path for the message
+        message_id = session_id or shortuuid.uuid()
+        file_path = f"tmp/{message_id}"
+        
+        # Determine content length
+        content_length = len(package)
+        start_time = time.time()
+        
+        # Track actual transmission behavior
+        transmission_stats = {
+            "content_length": content_length,
+            "target_id": target_id,
+            "session_id": session_id,
+            "file_path": file_path,
+            "used_multipart": False,
+            "transmission_method": "single_upload",
+            "part_count": 1,
+            "part_size": content_length,
+            "multipart_threshold": self._multipart_threshold,
+            "multipart_size": self._multipart_size,
+        }
+        
+        # Choose transmission method based on size
+        # < multipart_threshold: use simple put_file
+        # >= multipart_threshold: use multipart upload
+        if content_length < self._multipart_threshold:
+            await self._transmit_small_message_http(file_path, package, content_length, target_id)
+        else:
+            # Update stats for multipart transmission
+            transmission_stats["used_multipart"] = True
+            transmission_stats["transmission_method"] = "multipart_upload"
+            transmission_stats["part_size"] = self._multipart_size
+            transmission_stats["part_count"] = math.ceil(content_length / self._multipart_size)
+            
+            await self._transmit_large_message_http(file_path, package, content_length, target_id)
+        
+        # Add transmission time
+        transmission_stats["transmission_time"] = time.time() - start_time
+        
+        # Emit event for tracking HTTP transmission usage
+        self._fire("http_transmission_stats", transmission_stats)
+        
+        logger.debug(
+            "HTTP message (%d bytes) sent in %d s", content_length, time.time() - start_time
+        )
+
+    async def _transmit_small_message_http(self, file_path, package, content_length, target_id):
+        """Transmit message < multipart_threshold using simple S3 upload."""
+        # Get presigned URL for upload with 30 second TTL
+        put_url = await self._s3controller.put_file(file_path, ttl=30)
+        
+        # Actually upload the content using httpx
+        import httpx
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.put(put_url, content=package)
+            if response.status_code != 200:
+                raise RuntimeError(f"Failed to upload to S3: {response.status_code} - {response.text}")
+        
+        # Get presigned URL for download
+        get_url = await self._s3controller.get_file(file_path)
+        
+        # Create the http-message envelope and send it via regular RPC
+        http_message = {
+            "type": "http-message",
+            "from": self._local_workspace + "/" + self._client_id if self._local_workspace else self._client_id,
+            "to": target_id,
+            "file_path": file_path,
+            "presigned_url": get_url,
+            "content_length": content_length,
+            "transmission_method": "single_upload"
+        }
+        
+
+        
+        # Send the http-message via regular (small) RPC message
+        try:
+            await self._emit_message(msgpack.packb(http_message))
+        except Exception as e:
+            # If sending fails, clean up the uploaded file
+            try:
+                await self._s3controller.delete_file(file_path)
+            except Exception:
+                pass  # Ignore cleanup errors
+            raise RuntimeError(f"Failed to send HTTP message envelope: {e}") from e
+
+    async def _parallel_upload_parts(self, part_tasks, concurrency=None):
+        """Upload parts in parallel using a queue-based pattern."""
+        if concurrency is None:
+            concurrency = self._max_parallel_uploads
+        
+        import asyncio
+        import httpx
+        
+        results = []
+        queue = part_tasks.copy()
+        
+        async def worker():
+            async with httpx.AsyncClient(timeout=120) as client:
+                while queue:
+                    try:
+                        part_task = queue.pop(0)
+                        result = await part_task(client)
+                        results.append(result)
+                    except Exception as e:
+                        # Re-raise the exception to stop all workers
+                        raise e
+        
+        # Create worker tasks
+        workers = [worker() for _ in range(concurrency)]
+        
+        # Wait for all workers to complete
+        await asyncio.gather(*workers)
+        
+        # Sort results by part number to maintain order
+        results.sort(key=lambda x: x["part_number"])
+        return results
+
+    async def _transmit_large_message_http(self, file_path, package, content_length, target_id):
+        """Transmit message >= multipart_threshold using multipart upload."""
+        # Calculate number of parts using configurable multipart_size
+        part_size = self._multipart_size
+        part_count = math.ceil(content_length / part_size)
+        
+        # Start multipart upload with 30 second TTL
+        multipart_info = await self._s3controller.put_file_start_multipart(
+            file_path=file_path,
+            part_count=part_count,
+            ttl=30
+        )
+        
+        upload_id = multipart_info["upload_id"]
+        part_urls = multipart_info["parts"]
+        
+        # Create part upload tasks for parallel processing
+        part_tasks = []
+        
+        for part_info in part_urls:
+            part_number = part_info["part_number"]
+            part_url = part_info["url"]
+            
+            # Calculate the byte range for this part
+            start_byte = (part_number - 1) * part_size
+            end_byte = min(start_byte + part_size, content_length)
+            part_data = package[start_byte:end_byte]
+            
+            # Create async task for this part upload
+            async def upload_part(client, part_url=part_url, part_data=part_data, part_number=part_number):
+                response = await client.put(part_url, content=part_data)
+                if response.status_code != 200:
+                    raise RuntimeError(f"Failed to upload part {part_number}: {response.status_code} - {response.text}")
+                
+                # Extract ETag for completion
+                etag = response.headers.get("ETag", "").strip('"').strip("'")
+                return {
+                    "part_number": part_number,
+                    "etag": etag
+                }
+            
+            part_tasks.append(upload_part)
+        
+        # Upload all parts in parallel using queue-based pattern
+        uploaded_parts = await self._parallel_upload_parts(part_tasks)
+        
+        # Complete multipart upload
+        result = await self._s3controller.put_file_complete_multipart(
+            upload_id=upload_id,
+            parts=uploaded_parts
+        )
+        
+        if not result["success"]:
+            raise RuntimeError(f"Multipart upload failed: {result.get('message', 'Unknown error')}")
+        
+        # Get presigned URL for download
+        get_url = await self._s3controller.get_file(file_path)
+        
+        # Create the http-message envelope and send it
+        http_message = {
+            "type": "http-message", 
+            "from": self._local_workspace + "/" + self._client_id if self._local_workspace else self._client_id,
+            "to": target_id,
+            "file_path": file_path,
+            "presigned_url": get_url,
+            "content_length": content_length,
+            "transmission_method": "multipart_upload",
+            "part_count": part_count
+        }
+        
+
+        
+        # Send the http-message via regular (small) RPC message
+        try:
+            await self._emit_message(msgpack.packb(http_message))
+        except Exception as e:
+            # If sending fails, clean up the uploaded file
+            try:
+                await self._s3controller.delete_file(file_path)
+            except Exception:
+                pass  # Ignore cleanup errors
+            raise RuntimeError(f"Failed to send HTTP message envelope: {e}") from e
+
+    def _handle_http_message(self, data):
+        """Handle incoming HTTP message."""
+        # Store the original message context for reconstructed HTTP messages
+        original_context = data.get("ctx", {})
+
+        try:
+            # Validate message format
+            if data.get("type") != "http-message":
+                raise ValueError(f"Invalid message type: expected 'http-message', got '{data.get('type')}'")
+            if "presigned_url" not in data or "content_length" not in data:
+                raise ValueError("Missing required fields 'presigned_url' or 'content_length' in HTTP message")
+            
+            presigned_url = data["presigned_url"]
+            content_length = data["content_length"]
+            
+            logger.info(f"Received HTTP message notification: {content_length} bytes at {presigned_url}")
+            
+            # Actually download the content from the presigned URL
+            
+            async def download_and_process():
+                try:
+                    # Disable automatic decompression for range requests
+                    # as we're downloading raw byte ranges that shouldn't be decompressed
+                    async with httpx.AsyncClient(
+                        timeout=60,
+                        headers={"Accept-Encoding": "identity"}  # Prevent server from sending compressed content
+                    ) as client:
+                        # For large files, use parallel range requests
+                        if content_length > 5 * 1024 * 1024:  # 5MB
+                            # Use parallel range requests
+                            max_requests = min(10, (content_length // (1024 * 1024)) + 1)
+                            chunk_size = content_length // max_requests
+                            
+                            async def download_range(start, end):
+                                headers = {
+                                    "Range": f"bytes={start}-{end}",
+                                    "Accept-Encoding": "identity"  # Ensure no compression for range requests
+                                }
+                                response = await client.get(presigned_url, headers=headers)
+                                response.raise_for_status()
+                                return response.content
+                            
+                            # Create range requests
+                            tasks = []
+                            for i in range(max_requests):
+                                start = i * chunk_size
+                                if i == max_requests - 1:
+                                    end = content_length - 1
+                                else:
+                                    end = start + chunk_size - 1
+                                tasks.append(download_range(start, end))
+                            
+                            # Download all chunks in parallel
+                            chunks = await asyncio.gather(*tasks)
+                            content = b"".join(chunks)
+                        else:
+                            # Simple download for small files
+                            response = await client.get(
+                                presigned_url,
+                                headers={"Accept-Encoding": "identity"}  # Prevent compression issues
+                            )
+                            response.raise_for_status()
+                            content = response.content
+                        
+                        # Verify content length
+                        if len(content) != content_length:
+                            raise RuntimeError(f"Content length mismatch: expected {content_length}, got {len(content)}")
+                        
+                        # Process the downloaded content as if it came through regular message_cache
+                        logger.debug(f"Processing downloaded HTTP message: {len(content)} bytes")
+                        
+                        # Unpack the message and fire the event
+                        unpacker = msgpack.Unpacker(
+                            io.BytesIO(content), max_buffer_size=self._max_message_buffer_size
+                        )
+                        main = unpacker.unpack()
+
+
+                            
+                        # Preserve authentication context from original websocket message
+                        # HTTP reconstructed messages inherit auth from the triggering message
+                        for field in ["user", "ws"]:
+                            if field in original_context:
+                                main[field] = original_context[field]
+                        
+                        # Add trusted context
+                        main = self._add_context_to_message(main)
+                        
+
+                        
+                        try:
+                            extra = unpacker.unpack()
+                            main.update(extra)
+                        except msgpack.exceptions.OutOfData:
+                            pass
+                        
+                        # Fire the event
+                        self._fire(main["type"], main)
+                        
+                except Exception as e:
+                    logger.error(f"Error downloading/processing HTTP message: {e}")
+            
+            # Schedule the download and processing
+            asyncio.create_task(download_and_process())
+            
+        except Exception as err:
+            logger.error("Error handling HTTP message: %s", err)
 
     def _on_message(self, message):
         """Handle message."""
@@ -1172,41 +1575,14 @@ class RPC(MessageEmitter):
         except Exception as e:
             logger.error(f"Error during cleanup on disconnect: {e}")
 
-    async def _get_manager_with_retry(self, max_retries=20):
-        """Get manager service with exponential backoff retry."""
-        base_delay = 0.5
-        max_delay = 10.0
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                svc = await self.get_remote_service(
-                    f"*/{self._connection.manager_id}:default",
-                    {"timeout": 20, "case_conversion": "snake"},
-                )
-                return svc
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
-                )
-                if attempt < max_retries - 1:
-                    # Exponential backoff with maximum delay
-                    delay = min(base_delay * (2**attempt), max_delay)
-                    await asyncio.sleep(delay)
-
-        # If we get here, all retries failed
-        raise last_error
-
     async def get_manager_service(self, config=None):
         """Get remote root service."""
         config = config or {}
         assert self._connection.manager_id, "Manager id is not set"
 
-        max_retries = 20
-        retry_delay = 0.5
-        last_error = None
-
+        # After server restart, the manager service may need a moment to become available
+        # Use minimal retry logic only for this specific case
+        max_retries = 5
         for attempt in range(max_retries):
             try:
                 svc = await self.get_remote_service(
@@ -1214,15 +1590,12 @@ class RPC(MessageEmitter):
                 )
                 return svc
             except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
-                )
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-
-        # If we get here, all retries failed
-        raise last_error
+                    # Only retry for service not found errors
+                    if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                        await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                        continue
+                raise
 
     def get_all_local_services(self):
         """Get all the local services."""
@@ -1432,7 +1805,7 @@ class RPC(MessageEmitter):
         service = ObjectProxy.toDict(service)
         config = service.get("config", {})
         config["workspace"] = config.get(
-            "workspace", self._local_workspace or self._connection.workspace
+            "workspace", self._local_workspace or self._connection._workspace
         )
         if config["workspace"] is None:
             raise ValueError(
@@ -1932,6 +2305,39 @@ class RPC(MessageEmitter):
         return encoded
 
     async def _send_chunks(self, package, target_id, session_id):
+        
+        # Try HTTP message transmission first if available and message is large enough
+        if self._enable_http_transmission and len(package) >= self._http_transmission_threshold:
+            # Check if connection is ready (not in reconnection state)
+            connection_ready = False
+            if hasattr(self._connection, '_websocket') and self._connection._websocket:
+                try:
+                    from websockets.protocol import State
+                    connection_ready = self._connection._websocket.state == State.OPEN
+                except ImportError:
+                    # Fallback check without State enum
+                    connection_ready = True  # Assume ready if we can't check properly
+            
+            if connection_ready:
+                if not self._http_message_transmission_available:
+                    # Attempt to initialize HTTP transmission if not yet attempted
+                    try:
+                        await self._initialize_http_message_transmission()
+                    except Exception:
+                        pass  # Ignore initialization errors, will fall back to message_cache
+                
+                # Use HTTP transmission if available
+                if self._http_message_transmission_available:
+                    try:
+                        await self._send_chunks_http(package, target_id, session_id)
+                        return  # Successfully sent via HTTP
+                    except Exception as e:
+                        logger.warning(f"HTTP message transmission failed, falling back to message_cache: {e}")
+                        # Fall through to use message_cache
+            else:
+                logger.debug("WebSocket connection not ready, falling back to message_cache for large message")
+        
+        # Fallback to original message_cache implementation
         remote_services = await self.get_remote_service(f"{target_id}:built-in")
         assert (
             remote_services.message_cache
@@ -1990,6 +2396,7 @@ class RPC(MessageEmitter):
                     chunk_num,
                     total_size,
                 )
+        
         await message_cache.process(message_id, bool(session_id))
         logger.debug(
             "All chunks (%d bytes) sent in %d s", total_size, time.time() - start_time
@@ -2107,6 +2514,7 @@ class RPC(MessageEmitter):
             # Ensure context is available - create it if missing (for local service calls)
             if "ctx" not in data:
                 data = self._add_context_to_message(data)
+
             method_name = f'{data["from"]}:{data["method"]}'
             remote_workspace = data["from"].split("/")[0]
             remote_client_id = data["from"].split("/")[1]
@@ -2328,7 +2736,7 @@ class RPC(MessageEmitter):
                 and not heartbeat_task.done()
             ):
                 heartbeat_task.cancel()
-            if callable(reject):
+            if reject and callable(reject):
                 reject(err)
             logger.debug("Error during calling method: %s", err)
 

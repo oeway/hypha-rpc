@@ -319,6 +319,11 @@ export class RPC extends MessageEmitter {
       app_id = null,
       server_base_url = null,
       long_message_chunk_size = null,
+      enable_http_transmission = true,
+      http_transmission_threshold = 1024 * 1024, // 1MB default
+      multipart_threshold = 10 * 1024 * 1024, // 10MB default
+      multipart_size = 6 * 1024 * 1024, // 6MB default
+      max_parallel_uploads = 5, // 5 parallel uploads default
     },
   ) {
     super(debug);
@@ -337,6 +342,16 @@ export class RPC extends MessageEmitter {
     this._method_timeout = method_timeout || 30;
     this._server_base_url = server_base_url;
     this._long_message_chunk_size = long_message_chunk_size || CHUNK_SIZE;
+
+    // Initialize HTTP message transmission configuration
+    this._enable_http_transmission = enable_http_transmission;
+    this._http_transmission_threshold = http_transmission_threshold;
+    this._multipart_threshold = multipart_threshold;
+    // Ensure multipart_size is at least 5MB (S3 minimum requirement)
+    this._multipart_size = Math.max(multipart_size, 5 * 1024 * 1024);
+    this._max_parallel_uploads = max_parallel_uploads;
+    this._http_message_transmission_available = false;
+    this._s3controller = null;
 
     // make sure there is an execute function
     this._services = {};
@@ -405,6 +420,7 @@ export class RPC extends MessageEmitter {
         },
       });
       this.on("method", this._handle_method.bind(this));
+      this.on("http-message", this._handle_http_message.bind(this));
       this.on("error", console.error);
 
       assert(connection.emit_message && connection.on_message);
@@ -416,11 +432,32 @@ export class RPC extends MessageEmitter {
       connection.on_message(this._on_message.bind(this));
       this._connection = connection;
       const onConnected = async (connectionInfo) => {
-        if (!this._silent && this._connection.manager_id) {
-          console.debug("Connection established, reporting services...");
+        // Extract manager_id from connectionInfo if available
+        if (!this._silent) {
+          // Only try to register services if we have connection info or manager_id
+          if (connectionInfo) {
+            console.info(
+              `Connection info received in onConnected:`,
+              connectionInfo,
+            );
+            // Update the connection's manager_id from connectionInfo if available
+            if (connectionInfo.manager_id && !this._connection.manager_id) {
+              this._connection.manager_id = connectionInfo.manager_id;
+            }
+          }
+
+          // Manager ID must always be available after connection
+          assert(
+            this._connection.manager_id,
+            `Manager ID must be available after connection, connection_info: ${JSON.stringify(connectionInfo)}`,
+          );
+          console.debug(`Manager ID available: ${this._connection.manager_id}`);
+
+          // Always register services since manager_id is guaranteed to be present
+          console.info("Connection established, reporting services...");
           try {
-            // Retry getting manager service with exponential backoff
-            const manager = await this._get_manager_with_retry();
+            // Get manager service with snake_case for method names
+            const manager = await this.get_manager_service({ case_conversion: "snake" });
             const services = Object.values(this._services);
             const servicesCount = services.length;
             let registeredCount = 0;
@@ -475,6 +512,20 @@ export class RPC extends MessageEmitter {
               failed: failedServices,
             });
 
+            // Initialize HTTP message transmission AFTER services are registered
+            // This ensures the manager service is fully available
+            if (this._enable_http_transmission) {
+              this._http_message_transmission_available = false;
+              this._s3controller = null;
+              try {
+                await this._initialize_http_message_transmission();
+              } catch (error) {
+                console.debug(
+                  "Failed to initialize HTTP message transmission:",
+                  error.message,
+                );
+              }
+            }
             // Subscribe to client_disconnected events if the manager supports it
             try {
               if (
@@ -537,18 +588,26 @@ export class RPC extends MessageEmitter {
               total_services: Object.keys(this._services).length,
             });
           }
-        } else {
-          // console.debug("Connection established", connectionInfo);
         }
+        console.info("Connection established:", connectionInfo);
+
         if (connectionInfo) {
           if (connectionInfo.public_base_url) {
             this._server_base_url = connectionInfo.public_base_url;
           }
+          
+          // Update the local workspace to match the connection workspace (important for reconnection)
+          if (connectionInfo.workspace) {
+            const oldWorkspace = this._local_workspace;
+            this._local_workspace = connectionInfo.workspace;
+            console.info(`Updated local workspace from ${oldWorkspace} to ${this._local_workspace}`);
+          }
+          
           this._fire("connected", connectionInfo);
         }
       };
       connection.on_connected(onConnected);
-      onConnected();
+      onConnected(connection.connection_info);
     } else {
       this._emit_message = function () {
         console.log("No connection to emit message");
@@ -592,10 +651,11 @@ export class RPC extends MessageEmitter {
 
   _create_message(key, heartbeat, overwrite, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
 
     if (!this._object_store["message_cache"]) {
@@ -606,30 +666,33 @@ export class RPC extends MessageEmitter {
         `Message with the same key (${key}) already exists in the cache store, please use overwrite=true or remove it first.`,
       );
     }
-    this._object_store["message_cache"][key] = [];
+    this._object_store["message_cache"][key] = {};
   }
 
   _append_message(key, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
       throw new Error(`Message with key ${key} does not exists.`);
     }
     assert(data instanceof ArrayBufferView);
-    cache[key].push(data);
+    const index = Object.keys(cache[key]).length;
+    cache[key][index] = data;
   }
 
   _set_message(key, index, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
@@ -649,30 +712,41 @@ export class RPC extends MessageEmitter {
 
   _process_message(key, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      if (this._object_store[key]) {
+        this._object_store[key]["timer"].reset();
+      } else {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
     }
     const cache = this._object_store["message_cache"];
     assert(!!context, "Context is required");
     if (!cache[key]) {
       throw new Error(`Message with key ${key} does not exists.`);
     }
-    cache[key] = concatArrayBuffers(cache[key]);
+    // Convert dictionary to sorted array before concatenating
+    const sortedIndices = Object.keys(cache[key])
+      .map(Number)
+      .sort((a, b) => a - b);
+    const buffers = sortedIndices.map((index) => cache[key][index]);
+    cache[key] = concatArrayBuffers(buffers);
     // console.debug(`Processing message ${key} (bytes=${cache[key].byteLength})`);
     let unpacker = decodeMulti(cache[key]);
     const { done, value } = unpacker.next();
     const main = value;
-    // Make sure the fields are from trusted source
+    // Restore essential fields and add trusted context
     Object.assign(main, {
       from: context.from,
       to: context.to,
       ws: context.ws,
-      user: context.user,
     });
-    main["ctx"] = JSON.parse(JSON.stringify(main));
-    Object.assign(main["ctx"], this.default_context);
+
+    // Preserve authenticated user from the message if available
+    if ("user" in context) {
+      main.user = context.user;
+    }
+
+    // Add trusted context to the reconstructed message
+    this._add_context_to_message(main);
     if (!done) {
       let extra = unpacker.next();
       Object.assign(main, extra.value);
@@ -685,20 +759,110 @@ export class RPC extends MessageEmitter {
     delete cache[key];
   }
 
+  /**
+   * Initialize HTTP message transmission when the S3 service is ready.
+   * This method waits for the specific S3 service to be registered, not just the manager.
+   */
+  async _initialize_http_message_transmission_when_ready() {
+    // Wait for S3 service to be available with longer timeouts for CI
+    let attempts = 0;
+    const maxAttempts = 30; // Increased for CI environments
+
+    console.log("🔄 Waiting for S3 service to be available...");
+
+    while (attempts < maxAttempts) {
+      try {
+        // Check if manager is ready and connection is stable
+        if (this._manager_id && this._connection && this._connection._ready) {
+          // Try to get the manager and check if S3 service exists
+          const manager = await this.get_manager_service({
+            timeout: 5,
+            case_conversion: "camel",
+          });
+
+          // Check if the S3 service is registered
+          try {
+            await manager.getService("public/s3-storage", {
+              case_conversion: "camel",
+              timeout: 3,
+            });
+
+            // If we get here, the service exists - now do full initialization
+            console.log(
+              "✅ S3 service found, initializing HTTP message transmission...",
+            );
+            await this._initialize_http_message_transmission();
+            return; // Success!
+          } catch (serviceError) {
+            console.log(
+              `🔄 S3 service not ready yet (attempt ${attempts + 1}/${maxAttempts}): ${serviceError.message}`,
+            );
+          }
+        } else {
+          console.log(
+            `🔄 Manager not ready yet (attempt ${attempts + 1}/${maxAttempts})`,
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `S3 initialization attempt ${attempts + 1}/${maxAttempts} failed:`,
+          error.message,
+        );
+      }
+
+      attempts++;
+      if (attempts >= maxAttempts) {
+        console.warn(
+          "⚠️ Failed to initialize HTTP message transmission: S3 service not available after maximum attempts",
+        );
+        return;
+      }
+
+      // Longer delays for CI environments: start with 2s, max 8s
+      const delay = Math.min(2000 * Math.pow(1.2, attempts), 8000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  /**
+   * Add trusted context to a message if it doesn't already have it.
+   * This creates clean context with only essential fields (not all message fields).
+   * Authentication information should ONLY come from the server.
+   */
+  _add_context_to_message(main) {
+    if (!main.ctx) {
+      // Create clean context with only essential fields (not all message fields)
+      main.ctx = {};
+      Object.assign(main.ctx, this.default_context);
+
+      // Add essential context fields that services expect
+      const essential_fields = ["ws", "from", "to"];
+      for (const field of essential_fields) {
+        if (field in main) {
+          main.ctx[field] = main[field];
+        }
+      }
+
+      // Preserve authenticated user context from the message (server-side authenticated)
+      if ("user" in main) {
+        main.ctx.user = main.user;
+      }
+    }
+    return main;
+  }
+
   _on_message(message) {
     if (typeof message === "string") {
       const main = JSON.parse(message);
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       this._fire(main["type"], main);
     } else if (message instanceof ArrayBuffer) {
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      this._add_context_to_message(main);
       if (!done) {
         let extra = unpacker.next();
         Object.assign(main, extra.value);
@@ -706,12 +870,495 @@ export class RPC extends MessageEmitter {
       this._fire(main["type"], main);
     } else if (typeof message === "object") {
       // Add trusted context to the method call
-      message["ctx"] = JSON.parse(JSON.stringify(message));
-      Object.assign(message["ctx"], this.default_context);
+      this._add_context_to_message(message);
       this._fire(message["type"], message);
     } else {
       throw new Error("Invalid message format");
     }
+  }
+
+  async _initialize_http_message_transmission() {
+    try {
+      console.log("🔄 Getting manager service for S3 initialization...");
+
+      // Get the manager service to access S3 controller
+      const manager = await this.get_manager_service({
+        timeout: 15,
+        case_conversion: "camel",
+      });
+
+      console.log("✅ Manager service obtained, getting S3 storage service...");
+
+      // Try to get the S3 storage service with retry for CI environments
+      let s3Service = null;
+      const maxAttempts = 20; // Extended for CI environments
+      let attempts = 0;
+
+      while (attempts < maxAttempts && !s3Service) {
+        try {
+          s3Service = await manager.getService("public/s3-storage", {
+            case_conversion: "camel",
+            timeout: 10,
+          });
+          console.log("✅ S3 storage service obtained successfully");
+          break; // Success, exit retry loop
+        } catch (error) {
+          attempts++;
+          if (attempts >= maxAttempts) {
+            console.warn(
+              `❌ S3 service not available after ${maxAttempts} attempts: ${error.message}`,
+            );
+            console.warn("This could be because:");
+            console.warn("1. MinIO server is not running");
+            console.warn(
+              "2. S3 service is not registered (check --enable-s3 flag)",
+            );
+            console.warn("3. Server startup timing issue in CI environment");
+            return; // Don't throw error, just exit gracefully
+          }
+          console.warn(
+            `🔄 S3 service not ready (attempt ${attempts}/${maxAttempts}), retrying in 1s...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 second delay between attempts
+        }
+      }
+
+      this._s3controller = s3Service;
+
+      console.log("🔄 Checking S3 service methods...");
+
+      // Check if required methods are available and callable
+      const requiredMethods = [
+        "putFile",
+        "getFile",
+        "putFileStartMultipart",
+        "putFileCompleteMultipart",
+      ];
+      let allMethodsAvailable = true;
+
+      for (let methodName of requiredMethods) {
+        if (
+          !this._s3controller[methodName] ||
+          typeof this._s3controller[methodName] !== "function"
+        ) {
+          allMethodsAvailable = false;
+          console.warn(`❌ S3 method ${methodName} not available`);
+          break;
+        } else {
+          console.log(`✅ S3 method ${methodName} available`);
+        }
+      }
+
+      if (allMethodsAvailable) {
+        this._http_message_transmission_available = true;
+        console.log("🎉 HTTP message transmission initialized successfully!");
+        console.log(
+          `📊 Thresholds: HTTP=${this.http_message_threshold}MB, Multipart=${this.http_multipart_threshold}MB`,
+        );
+      } else {
+        console.warn(
+          "⚠️ HTTP message transmission not available - missing required S3 methods",
+        );
+        this._http_message_transmission_available = false;
+      }
+    } catch (error) {
+      console.warn(
+        "❌ Failed to initialize HTTP message transmission:",
+        error.message,
+      );
+      console.warn("Stack trace:", error.stack);
+      this._http_message_transmission_available = false;
+    }
+  }
+
+  async _send_chunks_http(data, target_id, session_id = null) {
+    if (!this._http_message_transmission_available) {
+      throw new Error("HTTP message transmission not available");
+    }
+
+    // Generate unique file path for the message
+    const message_id = session_id || this._generate_uuid();
+    const file_path = `tmp/${message_id}`;
+
+    // Determine content length
+    const content_length = data.byteLength;
+    const start_time = Date.now();
+
+    // Track actual transmission behavior (matching Python structure exactly)
+    const transmission_stats = {
+      content_length: content_length,
+      target_id: target_id,
+      session_id: session_id,
+      file_path: file_path,
+      used_multipart: false,
+      transmission_method: "single_upload",
+      part_count: 1,
+      part_size: content_length,
+      multipart_threshold: this._multipart_threshold,
+      multipart_size: this._multipart_size,
+    };
+
+    // Choose transmission method based on size
+    // < multipart_threshold: use simple put_file
+    // >= multipart_threshold: use multipart upload
+    if (content_length < this._multipart_threshold) {
+      await this._transmit_small_message_http(
+        file_path,
+        data,
+        content_length,
+        target_id,
+      );
+    } else {
+      // Update stats for multipart transmission
+      transmission_stats.used_multipart = true;
+      transmission_stats.transmission_method = "multipart_upload";
+      transmission_stats.part_size = this._multipart_size;
+      transmission_stats.part_count = Math.ceil(
+        content_length / this._multipart_size,
+      );
+
+      await this._transmit_large_message_http(
+        file_path,
+        data,
+        content_length,
+        target_id,
+      );
+    }
+
+    // Add transmission time
+    transmission_stats.transmission_time = (Date.now() - start_time) / 1000;
+
+    // Emit event for tracking HTTP transmission usage (single comprehensive event)
+    this._fire("http_transmission_stats", transmission_stats);
+
+    console.debug(
+      `HTTP message (${content_length} bytes) sent in ${(Date.now() - start_time) / 1000} s`,
+    );
+  }
+
+  async _transmit_small_message_http(
+    file_path,
+    data,
+    content_length,
+    target_id,
+  ) {
+    // Get presigned URL for upload with 30 second TTL
+    const put_url = await this._s3controller.putFile({
+      file_path: file_path,
+      ttl: 30,
+      _rkwargs: true,
+    });
+
+    // Actually upload the content using fetch
+    const response = await fetch(put_url, {
+      method: "PUT",
+      body: data,
+      headers: {
+        "Content-Type": "application/octet-stream",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to upload to S3: ${response.status} - ${response.statusText}`,
+      );
+    }
+
+    // Get presigned URL for download
+    const get_url = await this._s3controller.getFile({
+      file_path: file_path,
+      _rkwargs: true,
+    });
+
+    // Create the http-message envelope and send it via regular RPC
+    const http_message = {
+      type: "http-message",
+      from: this._local_workspace
+        ? `${this._local_workspace}/${this._client_id}`
+        : this._client_id,
+      to: target_id,
+      file_path: file_path,
+      presigned_url: get_url,
+      content_length: content_length,
+      transmission_method: "single_upload",
+    };
+
+    // Send the http-message via regular (small) RPC message
+    await this._emit_message(msgpack_packb(http_message));
+  }
+
+  async _parallelUploadParts(partTasks, concurrency = null) {
+    if (concurrency === null) {
+      concurrency = this._max_parallel_uploads;
+    }
+
+    const results = [];
+    const queue = [...partTasks]; // Create a copy of the array
+
+    async function worker() {
+      while (queue.length > 0) {
+        try {
+          const partTask = queue.shift();
+          const result = await partTask();
+          results.push(result);
+        } catch (error) {
+          // Re-throw the error to stop all workers
+          throw error;
+        }
+      }
+    }
+
+    // Create worker tasks
+    const workers = Array.from({ length: concurrency }, () => worker());
+
+    // Wait for all workers to complete
+    await Promise.all(workers);
+
+    // Sort results by part number to maintain order
+    results.sort((a, b) => a.part_number - b.part_number);
+    return results;
+  }
+
+  async _transmit_large_message_http(
+    file_path,
+    data,
+    content_length,
+    target_id,
+  ) {
+    // Calculate number of parts using configurable multipart_size
+    const part_size = this._multipart_size;
+    const part_count = Math.ceil(content_length / part_size);
+
+    // Start multipart upload with 30 second TTL
+    const multipart_info = await this._s3controller.putFileStartMultipart({
+      file_path: file_path,
+      part_count: part_count,
+      ttl: 30,
+      _rkwargs: true,
+    });
+
+    const upload_id = multipart_info.upload_id;
+    const part_urls = multipart_info.parts;
+
+    // Create part upload tasks for parallel processing
+    const partTasks = [];
+
+    for (let part_info of part_urls) {
+      const part_number = part_info.part_number;
+      const part_url = part_info.url;
+
+      // Calculate the byte range for this part
+      const start_byte = (part_number - 1) * part_size;
+      const end_byte = Math.min(start_byte + part_size, content_length);
+      const part_data = data.slice(start_byte, end_byte);
+
+      // Create async task for this part upload
+      const uploadTask = async () => {
+        const response = await fetch(part_url, {
+          method: "PUT",
+          body: part_data,
+          headers: {
+            "Content-Type": "application/octet-stream",
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `Failed to upload part ${part_number}: ${response.status} - ${response.statusText}`,
+          );
+        }
+
+        // Extract ETag for completion
+        const etag =
+          response.headers.get("ETag")?.replace(/"/g, "").replace(/'/g, "") ||
+          "";
+        return {
+          part_number: part_number,
+          etag: etag,
+        };
+      };
+
+      partTasks.push(uploadTask);
+    }
+
+    // Upload all parts in parallel using queue-based pattern
+    const uploaded_parts = await this._parallelUploadParts(partTasks);
+
+    // Complete multipart upload
+    const result = await this._s3controller.putFileCompleteMultipart({
+      upload_id: upload_id,
+      parts: uploaded_parts,
+      _rkwargs: true,
+    });
+
+    if (!result.success) {
+      throw new Error(
+        `Multipart upload failed: ${result.message || "Unknown error"}`,
+      );
+    }
+
+    // Get presigned URL for download
+    const get_url = await this._s3controller.getFile({
+      file_path: file_path,
+      _rkwargs: true,
+    });
+
+    // Create the http-message envelope and send it
+    const http_message = {
+      type: "http-message",
+      from: this._local_workspace
+        ? `${this._local_workspace}/${this._client_id}`
+        : this._client_id,
+      to: target_id,
+      file_path: file_path,
+      presigned_url: get_url,
+      content_length: content_length,
+      transmission_method: "multipart_upload",
+      part_count: part_count,
+    };
+
+    // Send the http-message via regular (small) RPC message
+    await this._emit_message(msgpack_packb(http_message));
+  }
+
+  _handle_http_message(data) {
+    try {
+      // Validate message format
+      if (data.type !== "http-message") {
+        throw new Error(
+          `Invalid message type: expected 'http-message', got '${data.type}'`,
+        );
+      }
+      if (!data.presigned_url || data.content_length === undefined) {
+        throw new Error(
+          "Missing required fields 'presigned_url' or 'content_length' in HTTP message",
+        );
+      }
+
+      // Store the original message context for reconstructed HTTP messages
+      const original_context = data.ctx || {};
+
+      const presigned_url = data.presigned_url;
+      const content_length = data.content_length;
+
+      console.info(
+        `Received HTTP message notification: ${content_length} bytes at ${presigned_url}`,
+      );
+
+      // Actually download the content from the presigned URL
+      const download_and_process = async () => {
+        try {
+          let content;
+          // For large files, use parallel range requests
+          if (content_length > 5 * 1024 * 1024) {
+            // 5MB
+            // Use parallel range requests
+            const max_requests = Math.min(
+              10,
+              Math.floor(content_length / (1024 * 1024)) + 1,
+            );
+            const chunk_size = Math.floor(content_length / max_requests);
+
+            const download_range = async (start, end) => {
+              const headers = { Range: `bytes=${start}-${end}` };
+              const response = await fetch(presigned_url, { headers });
+              if (!response.ok) {
+                throw new Error(
+                  `HTTP ${response.status}: ${response.statusText}`,
+                );
+              }
+              return response.arrayBuffer();
+            };
+
+            // Create range requests
+            const tasks = [];
+            for (let i = 0; i < max_requests; i++) {
+              const start = i * chunk_size;
+              const end =
+                i === max_requests - 1
+                  ? content_length - 1
+                  : start + chunk_size - 1;
+              tasks.push(download_range(start, end));
+            }
+
+            // Download all chunks in parallel
+            const chunks = await Promise.all(tasks);
+            content = new Uint8Array(content_length);
+            let offset = 0;
+            for (let chunk of chunks) {
+              content.set(new Uint8Array(chunk), offset);
+              offset += chunk.byteLength;
+            }
+          } else {
+            // Simple download for small files
+            const response = await fetch(presigned_url);
+            if (!response.ok) {
+              throw new Error(
+                `HTTP ${response.status}: ${response.statusText}`,
+              );
+            }
+            content = await response.arrayBuffer();
+          }
+
+          // Verify content length
+          if (content.byteLength !== content_length) {
+            throw new Error(
+              `Content length mismatch: expected ${content_length}, got ${content.byteLength}`,
+            );
+          }
+
+          // Process the downloaded content as if it came through regular message_cache
+          console.debug(
+            `Processing downloaded HTTP message: ${content.byteLength} bytes`,
+          );
+
+          // Unpack the message - there may be multiple segments
+          const decoder = decodeMulti(new Uint8Array(content));
+          const main = decoder.next().value;
+
+          // Check if there's a second segment (extra_data)
+          const extraResult = decoder.next();
+          if (!extraResult.done) {
+            const extra_data = extraResult.value;
+            // Merge extra_data into main message
+            Object.assign(main, extra_data);
+          }
+
+          // Preserve authentication context from original websocket message
+          // HTTP reconstructed messages inherit auth from the triggering message
+          const auth_fields = ["user", "ws"];
+          for (const field of auth_fields) {
+            if (field in original_context) {
+              main[field] = original_context[field];
+            }
+          }
+
+          // Add trusted context
+          this._add_context_to_message(main);
+
+          // Fire the event
+          this._fire(main.type, main);
+        } catch (e) {
+          console.error(`Error downloading/processing HTTP message: ${e}`);
+        }
+      };
+
+      // Schedule the download and processing
+      download_and_process();
+    } catch (err) {
+      console.error("Error handling HTTP message:", err);
+    }
+  }
+
+  _generate_uuid() {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+      /[xy]/g,
+      function (c) {
+        const r = (Math.random() * 16) | 0;
+        const v = c == "x" ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      },
+    );
   }
 
   reset() {
@@ -951,72 +1598,19 @@ export class RPC extends MessageEmitter {
     }
   }
 
-  async _get_manager_with_retry(maxRetries = 20) {
-    const baseDelay = 500;
-    const maxDelay = 10000;
-    let lastError = null;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        const svc = await this.get_remote_service(
-          `*/${this._connection.manager_id}:default`,
-          { timeout: 20, case_conversion: "camel" },
-        );
-        return svc;
-      } catch (e) {
-        lastError = e;
-        console.warn(
-          `Failed to get manager service (attempt ${attempt + 1}/${maxRetries}): ${e.message}`,
-        );
-        if (attempt < maxRetries - 1) {
-          // Exponential backoff with maximum delay
-          const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
-    }
-
-    // If we get here, all retries failed
-    throw lastError;
-  }
-
   async get_manager_service(config) {
     config = config || {};
-
-    // Add retry logic
-    const maxRetries = 20;
-    const retryDelay = 500; // 500ms
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      if (!this._connection.manager_id) {
-        if (attempt < maxRetries - 1) {
-          console.warn(
-            `Manager ID not set, retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
-          continue;
-        } else {
-          throw new Error("Manager ID not set after maximum retries");
-        }
-      }
-
-      try {
-        const svc = await this.get_remote_service(
-          `*/${this._connection.manager_id}:default`,
-          config,
-        );
-        return svc;
-      } catch (e) {
-        if (attempt < maxRetries - 1) {
-          console.warn(
-            `Failed to get manager service, retrying in ${retryDelay}ms: ${e.message}`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
-        } else {
-          throw e;
-        }
-      }
-    }
+    
+    // Assert manager_id is set as it's guaranteed by the server
+    assert(this._connection.manager_id, "Manager ID must be set");
+    
+    // Since the server now guarantees manager_id is available,
+    // we don't need retry logic anymore
+    const svc = await this.get_remote_service(
+      `*/${this._connection.manager_id}:default`,
+      config,
+    );
+    return svc;
   }
 
   get_all_local_services() {
@@ -1322,9 +1916,9 @@ export class RPC extends MessageEmitter {
           manager ||
           (await this.get_manager_service({
             timeout: 10,
-            case_conversion: "camel",
+            case_conversion: "snake",
           }));
-        await manager.registerService(serviceInfo);
+        await manager.register_service(serviceInfo);
       } catch (e) {
         throw new Error(`Failed to notify workspace manager: ${e}`);
       }
@@ -1356,9 +1950,9 @@ export class RPC extends MessageEmitter {
     if (notify) {
       const manager = await this.get_manager_service({
         timeout: 10,
-        case_conversion: "camel",
+        case_conversion: "snake",
       });
-      await manager.unregisterService(service_id);
+      await manager.unregister_service(service_id);
     }
     delete this._services[service_id];
   }
@@ -1776,6 +2370,49 @@ export class RPC extends MessageEmitter {
   }
 
   async _send_chunks(data, target_id, session_id) {
+    // Try HTTP message transmission first if available and message is large enough
+    if (
+      this._enable_http_transmission &&
+      data.length >= this._http_transmission_threshold
+    ) {
+      // Check if connection is ready (not in reconnection state)
+      let connection_ready = false;
+      if (this._connection && this._connection._websocket) {
+        // Check if websocket is in OPEN state
+        connection_ready =
+          this._connection._websocket.readyState === WebSocket.OPEN;
+      }
+
+      if (connection_ready) {
+        if (!this._http_message_transmission_available) {
+          // Attempt to initialize HTTP transmission if not yet attempted
+          try {
+            await this._initialize_http_message_transmission();
+          } catch (error) {
+            // Initialization failed, fall back to regular chunking
+            console.debug(
+              "Failed to initialize HTTP message transmission:",
+              error.message,
+            );
+          }
+        }
+
+        if (this._http_message_transmission_available) {
+          try {
+            // Use HTTP transmission for large messages
+            await this._send_chunks_http(data, target_id, session_id);
+            return;
+          } catch (error) {
+            console.warn(
+              "Failed to send message via HTTP, falling back to WebSocket chunking:",
+              error.message,
+            );
+            // Fall through to regular WebSocket chunking
+          }
+        }
+      }
+    }
+
     // 1) Get the remote service
     const remote_services = await this.get_remote_service(
       `${target_id}:built-in`,

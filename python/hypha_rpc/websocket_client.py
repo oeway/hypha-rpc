@@ -88,6 +88,8 @@ class WebsocketRPCConnection:
         self._ping_timeout = ping_timeout
         self._additional_headers = additional_headers
         self._reconnect_tasks = set()  # Track reconnection tasks
+        self._recv_lock = asyncio.Lock()  # Prevent concurrent recv operations
+        self._send_lock = asyncio.Lock()  # Prevent concurrent send operations
         if ssl == False:
             import ssl as ssl_module
 
@@ -212,7 +214,8 @@ class WebsocketRPCConnection:
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
                 # Send the message to the server
-                await self._websocket.send(refresh_message)
+                async with self._send_lock:
+                    await self._websocket.send(refresh_message)
                 # logger.info("Requested refresh token")
                 # Wait for the next refresh interval
                 await asyncio.sleep(token_refresh_interval)
@@ -247,8 +250,10 @@ class WebsocketRPCConnection:
                 }
             )
             await self._websocket.send(auth_info)
-            first_message = await self._websocket.recv()
+            async with self._recv_lock:
+                first_message = await self._websocket.recv()
             first_message = json.loads(first_message)
+            logger.info(f"First message received during handshake: type={first_message.get('type')}, has_manager_id={'manager_id' in first_message}")
             if first_message.get("type") == "connection_info":
                 self.connection_info = first_message
                 if self._workspace:
@@ -270,12 +275,38 @@ class WebsocketRPCConnection:
                         self._token_refresh_interval = (
                             self.connection_info["reconnection_token_life_time"] / 1.5
                         )
-                self.manager_id = self.connection_info.get("manager_id", None)
+                # Manager ID must always be present in connection_info
+                assert "manager_id" in self.connection_info, f"manager_id missing in connection_info: {self.connection_info}"
+                self.manager_id = self.connection_info["manager_id"]
                 logger.info(
                     f"Successfully connected to the server, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
                 )
                 if "announcement" in self.connection_info:
                     print(self.connection_info["announcement"])
+            elif first_message.get("type") == "reconnection_token":
+                # This shouldn't happen during initial handshake, but log and continue
+                logger.warning("Received reconnection_token as first message during handshake - this is unexpected")
+                self._reconnection_token = first_message.get("reconnection_token")
+                # Wait for the actual connection_info message
+                async with self._recv_lock:
+                    second_message = await self._websocket.recv()
+                second_message = json.loads(second_message)
+                if second_message.get("type") == "connection_info":
+                    self.connection_info = second_message
+                    # Manager ID must always be present in connection_info
+                    assert "manager_id" in self.connection_info, f"manager_id missing in connection_info after reconnection_token: {self.connection_info}"
+                    self.manager_id = self.connection_info["manager_id"]
+                    logger.info(
+                        f"Successfully connected after reconnection token, workspace: {self.connection_info.get('workspace')}, manager_id: {self.manager_id}"
+                    )
+                else:
+                    logger.error(
+                        "Expected connection_info after reconnection_token, got: %s",
+                        second_message,
+                    )
+                    raise ConnectionAbortedError(
+                        "Expected connection_info after reconnection_token"
+                    )
             elif first_message.get("type") == "error":
                 error = first_message["message"]
                 logger.error("Failed to connect: %s", error)
@@ -311,8 +342,13 @@ class WebsocketRPCConnection:
 
         try:
             self._last_message = data  # Store the message before sending
-            await self._websocket.send(data)
+            async with self._send_lock:
+                await self._websocket.send(data)
             self._last_message = None  # Clear after successful send
+        except websockets.exceptions.ConnectionClosed as e:
+            # Connection was closed, trigger reconnection
+            logger.warning(f"Connection closed while sending message: {e}")
+            raise
         except Exception as exp:
             logger.error(f"Failed to send message: {exp}")
             raise exp
@@ -323,7 +359,8 @@ class WebsocketRPCConnection:
         self._closed = False
         try:
             while not self._closed and not self._websocket.state == State.CLOSED:
-                data = await self._websocket.recv()
+                async with self._recv_lock:
+                    data = await self._websocket.recv()
                 if isinstance(data, str):
                     data = json.loads(data)
                     if data.get("type") == "reconnection_token":
@@ -385,6 +422,9 @@ class WebsocketRPCConnection:
                         logger.warning(
                             "Websocket connection closed unexpectedly (no close code)"
                         )
+                    
+                    # Store manager_id for reconnection (don't reset it)
+                    # self.manager_id = None  # REMOVED: Keep manager_id for reconnection
 
                     async def reconnect_with_retry():
                         retry = 0
@@ -405,22 +445,21 @@ class WebsocketRPCConnection:
                                 # Wait a short time for services to be registered
                                 # This gives time for the on_connected callback to complete
                                 # which includes re-registering all services to the server
-                                await asyncio.sleep(0.5)
+                                await asyncio.sleep(1.0)  # Increased from 0.5 to 1.0 for more reliability
 
                                 # Resend last message if there was one
                                 if self._last_message:
                                     logger.info(
                                         "Resending last message after reconnection"
                                     )
-                                    await self._websocket.send(self._last_message)
+                                    async with self._send_lock:
+                                        await self._websocket.send(self._last_message)
                                     self._last_message = None
                                 logger.warning(
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
                                 )
-                                # Emit reconnection success event
-                                if self._handle_connected:
-                                    await self._handle_connected(connection_info)
+                                # Don't call handle_connected again - already called in open()
                                 break
                             except NotImplementedError as e:
                                 logger.error(
@@ -878,17 +917,8 @@ async def _connect_to_server(config):
         " This issue is most likely due to an outdated Hypha server version. "
         "Please use `imjoy-rpc` for compatibility, or upgrade the Hypha server to the latest version."
     )
-    await asyncio.sleep(0.1)
-    # Add explicit wait for manager_id to be set
-    if not connection.manager_id:
-        logger.warning("Manager ID not set immediately, waiting...")
-        for _ in range(10):  # Try for up to 1 second
-            await asyncio.sleep(0.1)
-            if connection.manager_id:
-                logger.info(f"Manager ID set after waiting: {connection.manager_id}")
-                break
-        else:
-            logger.error("Manager ID still not set after waiting")
+    # Manager ID must be set from connection_info
+    assert connection.manager_id, "Manager ID must be available after connection is established"
 
     if config.get("workspace") and connection_info["workspace"] != config["workspace"]:
         raise Exception(
@@ -906,12 +936,55 @@ async def _connect_to_server(config):
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
         long_message_chunk_size=config.get("long_message_chunk_size"),
+        enable_http_transmission=config.get("enable_http_transmission", True),
+        http_transmission_threshold=config.get("http_transmission_threshold", 1024 * 1024),
+        multipart_threshold=config.get("multipart_threshold", 10 * 1024 * 1024),
+        multipart_size=config.get("multipart_size", 6 * 1024 * 1024),
+        max_parallel_uploads=config.get("max_parallel_uploads", 5),
+
     )
     await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))
     wm = await rpc.get_manager_service(
         {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
     )
     wm.rpc = rpc
+
+    # Store the current manager service for refreshing after reconnection
+    # We need to keep a mutable container to update the reference
+    _manager_service_ref = {"current": wm, "needs_refresh": False}
+
+    async def _refresh_manager_service():
+        """Refresh the workspace manager service after reconnection.
+
+        This updates the remote method references which may have stale _rtarget
+        pointing to the old manager_id.
+        """
+        try:
+            new_wm = await rpc.get_manager_service(
+                {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
+            )
+            # Update the remote methods on the existing wm object
+            # This preserves the wm reference that was returned to the user
+            for key in list(wm.keys()):
+                if key in new_wm and hasattr(new_wm[key], '__rpc_object__'):
+                    wm[key] = new_wm[key]
+            _manager_service_ref["current"] = new_wm
+            _manager_service_ref["needs_refresh"] = False
+            logger.info("Refreshed workspace manager service after reconnection")
+        except Exception as e:
+            logger.warning(f"Failed to refresh workspace manager service: {e}")
+            _manager_service_ref["needs_refresh"] = False
+
+    # Listen for connected event which indicates reconnection is happening
+    # Mark that we need to refresh the manager service
+    def _on_connected(info):
+        # Only mark for refresh if this is a reconnection (not initial connection)
+        if hasattr(rpc, '_initial_connection_done') and rpc._initial_connection_done:
+            _manager_service_ref["needs_refresh"] = True
+            logger.debug("Marked workspace manager for refresh after reconnection")
+
+    rpc.on("connected", _on_connected)
+    rpc._initial_connection_done = True
 
     def export(api: dict):
         """Export the api."""
@@ -1167,14 +1240,25 @@ async def _connect_to_server(config):
             },
         )
     else:
-        _get_service = wm.get_service
+        # Store the original get_service schema for the wrapper
+        _get_service_schema = wm.get_service.__schema__
+        # Store reference to the manager service ref so we can use the refreshed version
+        _wm_ref = _manager_service_ref
+        _refresh_func = _refresh_manager_service
 
         async def get_service(query, config=None, **kwargs):
             config = config or {}
             config.update(kwargs)
+            # Check if we need to refresh the manager service after reconnection
+            if _wm_ref["needs_refresh"]:
+                await _refresh_func()
+            # Use the current manager service's get_service method
+            # This ensures we use the refreshed reference after reconnection
+            current_wm = _wm_ref["current"]
+            _get_service = current_wm.get_service
             return await _get_service(query, config=config)
 
-        get_service.__schema__ = wm.get_service.__schema__
+        get_service.__schema__ = _get_service_schema
         wm.get_service = get_service
 
     async def serve():

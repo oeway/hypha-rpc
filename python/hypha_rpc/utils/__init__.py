@@ -404,7 +404,7 @@ class MessageEmitter:
             if event in self._event_handlers:
                 self._event_handlers[event] = []
         else:
-            if event in self._event_handlers:
+            if event in self._event_handlers and handler in self._event_handlers[event]:
                 self._event_handlers[event].remove(handler)
 
     def emit(self, msg):
@@ -413,6 +413,10 @@ class MessageEmitter:
 
     def _fire(self, event, data=None):
         """Fire an event handler."""
+        # Ensure event is always a string to prevent dictionary key corruption
+        if not isinstance(event, str):
+            raise TypeError("Event name must be a string")
+            
         if event in self._event_handlers:
             for handler in self._event_handlers[event]:
                 try:
