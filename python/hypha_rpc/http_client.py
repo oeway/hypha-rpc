@@ -89,6 +89,7 @@ class HTTPStreamingRPCConnection:
         self._closed = False
         self._enable_reconnect = False
         self._stream_task: Optional[asyncio.Task] = None
+        self._refresh_token_task: Optional[asyncio.Task] = None
         self._http_client: Optional[httpx.AsyncClient] = None
 
         self.connection_info = None
@@ -107,6 +108,41 @@ class HTTPStreamingRPCConnection:
         """Register connection handler."""
         self._handle_connected = handler
         assert inspect.iscoroutinefunction(handler), "Handler must be async"
+
+    async def _send_refresh_token(self, token_refresh_interval: float):
+        """Send refresh token request at regular intervals.
+
+        Similar to WebSocket, this periodically requests a new reconnection token
+        to keep the session alive and allow reconnection with a fresh token.
+        """
+        try:
+            await asyncio.sleep(2)  # Initial delay
+            while not self._closed and self._http_client:
+                try:
+                    # Send refresh token request via POST
+                    workspace = self._workspace or "public"
+                    url = f"{self._server_url}/{workspace}/rpc"
+                    params = {"client_id": self._client_id}
+
+                    refresh_message = msgpack.packb({"type": "refresh_token"})
+                    response = await self._http_client.post(
+                        url,
+                        content=refresh_message,
+                        params=params,
+                        headers=self._get_headers(),
+                    )
+                    if response.status_code == 200:
+                        logger.debug("Token refresh requested successfully")
+                    else:
+                        logger.warning(f"Token refresh request failed: {response.status_code}")
+                except Exception as e:
+                    logger.warning(f"Failed to send refresh token request: {e}")
+
+                await asyncio.sleep(token_refresh_interval)
+        except asyncio.CancelledError:
+            logger.debug("Token refresh task was cancelled")
+        except Exception as e:
+            logger.error(f"Error in token refresh task: {e}")
 
     def _get_headers(self, for_stream: bool = False) -> dict:
         """Get HTTP headers with authentication.
@@ -163,6 +199,11 @@ class HTTPStreamingRPCConnection:
         if self._format == "msgpack":
             params["format"] = "msgpack"
 
+        # Add reconnection token if available (for reconnection)
+        if self._reconnection_token:
+            params["reconnection_token"] = self._reconnection_token
+            logger.info(f"Using reconnection token for HTTP streaming connection")
+
         try:
             # Start streaming in background task
             self._stream_task = asyncio.create_task(
@@ -190,10 +231,26 @@ class HTTPStreamingRPCConnection:
             if "reconnection_token" in self.connection_info:
                 self._reconnection_token = self.connection_info["reconnection_token"]
 
+            # Adjust token refresh interval based on server's token lifetime
+            if "reconnection_token_life_time" in self.connection_info:
+                token_life_time = self.connection_info["reconnection_token_life_time"]
+                if self._token_refresh_interval > token_life_time / 1.5:
+                    logger.warning(
+                        f"Token refresh interval ({self._token_refresh_interval}s) is too long, "
+                        f"adjusting to {token_life_time / 1.5:.0f}s based on token lifetime"
+                    )
+                    self._token_refresh_interval = token_life_time / 1.5
+
             logger.info(
                 f"HTTP streaming connected to workspace: {self._workspace}, "
                 f"manager_id: {self.manager_id}"
             )
+
+            # Start token refresh task
+            if self._token_refresh_interval > 0:
+                self._refresh_token_task = asyncio.create_task(
+                    self._send_refresh_token(self._token_refresh_interval)
+                )
 
             if self._handle_connected:
                 await self._handle_connected(self.connection_info)
@@ -400,6 +457,16 @@ class HTTPStreamingRPCConnection:
 
     async def _cleanup(self):
         """Cleanup resources."""
+        # Cancel token refresh task
+        if self._refresh_token_task and not self._refresh_token_task.done():
+            self._refresh_token_task.cancel()
+            try:
+                await asyncio.wait_for(self._refresh_token_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._refresh_token_task = None
+
+        # Cancel stream task
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
             try:
