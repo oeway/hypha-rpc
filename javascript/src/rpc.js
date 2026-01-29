@@ -1258,7 +1258,7 @@ export class RPC extends MessageEmitter {
       config.workspace || this._local_workspace || this._connection.workspace;
     if (!config.workspace) {
       throw new Error(
-        "Workspace is not set. Please ensure the connection has a workspace or set local_workspace."
+        "Workspace is not set. Please ensure the connection has a workspace or set local_workspace.",
       );
     }
     const skipContext = config.require_context;
@@ -2680,7 +2680,11 @@ export class RPC extends MessageEmitter {
           local_workspace,
         ),
       };
-    } else if (aObject.constructor === Object || Array.isArray(aObject) || aObject instanceof RemoteService) {
+    } else if (
+      aObject.constructor === Object ||
+      Array.isArray(aObject) ||
+      aObject instanceof RemoteService
+    ) {
       bObject = isarray ? [] : {};
       const keys = Object.keys(aObject);
       for (let k of keys) {

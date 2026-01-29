@@ -143,7 +143,12 @@ async def test_service_with_builtin_key(websocket_server):
 @pytest.mark.asyncio
 async def test_login(websocket_server):
     """Test login to the server."""
-    TOKEN = "sf31df234"
+    # First connect to server to generate a valid JWT token
+    api = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "login-test-client"}
+    )
+    TOKEN = await api.generate_token()
+    await api.disconnect()
 
     async def callback(context):
         print(f"By passing login: {context['login_url']}")
@@ -167,7 +172,12 @@ async def test_login(websocket_server):
 
 def test_login_sync(websocket_server):
     """Test login to the server."""
-    TOKEN = "sf31df234"
+    # First connect to server to generate a valid JWT token
+    api = connect_to_server_sync(
+        {"server_url": WS_SERVER_URL, "client_id": "login-sync-test-client"}
+    )
+    TOKEN = api.generate_token()
+    api.disconnect()
 
     def callback(context):
         print(f"By passing login: {context['login_url']}")
@@ -189,7 +199,13 @@ def test_login_sync(websocket_server):
 @pytest.mark.asyncio
 async def test_login_with_additional_headers(websocket_server):
     """Test login with additional headers."""
-    TOKEN = "sf31df234"
+    # First connect to server to generate a valid JWT token
+    api = await connect_to_server(
+        {"server_url": WS_SERVER_URL, "client_id": "login-headers-test-client"}
+    )
+    TOKEN = await api.generate_token()
+    await api.disconnect()
+
     additional_headers = {"X-Custom-Header": "test-value"}
 
     async def callback(context):

@@ -543,7 +543,7 @@ export async function logout(config) {
     if (!svc.logout) {
       throw new Error(
         "Logout is not supported by this server. " +
-        "Please upgrade the Hypha server to a version that supports logout."
+          "Please upgrade the Hypha server to a version that supports logout.",
       );
     }
 
@@ -551,7 +551,9 @@ export async function logout(config) {
     if (callback) {
       await callback(context);
     } else {
-      console.log(`Please open your browser to logout at ${context.logout_url}`);
+      console.log(
+        `Please open your browser to logout at ${context.logout_url}`,
+      );
     }
     return context;
   } catch (error) {

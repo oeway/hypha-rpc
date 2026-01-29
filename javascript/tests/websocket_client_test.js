@@ -459,7 +459,13 @@ describe("RPC", async () => {
   }).timeout(40000);
 
   it("should login to the server", async () => {
-    const TOKEN = "sf31df234";
+    // First connect to server to generate a valid JWT token
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "login-test-client",
+    });
+    const TOKEN = await api.generateToken();
+    await api.disconnect();
 
     async function callback(context) {
       console.log(`By passing login: ${context["login_url"]}`);
@@ -487,7 +493,14 @@ describe("RPC", async () => {
   }).timeout(20000);
 
   it("should login with additional headers", async () => {
-    const TOKEN = "sf31df234";
+    // First connect to server to generate a valid JWT token
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "login-headers-test-client",
+    });
+    const TOKEN = await api.generateToken();
+    await api.disconnect();
+
     const additional_headers = { "X-Custom-Header": "test-value" };
 
     async function callback(context) {
