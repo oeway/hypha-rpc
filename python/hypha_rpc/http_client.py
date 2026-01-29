@@ -127,7 +127,11 @@ class HTTPStreamingRPCConnection:
         return headers
 
     async def _create_http_client(self) -> httpx.AsyncClient:
-        """Create configured HTTP client."""
+        """Create configured HTTP client with connection pooling.
+
+        Connection pooling improves performance by reusing TCP connections
+        for multiple requests, reducing connection overhead.
+        """
         verify = True
         if self._ssl is False:
             verify = False
@@ -137,6 +141,12 @@ class HTTPStreamingRPCConnection:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(self._timeout, connect=30.0),
             verify=verify,
+            # Connection pooling for better performance with many requests
+            limits=httpx.Limits(
+                max_connections=100,  # Max total connections
+                max_keepalive_connections=20,  # Keep-alive connections for reuse
+                keepalive_expiry=30.0,  # Keep connections alive for 30 seconds
+            ),
         )
 
     async def open(self):
