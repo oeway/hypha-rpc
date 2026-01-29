@@ -738,69 +738,8 @@ async def logout(config):
         await server.disconnect()
 
 
-class ServerContextManager:
-    """Server context manager."""
-
-    def __init__(self, config=None, service_id=None, **kwargs):
-        self.config = config or {}
-        self.config.update(kwargs)
-        
-        if not self.config:
-            # try to load from env
-            if not os.environ.get("HYPHA_SERVER_URL"):
-                try:
-                    from dotenv import load_dotenv, find_dotenv
-                    load_dotenv(dotenv_path=find_dotenv(usecwd=True))
-                    # use info from .env file
-                    print("✅ Loaded connection configuration from .env file.")
-                except ImportError:
-                    pass
-            self.config = {
-                "server_url": os.getenv("HYPHA_SERVER_URL"),
-                "token": os.getenv("HYPHA_TOKEN"),
-                "client_id": os.getenv("HYPHA_CLIENT_ID"),
-                "workspace": os.getenv("HYPHA_WORKSPACE"),
-            }
-            if not self.config["server_url"]:
-                raise ValueError("Please set the HYPHA_SERVER_URL, HYPHA_TOKEN, HYPHA_CLIENT_ID, and HYPHA_WORKSPACE environment variables")
-        self._service_id = service_id
-        self.wm = None
-
-    async def __aenter__(self):
-        self.wm = await _connect_to_server(self.config)
-        if self._service_id:
-            return await self.wm.get_service(
-                self._service_id,
-                {"case_conversion": self.config.get("case_conversion")},
-            )
-        return self.wm
-
-    async def __aexit__(self, exc_type, exc, tb):
-        await self.wm.disconnect()
-
-    def __await__(self):
-        return self.__aenter__().__await__()
-
-
-def connect_to_server(config=None, **kwargs):
-    """Connect to the server."""
-    return ServerContextManager(config=config, **kwargs)
-
-
-def get_remote_service(service_uri, config=None, **kwargs):
-    """Get a remote service."""
-    server_url, workspace, client_id, service_id, app_id = parse_service_url(
-        service_uri
-    )
-    full_service_id = f"{workspace}/{client_id}:{service_id}@{app_id}"
-    config = config or {}
-    config.update(kwargs)
-    if "server_url" in config:
-        assert (
-            config["server_url"] == server_url
-        ), "server_url in config does not match the server_url in the url"
-    config["server_url"] = server_url
-    return ServerContextManager(config, service_id=full_service_id)
+# Re-export from client.py for backwards compatibility
+from .client import ServerContextManager, connect_to_server, get_remote_service
 
 
 async def webrtc_get_service(wm, rtc_service_id, query, config=None, **kwargs):
