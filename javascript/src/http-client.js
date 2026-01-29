@@ -128,7 +128,7 @@ export class HTTPStreamingRPCConnection {
 
     // Build stream URL
     const workspace = this._workspace || "public";
-    let stream_url = `${this._server_url}/${workspace}/rpc/stream?client_id=${this._client_id}`;
+    let stream_url = `${this._server_url}/${workspace}/rpc?client_id=${this._client_id}`;
     if (this._format === "msgpack") {
       stream_url += "&format=msgpack";
     }

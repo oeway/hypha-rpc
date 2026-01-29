@@ -148,7 +148,7 @@ class HTTPStreamingRPCConnection:
 
         # Build stream URL
         workspace = self._workspace or "public"
-        stream_url = f"{self._server_url}/{workspace}/rpc/stream"
+        stream_url = f"{self._server_url}/{workspace}/rpc"
         params = {"client_id": self._client_id}
         if self._format == "msgpack":
             params["format"] = "msgpack"
