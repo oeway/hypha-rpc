@@ -1037,7 +1037,11 @@ export class RPC extends MessageEmitter {
       throw new Error("Service not found: " + service_id);
     }
 
-    service.config["workspace"] = context["ws"];
+    // Note: Do NOT mutate service.config.workspace here!
+    // Doing so would corrupt the stored service config when called from
+    // a different workspace (e.g., "public"), causing reconnection to fail
+    // because _extract_service_info would use the wrong workspace value.
+
     // allow access for the same workspace
     if (
       service.config.visibility == "public" ||

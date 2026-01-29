@@ -1237,7 +1237,11 @@ class RPC(MessageEmitter):
         service = self._services.get(service_id)
         if not service:
             raise KeyError("Service not found: %s", service_id)
-        service["config"]["workspace"] = context["ws"]
+        # Note: Do NOT mutate service["config"]["workspace"] here!
+        # Doing so would corrupt the stored service config when called from
+        # a different workspace (e.g., "public"), causing reconnection to fail
+        # because _extract_service_info would use the wrong workspace value.
+
         # allow access for the same workspace
         if service["config"].get("visibility", "protected") in ["public", "unlisted"]:
             return service
