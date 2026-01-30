@@ -9,6 +9,22 @@ import {
 import { schemaFunction } from "./utils/schema.js";
 import { getRTCService, registerRTCService } from "./webrtc-client.js";
 
+// Import HTTP client for internal use and re-export
+import {
+  HTTPStreamingRPCConnection,
+  connectToServerHTTP,
+  getRemoteServiceHTTP,
+  normalizeServerUrl as normalizeServerUrlHTTP,
+} from "./http-client.js";
+
+// Re-export HTTP client classes and functions
+export {
+  HTTPStreamingRPCConnection,
+  connectToServerHTTP,
+  getRemoteServiceHTTP,
+  normalizeServerUrlHTTP,
+};
+
 export { RPC, API_VERSION, schemaFunction };
 export { loadRequirements };
 export { getRTCService, registerRTCService };
@@ -600,6 +616,12 @@ async function webrtcGetService(wm, rtc_service_id, query, config) {
 }
 
 export async function connectToServer(config) {
+  // Support HTTP transport via transport option
+  const transport = config.transport || "websocket";
+  if (transport === "http") {
+    return await connectToServerHTTP(config);
+  }
+
   if (config.server) {
     config.server_url = config.server_url || config.server.url;
     config.WebSocketClass =
@@ -958,9 +980,6 @@ export async function connectToServer(config) {
   });
   return wm;
 }
-
-// Export alias for use by client.js
-export { connectToServer as _connectToServer };
 
 export async function getRemoteService(serviceUri, config = {}) {
   const { serverUrl, workspace, clientId, serviceId, appId } =

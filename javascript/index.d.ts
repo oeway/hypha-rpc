@@ -193,8 +193,9 @@ declare module "hypha-rpc" {
   const hyphaRPCModule: {
     /**
      * Main Hypha RPC client with unified transport support.
+     * Supports both WebSocket (default) and HTTP streaming transports.
      */
-    hyphaRpcClient: {
+    hyphaWebsocketClient: {
       RPC: hRPC;
       API_VERSION: string;
 
@@ -224,20 +225,15 @@ declare module "hypha-rpc" {
        *
        * @example
        * // WebSocket transport (default)
-       * const server = await connectToServer({ serverUrl: "https://hypha.aicell.io" });
+       * const server = await connectToServer({ server_url: "https://hypha.aicell.io" });
        *
        * // HTTP streaming transport
        * const server = await connectToServer({
-       *   serverUrl: "https://hypha.aicell.io",
+       *   server_url: "https://hypha.aicell.io",
        *   transport: "http"
        * });
        */
       connectToServer: (config: ServerConfig) => Promise<WorkspaceManager>;
-
-      /**
-       * Connect using WebSocket transport explicitly.
-       */
-      connectToServerWebsocket: (config: ServerConfig) => Promise<WorkspaceManager>;
 
       /**
        * Connect using HTTP streaming transport explicitly.
@@ -245,14 +241,9 @@ declare module "hypha-rpc" {
       connectToServerHTTP: (config: ServerConfig) => Promise<WorkspaceManager>;
 
       /**
-       * Get a remote service by URI with unified transport support.
+       * Get a remote service by URI.
        */
       getRemoteService: (serviceUri: string, config?: ServerConfig) => Promise<any>;
-
-      /**
-       * Get a remote service using WebSocket transport explicitly.
-       */
-      getRemoteServiceWebsocket: (serviceUri: string, config?: ServerConfig) => Promise<any>;
 
       /**
        * Get a remote service using HTTP streaming transport explicitly.
@@ -292,12 +283,6 @@ declare module "hypha-rpc" {
        */
       normalizeServerUrlHTTP: (server_url: string) => string;
     };
-
-    /**
-     * Backward compatibility alias for hyphaRpcClient.
-     * @deprecated Use hyphaRpcClient instead.
-     */
-    hyphaWebsocketClient: typeof hyphaRPCModule.hyphaRpcClient;
   };
 
   export = hyphaRPCModule;

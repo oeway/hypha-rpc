@@ -15,7 +15,10 @@
 import { RPC } from "./rpc.js";
 import { assert, randId, waitFor, parseServiceUrl } from "./utils/index.js";
 import { schemaFunction } from "./utils/schema.js";
-import { encode as msgpackEncode, decode as msgpackDecode } from "@msgpack/msgpack";
+import {
+  encode as msgpackEncode,
+  decode as msgpackDecode,
+} from "@msgpack/msgpack";
 
 const MAX_RETRY = 1000000;
 
@@ -372,7 +375,9 @@ export class HTTPStreamingRPCConnection {
 
     if (!response.ok) {
       const error_text = await response.text();
-      throw new Error(`POST failed with status ${response.status}: ${error_text}`);
+      throw new Error(
+        `POST failed with status ${response.status}: ${error_text}`,
+      );
     }
 
     return true;

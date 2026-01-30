@@ -15,8 +15,13 @@ from .sync import login as login_sync
 from .sync import logout as logout_sync
 from .sync import register_rtc_service as register_rtc_service_sync
 from .webrtc_client import get_rtc_service, register_rtc_service
-from .client import connect_to_server, get_remote_service
-from .websocket_client import login, logout, setup_local_client
+from .websocket_client import (
+    connect_to_server,
+    get_remote_service,
+    login,
+    logout,
+    setup_local_client,
+)
 from .http_client import HTTPStreamingRPCConnection
 
 # read the version from the VERSION file; but get the path from the __file__

@@ -511,7 +511,7 @@ def connect_to_server_http(config=None, **kwargs):
     Returns:
         ServerContextManager that can be used as async context manager
     """
-    from .client import connect_to_server
+    from .websocket_client import connect_to_server
     config = config or {}
     config.update(kwargs)
     config["transport"] = "http"
@@ -625,7 +625,7 @@ def get_remote_service_http(service_uri: str, config=None, **kwargs):
     This is a convenience function that sets transport="http" automatically.
     For a unified interface, use get_remote_service with transport="http" instead.
     """
-    from .client import get_remote_service
+    from .websocket_client import get_remote_service
     config = config or {}
     config.update(kwargs)
     config["transport"] = "http"
