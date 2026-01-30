@@ -174,15 +174,26 @@ class HTTPStreamingRPCConnection:
         elif self._ssl is not None:
             verify = self._ssl
 
+        # Try to enable HTTP/2 if h2 is available
+        try:
+            import h2  # noqa
+            http2_enabled = True
+            logger.info("HTTP/2 enabled for improved performance")
+        except ImportError:
+            http2_enabled = False
+            logger.debug("HTTP/2 not available (install httpx[http2] for better performance)")
+
         return httpx.AsyncClient(
             timeout=httpx.Timeout(self._timeout, connect=30.0),
             verify=verify,
-            # Connection pooling for better performance with many requests
+            # Optimized connection pooling for high-performance RPC
             limits=httpx.Limits(
-                max_connections=100,  # Max total connections
-                max_keepalive_connections=20,  # Keep-alive connections for reuse
-                keepalive_expiry=30.0,  # Keep connections alive for 30 seconds
+                max_connections=200,  # Max total connections (increased for parallel requests)
+                max_keepalive_connections=50,  # More reusable connections (up from 20)
+                keepalive_expiry=300.0,  # Keep connections alive longer (5 minutes)
             ),
+            # Enable HTTP/2 for better multiplexing if available
+            http2=http2_enabled,
         )
 
     async def open(self):
@@ -418,7 +429,11 @@ class HTTPStreamingRPCConnection:
                 self._handle_message(data)
 
     async def emit_message(self, data: bytes):
-        """Send a message to the server via HTTP POST."""
+        """Send a message to the server via HTTP POST.
+
+        Uses optimized connection pooling with keep-alive for better performance.
+        HTTP client automatically handles efficient transfer for all payload sizes.
+        """
         if self._closed:
             raise ConnectionError("Connection is closed")
 
@@ -430,6 +445,7 @@ class HTTPStreamingRPCConnection:
         params = {"client_id": self._client_id}
 
         try:
+            # httpx handles large payloads efficiently with connection pooling
             response = await self._http_client.post(
                 url,
                 content=data,
