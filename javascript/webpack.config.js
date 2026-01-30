@@ -5,7 +5,7 @@ const isESM = process.env.BUILD_ESM === 'true';
 const config = {
   mode: process.env.NODE_ENV || 'development',
   entry: {
-    'hyphaWebsocketClient': path.resolve(__dirname, 'src', 'websocket-client.js'),
+    'hyphaWebsocketClient': path.resolve(__dirname, 'src', 'client.js'),
   },
   devtool: 'source-map',
   devServer: {

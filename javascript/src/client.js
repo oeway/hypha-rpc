@@ -9,6 +9,31 @@
 
 import { parseServiceUrl } from "./utils/index.js";
 
+// Re-export everything from websocket-client for backward compatibility
+// (except _connectToServer which is internal)
+export {
+  RPC,
+  API_VERSION,
+  schemaFunction,
+  loadRequirements,
+  getRTCService,
+  registerRTCService,
+  login,
+  logout,
+  LocalWebSocket,
+  setupLocalClient,
+  getRemoteService as getRemoteServiceWebsocket,
+  connectToServer as connectToServerWebsocket,
+} from "./websocket-client.js";
+
+// Re-export HTTP client classes and functions
+export {
+  HTTPStreamingRPCConnection,
+  connectToServerHTTP,
+  getRemoteServiceHTTP,
+  normalizeServerUrl as normalizeServerUrlHTTP,
+} from "./http-client.js";
+
 /**
  * Connect to a Hypha server.
  *
