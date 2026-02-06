@@ -458,7 +458,10 @@ class RemoteFunction:
         timer = None
         if self._with_promise:
             main_message["session"] = local_session_id
-            method_name = f"{self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}"
+            method_name = (
+                f"{self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}"
+            )
+
             # Timer will be started after message is sent
             # Heartbeat will keep resetting it, allowing methods to run indefinitely
             # IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
@@ -472,7 +475,7 @@ class RemoteFunction:
                 if local_session_id in self._rpc._object_store:
                     del self._rpc._object_store[local_session_id]
                     logger.debug(f"Cleaned up session {local_session_id} after timeout")
-            
+
             timer = Timer(
                 self._rpc._method_timeout,
                 timeout_callback,
@@ -486,9 +489,7 @@ class RemoteFunction:
                 if isinstance(obj, dict):
                     if obj.get("_rintf") == True:
                         return True
-                    return any(
-                        has_interface_object(value) for value in obj.values()
-                    )
+                    return any(has_interface_object(value) for value in obj.values())
                 elif isinstance(obj, (list, tuple)):
                     return any(has_interface_object(item) for item in obj)
                 return False
@@ -516,14 +517,15 @@ class RemoteFunction:
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)
         total_size = len(message_package)
-        if (
-            total_size <= self._rpc._long_message_chunk_size + 1024
-            or self.__no_chunk__
-        ):
+        if total_size <= self._rpc._long_message_chunk_size + 1024 or self.__no_chunk__:
             emit_task = asyncio.create_task(self._rpc._emit_message(message_package))
         else:
             emit_task = asyncio.create_task(
-                self._rpc._send_chunks(message_package, self._encoded_method["_rtarget"], self._remote_parent)
+                self._rpc._send_chunks(
+                    message_package,
+                    self._encoded_method["_rtarget"],
+                    self._remote_parent,
+                )
             )
         background_tasks.add(emit_task)
 
@@ -543,6 +545,7 @@ class RemoteFunction:
             else:
                 if timer:
                     timer.start()
+
         emit_task.add_done_callback(handle_result)
         return fut
 
@@ -551,6 +554,7 @@ class RemoteFunction:
 
     def __str__(self):
         return self.__repr__()
+
 
 background_tasks = set()
 
@@ -596,18 +600,23 @@ class RPC(MessageEmitter):
 
         # Set up exception handler for unhandled asyncio futures
         def handle_exception(loop, context):
-            exception = context.get('exception')
+            exception = context.get("exception")
             if isinstance(exception, Exception):
                 # Check if this is a "Method not found" error that we can ignore
-                if "Method not found" in str(exception) or "Session not found" in str(exception):
-                    logger.debug("Ignoring expected method/session not found error: %s", exception)
+                if "Method not found" in str(exception) or "Session not found" in str(
+                    exception
+                ):
+                    logger.debug(
+                        "Ignoring expected method/session not found error: %s",
+                        exception,
+                    )
                 else:
                     logger.debug("Unhandled asyncio exception: %s", context)
             else:
                 logger.debug("Unhandled asyncio exception: %s", context)
-        
+
         # Only set the exception handler if we haven't already set one
-        if not hasattr(self.loop, '_hypha_exception_handler_set'):
+        if not hasattr(self.loop, "_hypha_exception_handler_set"):
             self.loop.set_exception_handler(handle_exception)
             self.loop._hypha_exception_handler_set = True
 
@@ -677,7 +686,7 @@ class RPC(MessageEmitter):
                                 service_info = self._extract_service_info(service)
                                 await asyncio.wait_for(
                                     manager.register_service(service_info),
-                                    timeout=service_registration_timeout
+                                    timeout=service_registration_timeout,
                                 )
                                 registered_count += 1
                                 logger.debug(
@@ -712,39 +721,57 @@ class RPC(MessageEmitter):
                                 "failed": failed_services,
                             },
                         )
-                        
+
                         # Subscribe to client_disconnected events if the manager supports it
                         try:
                             manager_dict = ObjectProxy.toDict(manager)
                             if "subscribe" in manager_dict:
-                                logger.debug("Subscribing to client_disconnected events")
+                                logger.debug(
+                                    "Subscribing to client_disconnected events"
+                                )
 
                                 async def handle_client_disconnected(event):
                                     client_id = event.get("client")
                                     if client_id:
-                                        logger.debug(f"Client {client_id} disconnected, cleaning up sessions")
-                                        await self._handle_client_disconnected(client_id)
+                                        logger.debug(
+                                            f"Client {client_id} disconnected, cleaning up sessions"
+                                        )
+                                        await self._handle_client_disconnected(
+                                            client_id
+                                        )
 
                                 # Subscribe to the event topic first with timeout
-                                self._client_disconnected_subscription = await asyncio.wait_for(
-                                    manager.subscribe(["client_disconnected"]),
-                                    timeout=service_registration_timeout
+                                self._client_disconnected_subscription = (
+                                    await asyncio.wait_for(
+                                        manager.subscribe(["client_disconnected"]),
+                                        timeout=service_registration_timeout,
+                                    )
                                 )
 
                                 # Then register the local event handler
-                                self.on("client_disconnected", handle_client_disconnected)
+                                self.on(
+                                    "client_disconnected", handle_client_disconnected
+                                )
 
-                                logger.debug("Successfully subscribed to client_disconnected events")
+                                logger.debug(
+                                    "Successfully subscribed to client_disconnected events"
+                                )
                             else:
-                                logger.debug("Manager does not support subscribe method, skipping client_disconnected handling")
+                                logger.debug(
+                                    "Manager does not support subscribe method, skipping client_disconnected handling"
+                                )
                                 self._client_disconnected_subscription = None
                         except asyncio.TimeoutError:
-                            logger.warning("Timeout subscribing to client_disconnected events")
+                            logger.warning(
+                                "Timeout subscribing to client_disconnected events"
+                            )
                             self._client_disconnected_subscription = None
                         except Exception as subscribe_error:
-                            logger.warning(f"Failed to subscribe to client_disconnected events: {subscribe_error}")
+                            logger.warning(
+                                f"Failed to subscribe to client_disconnected events: {subscribe_error}"
+                            )
                             self._client_disconnected_subscription = None
-                        
+
                     except Exception as manager_error:
                         logger.error(
                             f"Failed to get manager service for registering services: {manager_error}"
@@ -969,34 +996,34 @@ class RPC(MessageEmitter):
         # Clean up all pending sessions before closing
         self._cleanup_on_disconnect()
         self._close_sessions(self._object_store)
-        
+
         # Clean up background tasks to prevent memory leaks
         # Cancel any background tasks that might be holding references to this RPC
-        if hasattr(self, '_background_task') and self._background_task:
+        if hasattr(self, "_background_task") and self._background_task:
             try:
                 if not self._background_task.done():
                     self._background_task.cancel()
                 background_tasks.discard(self._background_task)
             except Exception as e:
                 logger.debug(f"Error cleaning up background task: {e}")
-        
+
         # Clean up any other background tasks that might reference this RPC
         tasks_to_remove = []
         for task in list(background_tasks):
             try:
-                if hasattr(task, '_rpc_ref') and task._rpc_ref is self:
+                if hasattr(task, "_rpc_ref") and task._rpc_ref is self:
                     tasks_to_remove.append(task)
-                elif hasattr(task, 'get_coro') and task.get_coro():
+                elif hasattr(task, "get_coro") and task.get_coro():
                     # Check if task is related to this RPC by examining the coroutine
                     coro = task.get_coro()
-                    if hasattr(coro, 'cr_frame') and coro.cr_frame:
+                    if hasattr(coro, "cr_frame") and coro.cr_frame:
                         # Look for references to this RPC in the task's frame
                         frame_locals = coro.cr_frame.f_locals
-                        if 'self' in frame_locals and frame_locals['self'] is self:
+                        if "self" in frame_locals and frame_locals["self"] is self:
                             tasks_to_remove.append(task)
             except Exception as e:
                 logger.debug(f"Error checking background task: {e}")
-        
+
         for task in tasks_to_remove:
             try:
                 if not task.done():
@@ -1004,49 +1031,57 @@ class RPC(MessageEmitter):
                 background_tasks.discard(task)
             except Exception as e:
                 logger.debug(f"Error removing background task: {e}")
-        
+
         # Remove the local event handler for client_disconnected
         # Note: Actual unsubscription from server is done in async disconnect() method
-        if hasattr(self, '_client_disconnected_subscription') and self._client_disconnected_subscription:
+        if (
+            hasattr(self, "_client_disconnected_subscription")
+            and self._client_disconnected_subscription
+        ):
             try:
                 # Remove the local event handler
                 self.off("client_disconnected")
             except Exception as e:
                 logger.debug(f"Error removing client_disconnected handler: {e}")
-        
+
         # Clear connection reference to break circular references
-        if hasattr(self, '_connection'):
+        if hasattr(self, "_connection"):
             self._connection = None
-        
+
         # Clear emit_message reference to break circular references
-        if hasattr(self, '_emit_message'):
+        if hasattr(self, "_emit_message"):
             self._emit_message = None
-        
+
         self._fire("disconnected")
 
     async def disconnect(self):
         """Disconnect."""
         # Store connection reference before closing for unsubscribe
-        connection = getattr(self, '_connection', None)
+        connection = getattr(self, "_connection", None)
         manager_id = connection.manager_id if connection else None
 
         # Unsubscribe from client_disconnected events before closing
-        if hasattr(self, '_client_disconnected_subscription') and self._client_disconnected_subscription:
+        if (
+            hasattr(self, "_client_disconnected_subscription")
+            and self._client_disconnected_subscription
+        ):
             try:
                 if connection and manager_id:
                     manager = await asyncio.wait_for(
-                        self.get_remote_service(f"*/{manager_id}"),
-                        timeout=5.0
+                        self.get_remote_service(f"*/{manager_id}"), timeout=5.0
                     )
-                    if hasattr(manager, 'unsubscribe') and callable(manager.unsubscribe):
+                    if hasattr(manager, "unsubscribe") and callable(
+                        manager.unsubscribe
+                    ):
                         if asyncio.iscoroutinefunction(manager.unsubscribe):
                             await asyncio.wait_for(
-                                manager.unsubscribe("client_disconnected"),
-                                timeout=5.0
+                                manager.unsubscribe("client_disconnected"), timeout=5.0
                             )
                         else:
                             manager.unsubscribe("client_disconnected")
-                    logger.debug("Successfully unsubscribed from client_disconnected events")
+                    logger.debug(
+                        "Successfully unsubscribed from client_disconnected events"
+                    )
             except asyncio.TimeoutError:
                 logger.debug("Timeout unsubscribing from client_disconnected events")
             except Exception as e:
@@ -1062,92 +1097,105 @@ class RPC(MessageEmitter):
                 await connection.disconnect()
             except Exception as e:
                 logger.debug(f"Error disconnecting underlying connection: {e}")
-    
+
     async def _handle_client_disconnected(self, client_id):
         """Handle cleanup when a remote client disconnects."""
         try:
             logger.debug(f"Handling disconnection for client: {client_id}")
-            
+
             # Clean up all sessions for the disconnected client
             sessions_cleaned = self._cleanup_sessions_for_client(client_id)
-            
+
             if sessions_cleaned > 0:
-                logger.debug(f"Cleaned up {sessions_cleaned} sessions for disconnected client: {client_id}")
-            
+                logger.debug(
+                    f"Cleaned up {sessions_cleaned} sessions for disconnected client: {client_id}"
+                )
+
             # Fire an event to notify about the client disconnection
-            self._fire("remote_client_disconnected", {"client_id": client_id, "sessions_cleaned": sessions_cleaned})
-            
+            self._fire(
+                "remote_client_disconnected",
+                {"client_id": client_id, "sessions_cleaned": sessions_cleaned},
+            )
+
         except Exception as e:
             logger.error(f"Error handling client disconnection for {client_id}: {e}")
-    
+
     def _cleanup_sessions_for_client(self, client_id):
         """Clean up all sessions for a specific client."""
         sessions_cleaned = 0
-        
+
         # Iterate through all top-level session keys
         for session_key in list(self._object_store.keys()):
             if session_key in ("services", "message_cache"):
                 continue
-            
+
             session = self._object_store.get(session_key)
             if not isinstance(session, dict):
                 continue
-            
+
             # Check if this session belongs to the disconnected client
             # Sessions have a target_id property that identifies which client they're calling
             if session.get("target_id") == client_id:
-                logger.debug(f"Found session {session_key} for disconnected client: {client_id}")
-                
+                logger.debug(
+                    f"Found session {session_key} for disconnected client: {client_id}"
+                )
+
                 # Reject any pending promises in this session
                 if "reject" in session and callable(session["reject"]):
                     logger.debug(f"Rejecting session {session_key}")
                     try:
-                        session["reject"](RemoteException(f"Client disconnected: {client_id}"))
+                        session["reject"](
+                            RemoteException(f"Client disconnected: {client_id}")
+                        )
                     except Exception as e:
                         logger.warning(f"Error rejecting session {session_key}: {e}")
-                
+
                 if "resolve" in session and callable(session["resolve"]):
                     logger.debug(f"Resolving session {session_key} with error")
                     try:
-                        session["resolve"](RemoteException(f"Client disconnected: {client_id}"))
+                        session["resolve"](
+                            RemoteException(f"Client disconnected: {client_id}")
+                        )
                     except Exception as e:
                         logger.warning(f"Error resolving session {session_key}: {e}")
-                
+
                 # Clear any timers
                 if session.get("timer"):
                     try:
                         session["timer"].clear()
                     except Exception as e:
                         logger.warning(f"Error clearing timer for {session_key}: {e}")
-                
-                # Clear heartbeat tasks  
+
+                # Clear heartbeat tasks
                 if session.get("heartbeat_task"):
                     try:
                         session["heartbeat_task"].cancel()
                     except Exception as e:
-                        logger.warning(f"Error clearing heartbeat for {session_key}: {e}")
-                
+                        logger.warning(
+                            f"Error clearing heartbeat for {session_key}: {e}"
+                        )
+
                 # Remove the entire session
                 del self._object_store[session_key]
                 sessions_cleaned += 1
                 logger.debug(f"Cleaned up session: {session_key}")
-        
+
         return sessions_cleaned
-    
+
     def _cleanup_on_disconnect(self):
         """Clean up all pending sessions when the local RPC disconnects."""
         try:
             logger.debug("Cleaning up all sessions due to local RPC disconnection")
-            
+
             # Get all keys to delete (everything except services)
             keys_to_delete = []
-            
+
             for key in list(self._object_store.keys()):
                 if key == "services":
                     continue
-                
+
                 value = self._object_store.get(key)
-                
+
                 if isinstance(value, dict):
                     # Reject any pending promises
                     if "reject" in value and callable(value["reject"]):
@@ -1155,20 +1203,20 @@ class RPC(MessageEmitter):
                             value["reject"](RemoteException("RPC connection closed"))
                         except Exception as e:
                             logger.debug(f"Error rejecting promise during cleanup: {e}")
-                    
+
                     # Clean up timers and tasks
                     if value.get("heartbeat_task"):
                         value["heartbeat_task"].cancel()
                     if value.get("timer"):
                         value["timer"].clear()
-                
+
                 # Mark ALL keys for deletion except services
                 keys_to_delete.append(key)
-            
+
             # Delete all marked sessions
             for key in keys_to_delete:
                 del self._object_store[key]
-            
+
         except Exception as e:
             logger.error(f"Error during cleanup on disconnect: {e}")
 
@@ -1249,7 +1297,7 @@ class RPC(MessageEmitter):
         # allow access for the same workspace
         if context["ws"] == ws:
             return service
-        
+
         # Check if user is from an authorized workspace
         authorized_workspaces = service["config"].get("authorized_workspaces")
         if authorized_workspaces and context["ws"] in authorized_workspaces:
@@ -1403,7 +1451,7 @@ class RPC(MessageEmitter):
             run_in_executor = True
         visibility = api["config"].get("visibility", "protected")
         assert visibility in ["protected", "public", "unlisted"]
-        
+
         # Validate authorized_workspaces
         authorized_workspaces = api["config"].get("authorized_workspaces")
         if authorized_workspaces is not None:
@@ -1412,10 +1460,14 @@ class RPC(MessageEmitter):
                     f"authorized_workspaces can only be set when visibility is 'protected', got visibility='{visibility}'"
                 )
             if not isinstance(authorized_workspaces, list):
-                raise ValueError("authorized_workspaces must be a list of workspace ids")
+                raise ValueError(
+                    "authorized_workspaces must be a list of workspace ids"
+                )
             for ws_id in authorized_workspaces:
                 if not isinstance(ws_id, str):
-                    raise ValueError(f"Each workspace id in authorized_workspaces must be a string, got {type(ws_id)}")
+                    raise ValueError(
+                        f"Each workspace id in authorized_workspaces must be a string, got {type(ws_id)}"
+                    )
         self._annotate_service_methods(
             api,
             api["id"],
@@ -1443,7 +1495,16 @@ class RPC(MessageEmitter):
                 "Workspace is not set. Please ensure the connection has a workspace or set local_workspace."
             )
         skip_context = config.get("require_context", False)
-        exclude_keys = ["id", "config", "name", "description", "type", "docs", "app_id", "service_schema"]
+        exclude_keys = [
+            "id",
+            "config",
+            "name",
+            "description",
+            "type",
+            "docs",
+            "app_id",
+            "service_schema",
+        ]
         filtered_service = {k: v for k, v in service.items() if k not in exclude_keys}
         service_schema = _get_schema(filtered_service, skip_context=skip_context)
         service_info = {
@@ -1627,14 +1688,19 @@ class RPC(MessageEmitter):
             if "_promise_manager" in store:
                 try:
                     promise_manager = store["_promise_manager"]
-                    if hasattr(promise_manager, 'should_cleanup_on_callback') and \
-                       promise_manager.should_cleanup_on_callback(callback_name):
-                        if hasattr(promise_manager, 'settle'):
+                    if hasattr(
+                        promise_manager, "should_cleanup_on_callback"
+                    ) and promise_manager.should_cleanup_on_callback(callback_name):
+                        if hasattr(promise_manager, "settle"):
                             promise_manager.settle()
                         should_cleanup = True
-                        logger.debug(f"Promise session {session_id} settled and marked for cleanup")
+                        logger.debug(
+                            f"Promise session {session_id} settled and marked for cleanup"
+                        )
                 except Exception as e:
-                    logger.warning(f"Error in promise manager cleanup for {session_id}: {e}")
+                    logger.warning(
+                        f"Error in promise manager cleanup for {session_id}: {e}"
+                    )
                     # Still try to cleanup if promise manager fails
                     should_cleanup = True
             else:
@@ -1651,7 +1717,9 @@ class RPC(MessageEmitter):
             try:
                 self._delete_session_safely(session_id)
             except Exception as fallback_error:
-                logger.error(f"Fallback cleanup also failed for {session_id}: {fallback_error}")
+                logger.error(
+                    f"Fallback cleanup also failed for {session_id}: {fallback_error}"
+                )
 
     def _delete_session_completely(self, session_id):
         """Completely delete a session and clean up empty parent containers."""
@@ -1660,17 +1728,17 @@ class RPC(MessageEmitter):
 
         try:
             levels = session_id.split(".")
-            
+
             # Navigate to the session and delete it safely
             if len(levels) == 1:
                 # Top-level session - delete directly from object store
                 session_key = levels[0]
                 if session_key in self._object_store:
                     session_data = self._object_store[session_key]
-                    
+
                     # Clear any timers or resources in the session before deletion
                     self._cleanup_session_resources(session_data)
-                    
+
                     # Delete the session
                     del self._object_store[session_key]
                     logger.debug(f"Deleted top-level session: {session_id}")
@@ -1680,35 +1748,41 @@ class RPC(MessageEmitter):
                 # Nested session - navigate and delete safely
                 current_store = self._object_store
                 path_exists = True
-                
+
                 # Navigate to parent container
                 for i, level in enumerate(levels[:-1]):
                     if level not in current_store:
                         path_exists = False
-                        logger.debug(f"Parent path broken at level '{level}' for session {session_id}")
+                        logger.debug(
+                            f"Parent path broken at level '{level}' for session {session_id}"
+                        )
                         break
                     if not isinstance(current_store[level], dict):
                         path_exists = False
-                        logger.debug(f"Non-dict container at level '{level}' for session {session_id}")
+                        logger.debug(
+                            f"Non-dict container at level '{level}' for session {session_id}"
+                        )
                         break
                     current_store = current_store[level]
-                
+
                 if path_exists and levels[-1] in current_store:
                     session_data = current_store[levels[-1]]
-                    
+
                     # Clear resources before deletion
                     if isinstance(session_data, dict):
                         self._cleanup_session_resources(session_data)
-                    
+
                     # Delete the session
                     del current_store[levels[-1]]
                     logger.debug(f"Deleted nested session: {session_id}")
-                    
+
                     # Clean up empty parent containers from bottom up
                     self._cleanup_empty_parent_containers(levels[:-1])
                 else:
-                    logger.debug(f"Nested session {session_id} already deleted or path invalid")
-                    
+                    logger.debug(
+                        f"Nested session {session_id} already deleted or path invalid"
+                    )
+
         except KeyError as e:
             logger.debug(f"Session {session_id} already deleted: {e}")
         except Exception as e:
@@ -1728,9 +1802,9 @@ class RPC(MessageEmitter):
         """Clean up resources within a session (timers, etc.) before deletion."""
         if not isinstance(session_dict, dict):
             return
-            
+
         cleanup_errors = []
-        
+
         try:
             # Clear any active timers
             if "timer" in session_dict and session_dict["timer"]:
@@ -1746,8 +1820,8 @@ class RPC(MessageEmitter):
                         logger.debug("Cancelled session timer during cleanup")
                 except Exception as timer_error:
                     cleanup_errors.append(f"timer: {timer_error}")
-            
-            # Cancel any heartbeat tasks  
+
+            # Cancel any heartbeat tasks
             if "heartbeat_task" in session_dict and session_dict["heartbeat_task"]:
                 try:
                     task = session_dict["heartbeat_task"]
@@ -1771,51 +1845,64 @@ class RPC(MessageEmitter):
             if "_promise_manager" in session_dict:
                 try:
                     promise_manager = session_dict["_promise_manager"]
-                    if hasattr(promise_manager, 'cleanup'):
+                    if hasattr(promise_manager, "cleanup"):
                         promise_manager.cleanup()
                 except Exception as pm_error:
                     cleanup_errors.append(f"promise_manager: {pm_error}")
-                    
+
         except Exception as e:
             cleanup_errors.append(f"general: {e}")
 
         if cleanup_errors:
-            logger.debug(f"Some resource cleanup errors (non-critical): {cleanup_errors}")
+            logger.debug(
+                f"Some resource cleanup errors (non-critical): {cleanup_errors}"
+            )
 
     def _cleanup_empty_parent_containers(self, parent_levels):
         """Clean up empty parent containers from bottom up."""
         if not parent_levels:
             return
-            
+
         try:
             # Work backwards through the path to clean up empty containers
             for i in range(len(parent_levels), 0, -1):
                 path = parent_levels[:i]
                 container = self._object_store
-                
+
                 # Navigate to the container
                 for level in path[:-1]:
                     if level not in container:
-                        logger.debug(f"Parent container path broken at '{level}', stopping cleanup")
+                        logger.debug(
+                            f"Parent container path broken at '{level}', stopping cleanup"
+                        )
                         return  # Path doesn't exist, nothing to clean
                     if not isinstance(container[level], dict):
-                        logger.debug(f"Non-dict parent container at '{level}', stopping cleanup")
+                        logger.debug(
+                            f"Non-dict parent container at '{level}', stopping cleanup"
+                        )
                         return
                     container = container[level]
-                
+
                 target_key = path[-1]
                 if target_key in container and isinstance(container[target_key], dict):
                     # Only delete if the container is empty (excluding system keys)
-                    remaining_keys = [k for k in container[target_key].keys() 
-                                    if k not in ["services", "message_cache"]]
+                    remaining_keys = [
+                        k
+                        for k in container[target_key].keys()
+                        if k not in ["services", "message_cache"]
+                    ]
                     if not remaining_keys:
                         del container[target_key]
-                        logger.debug(f"Cleaned up empty parent container: {'.'.join(path)}")
+                        logger.debug(
+                            f"Cleaned up empty parent container: {'.'.join(path)}"
+                        )
                     else:
                         # Container has content, stop cleanup
-                        logger.debug(f"Parent container {'.'.join(path)} has content, stopping cleanup")
+                        logger.debug(
+                            f"Parent container {'.'.join(path)} has content, stopping cleanup"
+                        )
                         break
-                        
+
         except Exception as e:
             logger.debug(f"Error cleaning empty parent containers: {e}")
 
@@ -1823,12 +1910,12 @@ class RPC(MessageEmitter):
         """Emergency cleanup method to remove all sessions (for testing/debugging)."""
         if not hasattr(self, "_object_store"):
             return
-            
+
         sessions_to_remove = []
         for key in self._object_store.keys():
             if key not in ["services", "message_cache"]:
                 sessions_to_remove.append(key)
-        
+
         for session_key in sessions_to_remove:
             try:
                 session_data = self._object_store[session_key]
@@ -1842,7 +1929,7 @@ class RPC(MessageEmitter):
         """Get statistics about current sessions (for debugging/monitoring)."""
         if not hasattr(self, "_object_store"):
             return {"error": "No object store"}
-        
+
         stats = {
             "total_sessions": 0,
             "promise_sessions": 0,
@@ -1850,9 +1937,9 @@ class RPC(MessageEmitter):
             "sessions_with_timers": 0,
             "sessions_with_heartbeat": 0,
             "system_stores": {},
-            "session_ids": []
+            "session_ids": [],
         }
-        
+
         for key, value in self._object_store.items():
             if key in ["services", "message_cache"]:
                 stats["system_stores"][key] = {
@@ -1861,19 +1948,19 @@ class RPC(MessageEmitter):
             else:
                 stats["total_sessions"] += 1
                 stats["session_ids"].append(key)
-                
+
                 if isinstance(value, dict):
                     if "_promise_manager" in value:
                         stats["promise_sessions"] += 1
                     else:
                         stats["regular_sessions"] += 1
-                    
+
                     if "timer" in value:
                         stats["sessions_with_timers"] += 1
-                    
+
                     if "heartbeat_task" in value:
                         stats["sessions_with_heartbeat"] += 1
-        
+
         return stats
 
     def _encode_promise(
@@ -2211,7 +2298,9 @@ class RPC(MessageEmitter):
                         )
                         # For expired callbacks, don't raise an exception, just log and return
                         if callable(reject):
-                            reject(Exception(f"Method expired or not found: {method_name}"))
+                            reject(
+                                Exception(f"Method expired or not found: {method_name}")
+                            )
                         return
                     else:
                         logger.debug(
@@ -2228,7 +2317,9 @@ class RPC(MessageEmitter):
                 logger.debug(
                     "Failed to find method %s at %s", method_name, self._client_id
                 )
-                error = Exception(f"Method not found: {method_name} at {self._client_id}")
+                error = Exception(
+                    f"Method not found: {method_name} at {self._client_id}"
+                )
                 if callable(reject):
                     reject(error)
                 else:
@@ -2250,11 +2341,15 @@ class RPC(MessageEmitter):
                     # Check if remote workspace is in authorized_workspaces list
                     elif (
                         self._method_annotations[method].get("authorized_workspaces")
-                        and remote_workspace in self._method_annotations[method]["authorized_workspaces"]
+                        and remote_workspace
+                        in self._method_annotations[method]["authorized_workspaces"]
                     ):
                         pass  # Access granted
                     # Allow manager access
-                    elif remote_workspace == "*" and remote_client_id == self._connection.manager_id:
+                    elif (
+                        remote_workspace == "*"
+                        and remote_client_id == self._connection.manager_id
+                    ):
                         pass  # Access granted
                     else:
                         raise PermissionError(

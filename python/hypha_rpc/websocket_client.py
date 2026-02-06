@@ -221,7 +221,9 @@ class WebsocketRPCConnection:
             logger.info("Refresh token task was cancelled.")
         except RuntimeError as e:
             # Handle event loop closed error gracefully
-            if "Event loop is closed" in str(e) or "cannot schedule new futures" in str(e):
+            if "Event loop is closed" in str(e) or "cannot schedule new futures" in str(
+                e
+            ):
                 logger.debug("Event loop closed during refresh token task")
             else:
                 logger.error(f"RuntimeError in refresh token task: {e}")
@@ -347,14 +349,16 @@ class WebsocketRPCConnection:
             logger.error(f"HTTP error during WebSocket connection: {e}")
         except websockets.exceptions.ConnectionClosedOK as e:
             logger.info("Websocket connection closed gracefully")
-            # Don't set self._closed = True here - let the finally block 
+            # Don't set self._closed = True here - let the finally block
             # decide whether to reconnect based on whether this was user-initiated
         except websockets.exceptions.ConnectionClosedError as e:
             logger.info("Websocket connection closed: %s", e)
         except RuntimeError as e:
             # Handle event loop closed error gracefully
             if "Event loop is closed" in str(e):
-                logger.debug("Event loop closed during WebSocket operation, stopping listen task")
+                logger.debug(
+                    "Event loop closed during WebSocket operation, stopping listen task"
+                )
                 return
             else:
                 logger.error(f"RuntimeError in _listen: {e}")
@@ -624,13 +628,15 @@ class WebsocketRPCConnection:
                     except Exception as e:
                         logger.debug(f"Error waiting for reconnect task: {e}")
                 self._reconnect_tasks.discard(task)
-            
+
             # Clear any remaining tasks
             self._reconnect_tasks.clear()
-            
+
         except RuntimeError as e:
             if "Event loop is closed" in str(e):
-                logger.debug("Event loop closed during cleanup, performing minimal cleanup")
+                logger.debug(
+                    "Event loop closed during cleanup, performing minimal cleanup"
+                )
                 self._refresh_token_task = None
                 self._listen_task = None
                 self._reconnect_tasks.clear()
@@ -659,7 +665,20 @@ def normalize_server_url(server_url):
 
 
 async def login(config):
-    """Login to the hypha server."""
+    """Login to the hypha server.
+
+    Configuration options:
+        server_url: The server URL (required)
+        workspace: Target workspace (optional)
+        login_service_id: Login service ID (default: "public/hypha-login")
+        expires_in: Token expiration time (optional)
+        login_timeout: Timeout for login process (default: 60)
+        login_callback: Callback function for login URL (optional)
+        profile: Whether to return user profile (default: False)
+        ssl: SSL configuration (optional)
+        additional_headers: Additional HTTP headers (optional)
+        transport: Transport type - "websocket" (default) or "http"
+    """
     server_url = config.get("server_url")
     service_id = config.get("login_service_id", "public/hypha-login")
     workspace = config.get("workspace")
@@ -669,6 +688,7 @@ async def login(config):
     profile = config.get("profile", False)
     ssl = config.get("ssl")
     additional_headers = config.get("additional_headers")
+    transport = config.get("transport", "websocket")
 
     server = await connect_to_server(
         {
@@ -677,6 +697,7 @@ async def login(config):
             "method_timeout": timeout,
             "ssl": ssl,
             "additional_headers": additional_headers,
+            "transport": transport,
         }
     )
     try:
@@ -699,12 +720,22 @@ async def login(config):
 
 
 async def logout(config):
-    """Logout from the hypha server."""
+    """Logout from the hypha server.
+
+    Configuration options:
+        server_url: The server URL (required)
+        login_service_id: Login service ID (default: "public/hypha-login")
+        logout_callback: Callback function for logout URL (optional)
+        ssl: SSL configuration (optional)
+        additional_headers: Additional HTTP headers (optional)
+        transport: Transport type - "websocket" (default) or "http"
+    """
     server_url = config.get("server_url")
     service_id = config.get("login_service_id", "public/hypha-login")
     callback = config.get("logout_callback")
     ssl = config.get("ssl")
     additional_headers = config.get("additional_headers")
+    transport = config.get("transport", "websocket")
 
     server = await connect_to_server(
         {
@@ -712,6 +743,7 @@ async def logout(config):
             "server_url": server_url,
             "ssl": ssl,
             "additional_headers": additional_headers,
+            "transport": transport,
         }
     )
     try:
@@ -1164,6 +1196,7 @@ class ServerContextManager:
             if not os.environ.get("HYPHA_SERVER_URL"):
                 try:
                     from dotenv import load_dotenv, find_dotenv
+
                     load_dotenv(dotenv_path=find_dotenv(usecwd=True))
                     # use info from .env file
                     print("✅ Loaded connection configuration from .env file.")
@@ -1187,6 +1220,7 @@ class ServerContextManager:
     async def __aenter__(self):
         if self._transport == "http":
             from .http_client import _connect_to_server_http
+
             self.wm = await _connect_to_server_http(self.config)
         else:
             self.wm = await _connect_to_server(self.config)

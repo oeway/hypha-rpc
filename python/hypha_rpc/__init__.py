@@ -28,11 +28,12 @@ from .http_client import HTTPStreamingRPCConnection
 with open(os.path.join(os.path.dirname(__file__), "VERSION"), "r") as f:
     __version__ = json.load(f)["version"]
 
+
 def is_user_defined_class_instance(obj):
     return (
-        not isinstance(obj, type) and              # not a class itself
-        hasattr(obj, "__class__") and
-        obj.__class__.__module__ != "builtins"     # not a built-in type
+        not isinstance(obj, type)  # not a class itself
+        and hasattr(obj, "__class__")
+        and obj.__class__.__module__ != "builtins"  # not a built-in type
     )
 
 
@@ -41,23 +42,34 @@ class API(ObjectProxy):
         super().__init__(*args, **kwargs)
         self._registry = {}
         self._export_handler = self._default_export_handler
-        
+
     async def _register_services(self, obj, config=None, **kwargs):
         if not os.environ.get("HYPHA_SERVER_URL"):
             try:
                 from dotenv import load_dotenv, find_dotenv
+
                 load_dotenv(dotenv_path=find_dotenv(usecwd=True))
                 # use info from .env file
                 print("✅ Loaded connection configuration from .env file.")
             except ImportError:
-                print("❌ Missing environment variables. Set HYPHA_SERVER_URL, HYPHA_TOKEN, HYPHA_WORKSPACE", file=sys.stderr)
+                print(
+                    "❌ Missing environment variables. Set HYPHA_SERVER_URL, HYPHA_TOKEN, HYPHA_WORKSPACE",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
         SERVER_URL = os.environ.get("HYPHA_SERVER_URL")
         TOKEN = os.environ.get("HYPHA_TOKEN")
         CLIENT_ID = os.environ.get("HYPHA_CLIENT_ID")
         WORKSPACE = os.environ.get("HYPHA_WORKSPACE")
 
-        server = await connect_to_server({"client_id": CLIENT_ID, "server_url": SERVER_URL, "token": TOKEN, "workspace": WORKSPACE})
+        server = await connect_to_server(
+            {
+                "client_id": CLIENT_ID,
+                "server_url": SERVER_URL,
+                "token": TOKEN,
+                "workspace": WORKSPACE,
+            }
+        )
         # If obj is a class, instantiate it
         if isinstance(obj, type):
             obj = obj()
@@ -96,7 +108,6 @@ class API(ObjectProxy):
             asyncio.create_task(self._register_services(obj, config, **kwargs))
         else:
             asyncio.run(self._register_services(obj, config, **kwargs))
-            
 
     def set_export_handler(self, handler):
         self._export_handler = handler

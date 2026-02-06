@@ -28,6 +28,7 @@ from . import WS_SERVER_URL, WS_PORT
 # Test 1: CPU-bound tasks blocking event loop during reconnection
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_cpu_bound_task_blocking_reconnection(websocket_server):
     """Test that services recover after a forced websocket disconnection.
@@ -38,12 +39,14 @@ async def test_cpu_bound_task_blocking_reconnection(websocket_server):
     print("\n=== WEBSOCKET DISCONNECTION RECONNECTION TEST ===")
 
     # Connect to the server
-    ws = await connect_to_server({
-        "name": "cpu-bound-test",
-        "server_url": WS_SERVER_URL,
-        "client_id": "cpu-bound-test",
-        "method_timeout": 60
-    })
+    ws = await connect_to_server(
+        {
+            "name": "cpu-bound-test",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cpu-bound-test",
+            "method_timeout": 60,
+        }
+    )
 
     reconnection_events = []
     services_registered_events = []
@@ -59,11 +62,13 @@ async def test_cpu_bound_task_blocking_reconnection(websocket_server):
     ws.rpc.on("connected", on_connected)
     ws.rpc.on("services_registered", on_services_registered)
 
-    await ws.register_service({
-        "id": "cpu-service",
-        "config": {"visibility": "protected"},
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "cpu-service",
+            "config": {"visibility": "protected"},
+            "ping": lambda: "pong",
+        }
+    )
 
     # Verify service works initially
     svc = await ws.get_service("cpu-service")
@@ -94,14 +99,18 @@ async def test_cpu_bound_task_blocking_reconnection(websocket_server):
             svc = await asyncio.wait_for(ws.get_service("cpu-service"), timeout=5.0)
             result = await asyncio.wait_for(svc.ping(), timeout=5.0)
             if result == "pong":
-                print(f"✅ Reconnection successful after {time.time() - start_time:.1f}s")
+                print(
+                    f"✅ Reconnection successful after {time.time() - start_time:.1f}s"
+                )
                 success = True
                 break
         except Exception as e:
             print(f"   Attempt {attempt + 1}: {type(e).__name__}: {e}")
             await asyncio.sleep(1)
 
-    assert success, f"Failed to reconnect. Events: connected={len(reconnection_events)}, services_registered={len(services_registered_events)}"
+    assert (
+        success
+    ), f"Failed to reconnect. Events: connected={len(reconnection_events)}, services_registered={len(services_registered_events)}"
 
     # Verify reconnection events
     assert len(reconnection_events) > 0, "Should have reconnection events"
@@ -114,6 +123,7 @@ async def test_cpu_bound_task_blocking_reconnection(websocket_server):
 # Test 2: Long-running RPC calls interrupted by disconnection
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_long_running_rpc_call_during_disconnection(websocket_server):
     """Test handling when disconnection occurs.
@@ -125,19 +135,23 @@ async def test_long_running_rpc_call_during_disconnection(websocket_server):
     """
     print("\n=== DISCONNECTION RECOVERY TEST ===")
 
-    ws = await connect_to_server({
-        "name": "long-running-test",
-        "server_url": WS_SERVER_URL,
-        "client_id": "long-running-test",
-        "method_timeout": 30
-    })
+    ws = await connect_to_server(
+        {
+            "name": "long-running-test",
+            "server_url": WS_SERVER_URL,
+            "client_id": "long-running-test",
+            "method_timeout": 30,
+        }
+    )
 
     # Register a service with a simple ping
-    await ws.register_service({
-        "id": "long-service",
-        "config": {"visibility": "protected"},
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "long-service",
+            "config": {"visibility": "protected"},
+            "ping": lambda: "pong",
+        }
+    )
 
     svc = await ws.get_service("long-service")
     assert await svc.ping() == "pong"
@@ -158,7 +172,9 @@ async def test_long_running_rpc_call_during_disconnection(websocket_server):
             svc = await ws.get_service("long-service")
             result = await asyncio.wait_for(svc.ping(), timeout=2.0)
             if result == "pong":
-                print(f"✅ New call successful after reconnection (attempt {attempt + 1})")
+                print(
+                    f"✅ New call successful after reconnection (attempt {attempt + 1})"
+                )
                 success = True
                 break
         except Exception as e:
@@ -175,6 +191,7 @@ async def test_long_running_rpc_call_during_disconnection(websocket_server):
 # Test 3: Graceful shutdown with pending operations
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_graceful_shutdown_with_pending_operations(restartable_server):
     """Test that graceful shutdown properly cleans up pending operations.
@@ -187,12 +204,14 @@ async def test_graceful_shutdown_with_pending_operations(restartable_server):
     """
     print("\n=== GRACEFUL SHUTDOWN WITH PENDING OPERATIONS TEST ===")
 
-    ws = await connect_to_server({
-        "name": "shutdown-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "shutdown-test",
-        "method_timeout": 60
-    })
+    ws = await connect_to_server(
+        {
+            "name": "shutdown-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "shutdown-test",
+            "method_timeout": 60,
+        }
+    )
 
     # Create weak references to track cleanup
     rpc_ref = weakref.ref(ws.rpc)
@@ -202,30 +221,28 @@ async def test_graceful_shutdown_with_pending_operations(restartable_server):
         await asyncio.sleep(duration)
         return "done"
 
-    await ws.register_service({
-        "id": "slow-service",
-        "config": {"visibility": "protected"},
-        "slow_op": slow_operation
-    })
+    await ws.register_service(
+        {
+            "id": "slow-service",
+            "config": {"visibility": "protected"},
+            "slow_op": slow_operation,
+        }
+    )
 
     svc = await ws.get_service("slow-service")
 
     # Start pending operations
     # Note: svc.slow_op() returns a Future-like object, not a coroutine
     # So we wrap it in ensure_future instead of create_task
-    pending_tasks = [
-        asyncio.ensure_future(svc.slow_op(30))
-        for _ in range(5)
-    ]
+    pending_tasks = [asyncio.ensure_future(svc.slow_op(30)) for _ in range(5)]
 
     # Let them start
     await asyncio.sleep(0.2)
 
     # Count sessions before disconnect
-    initial_sessions = len([
-        k for k in ws.rpc._object_store
-        if k not in ("services", "message_cache")
-    ])
+    initial_sessions = len(
+        [k for k in ws.rpc._object_store if k not in ("services", "message_cache")]
+    )
     print(f"📊 Sessions before disconnect: {initial_sessions}")
 
     # Disconnect gracefully
@@ -237,7 +254,9 @@ async def test_graceful_shutdown_with_pending_operations(restartable_server):
     failed_count = len([r for r in results if isinstance(r, Exception)])
     print(f"📊 Pending tasks failed: {failed_count}/{len(pending_tasks)}")
 
-    assert failed_count == len(pending_tasks), "All pending tasks should fail on disconnect"
+    assert failed_count == len(
+        pending_tasks
+    ), "All pending tasks should fail on disconnect"
 
     # Verify sessions are cleaned up
     # Note: After disconnect, the RPC might still exist but sessions should be cleared
@@ -251,6 +270,7 @@ async def test_graceful_shutdown_with_pending_operations(restartable_server):
 # =============================================================================
 # Test 4: Server refusing reconnection
 # =============================================================================
+
 
 @pytest.mark.asyncio
 async def test_server_refusing_reconnection(restartable_server):
@@ -268,11 +288,13 @@ async def test_server_refusing_reconnection(restartable_server):
     """
     print("\n=== SERVER REFUSING RECONNECTION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "refusal-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "refusal-test"
-    })
+    ws = await connect_to_server(
+        {
+            "name": "refusal-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "refusal-test",
+        }
+    )
 
     disconnection_reasons = []
 
@@ -283,11 +305,13 @@ async def test_server_refusing_reconnection(restartable_server):
     # Register disconnection handler on the connection
     ws.rpc._connection.on_disconnected(on_disconnected)
 
-    await ws.register_service({
-        "id": "test-service",
-        "config": {"visibility": "protected"},
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "test-service",
+            "config": {"visibility": "protected"},
+            "ping": lambda: "pong",
+        }
+    )
 
     # Invalidate the reconnection token to simulate server refusal
     original_token = ws.rpc._connection._reconnection_token
@@ -322,6 +346,7 @@ async def test_server_refusing_reconnection(restartable_server):
 # Test 5: Rapid reconnection cycles (stress test)
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_rapid_reconnection_cycles(restartable_server):
     """Test stability under rapid reconnection cycles.
@@ -334,11 +359,13 @@ async def test_rapid_reconnection_cycles(restartable_server):
     """
     print("\n=== RAPID RECONNECTION CYCLES TEST ===")
 
-    ws = await connect_to_server({
-        "name": "rapid-reconnect-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "rapid-reconnect-test"
-    })
+    ws = await connect_to_server(
+        {
+            "name": "rapid-reconnect-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "rapid-reconnect-test",
+        }
+    )
 
     reconnection_count = [0]
     service_registration_count = [0]
@@ -362,13 +389,15 @@ async def test_rapid_reconnection_cycles(restartable_server):
         service_state["calls"].append(time.time())
         return service_state["counter"]
 
-    await ws.register_service({
-        "id": "stateful-service",
-        "config": {"visibility": "protected"},
-        "increment": increment,
-        "get_state": lambda: service_state.copy(),
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "stateful-service",
+            "config": {"visibility": "protected"},
+            "increment": increment,
+            "get_state": lambda: service_state.copy(),
+            "ping": lambda: "pong",
+        }
+    )
 
     # Perform rapid disconnection/reconnection cycles
     NUM_CYCLES = 5
@@ -395,7 +424,9 @@ async def test_rapid_reconnection_cycles(restartable_server):
         max_attempts = 10
         for attempt in range(max_attempts):
             try:
-                svc = await asyncio.wait_for(ws.get_service("stateful-service"), timeout=2.0)
+                svc = await asyncio.wait_for(
+                    ws.get_service("stateful-service"), timeout=2.0
+                )
                 post_count = await asyncio.wait_for(svc.increment(), timeout=2.0)
                 print(f"   Post-reconnection counter: {post_count}")
                 break
@@ -410,7 +441,9 @@ async def test_rapid_reconnection_cycles(restartable_server):
     print(f"📊 Final state: {service_state}")
 
     # Verify state consistency
-    assert service_state["counter"] >= NUM_CYCLES * 2, "Counter should reflect all increments"
+    assert (
+        service_state["counter"] >= NUM_CYCLES * 2
+    ), "Counter should reflect all increments"
 
     await ws.disconnect()
     print("✅ RAPID RECONNECTION CYCLES TEST PASSED!")
@@ -419,6 +452,7 @@ async def test_rapid_reconnection_cycles(restartable_server):
 # =============================================================================
 # Test 6: Timeout during service re-registration
 # =============================================================================
+
 
 @pytest.mark.asyncio
 async def test_timeout_during_service_reregistration(restartable_server):
@@ -433,12 +467,14 @@ async def test_timeout_during_service_reregistration(restartable_server):
     """
     print("\n=== TIMEOUT DURING SERVICE RE-REGISTRATION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "timeout-reregistration-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "timeout-reregistration-test",
-        "method_timeout": 10
-    })
+    ws = await connect_to_server(
+        {
+            "name": "timeout-reregistration-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "timeout-reregistration-test",
+            "method_timeout": 10,
+        }
+    )
 
     registration_events = []
 
@@ -455,12 +491,14 @@ async def test_timeout_during_service_reregistration(restartable_server):
 
     # Register multiple services
     for i in range(5):
-        await ws.register_service({
-            "id": f"service-{i}",
-            "config": {"visibility": "protected"},
-            "echo": lambda x, idx=i: f"Service {idx}: {x}",
-            "ping": lambda: "pong"
-        })
+        await ws.register_service(
+            {
+                "id": f"service-{i}",
+                "config": {"visibility": "protected"},
+                "echo": lambda x, idx=i: f"Service {idx}: {x}",
+                "ping": lambda: "pong",
+            }
+        )
 
     print(f"📊 Registered {len(ws.rpc._services)} services")
 
@@ -492,6 +530,7 @@ async def test_timeout_during_service_reregistration(restartable_server):
 # Test 7: Connection state consistency
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_connection_state_consistency(restartable_server):
     """Test that connection state remains consistent during reconnection.
@@ -504,11 +543,13 @@ async def test_connection_state_consistency(restartable_server):
     """
     print("\n=== CONNECTION STATE CONSISTENCY TEST ===")
 
-    ws = await connect_to_server({
-        "name": "state-consistency-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "state-consistency-test"
-    })
+    ws = await connect_to_server(
+        {
+            "name": "state-consistency-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "state-consistency-test",
+        }
+    )
 
     conn = ws.rpc._connection
 
@@ -544,6 +585,7 @@ async def test_connection_state_consistency(restartable_server):
 # Test 8: Concurrent operations during reconnection
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_concurrent_operations_during_reconnection(restartable_server):
     """Test handling of concurrent operations during reconnection.
@@ -553,12 +595,14 @@ async def test_concurrent_operations_during_reconnection(restartable_server):
     """
     print("\n=== CONCURRENT OPERATIONS DURING RECONNECTION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "concurrent-ops-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "concurrent-ops-test",
-        "method_timeout": 15
-    })
+    ws = await connect_to_server(
+        {
+            "name": "concurrent-ops-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "concurrent-ops-test",
+            "method_timeout": 15,
+        }
+    )
 
     call_results = {"success": 0, "failed": 0, "errors": []}
 
@@ -566,11 +610,13 @@ async def test_concurrent_operations_during_reconnection(restartable_server):
         await asyncio.sleep(0.1)  # Small delay
         return f"echo: {msg}"
 
-    await ws.register_service({
-        "id": "concurrent-service",
-        "config": {"visibility": "protected"},
-        "echo": echo
-    })
+    await ws.register_service(
+        {
+            "id": "concurrent-service",
+            "config": {"visibility": "protected"},
+            "echo": echo,
+        }
+    )
 
     svc = await ws.get_service("concurrent-service")
 
@@ -598,7 +644,9 @@ async def test_concurrent_operations_during_reconnection(restartable_server):
     # Wait for all tasks to complete
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    print(f"📊 Results: {call_results['success']} success, {call_results['failed']} failed")
+    print(
+        f"📊 Results: {call_results['success']} success, {call_results['failed']} failed"
+    )
 
     # Wait for reconnection to complete
     await asyncio.sleep(3)
@@ -617,6 +665,7 @@ async def test_concurrent_operations_during_reconnection(restartable_server):
 # Test 9: Memory leak prevention during reconnection
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_memory_leak_prevention_reconnection(restartable_server):
     """Test that repeated reconnection cycles don't cause memory leaks.
@@ -631,26 +680,36 @@ async def test_memory_leak_prevention_reconnection(restartable_server):
 
     import gc
 
-    ws = await connect_to_server({
-        "name": "memory-leak-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "memory-leak-test"
-    })
+    ws = await connect_to_server(
+        {
+            "name": "memory-leak-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "memory-leak-test",
+        }
+    )
 
-    await ws.register_service({
-        "id": "test-service",
-        "config": {"visibility": "protected"},
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "test-service",
+            "config": {"visibility": "protected"},
+            "ping": lambda: "pong",
+        }
+    )
 
     def count_sessions():
         """Count active sessions in object store."""
-        return len([
-            k for k in ws.rpc._object_store
-            if k not in ("services", "message_cache")
-            and isinstance(ws.rpc._object_store.get(k), dict)
-            and ("resolve" in ws.rpc._object_store[k] or "reject" in ws.rpc._object_store[k])
-        ])
+        return len(
+            [
+                k
+                for k in ws.rpc._object_store
+                if k not in ("services", "message_cache")
+                and isinstance(ws.rpc._object_store.get(k), dict)
+                and (
+                    "resolve" in ws.rpc._object_store[k]
+                    or "reject" in ws.rpc._object_store[k]
+                )
+            ]
+        )
 
     initial_sessions = count_sessions()
     print(f"📊 Initial sessions: {initial_sessions}")
@@ -679,8 +738,9 @@ async def test_memory_leak_prevention_reconnection(restartable_server):
 
     # Sessions should not accumulate excessively
     # Allow some tolerance for active sessions
-    assert final_sessions < initial_sessions + 10, \
-        f"Session leak detected: started with {initial_sessions}, ended with {final_sessions}"
+    assert (
+        final_sessions < initial_sessions + 10
+    ), f"Session leak detected: started with {initial_sessions}, ended with {final_sessions}"
 
     await ws.disconnect()
     print("✅ MEMORY LEAK PREVENTION DURING RECONNECTION TEST PASSED!")
@@ -689,6 +749,7 @@ async def test_memory_leak_prevention_reconnection(restartable_server):
 # =============================================================================
 # Test 10: Callback functions during reconnection
 # =============================================================================
+
 
 @pytest.mark.asyncio
 async def test_callbacks_during_reconnection(restartable_server):
@@ -701,12 +762,14 @@ async def test_callbacks_during_reconnection(restartable_server):
     """
     print("\n=== CALLBACKS DURING RECONNECTION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "callback-reconnect-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "callback-reconnect-test",
-        "method_timeout": 30
-    })
+    ws = await connect_to_server(
+        {
+            "name": "callback-reconnect-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "callback-reconnect-test",
+            "method_timeout": 30,
+        }
+    )
 
     async def stream_data(count, callback):
         """Stream data with progress callbacks."""
@@ -715,15 +778,18 @@ async def test_callbacks_during_reconnection(restartable_server):
             await callback(f"Item {i + 1}/{count}")
         return f"Streamed {count} items"
 
-    await ws.register_service({
-        "id": "callback-service",
-        "config": {"visibility": "protected"},
-        "stream": stream_data,
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "callback-service",
+            "config": {"visibility": "protected"},
+            "stream": stream_data,
+            "ping": lambda: "pong",
+        }
+    )
 
     # Test callbacks before reconnection
     progress_before = []
+
     async def callback_before(msg):
         progress_before.append(msg)
 
@@ -739,6 +805,7 @@ async def test_callbacks_during_reconnection(restartable_server):
 
     # Test callbacks after reconnection
     progress_after = []
+
     async def callback_after(msg):
         progress_after.append(msg)
 
@@ -756,6 +823,7 @@ async def test_callbacks_during_reconnection(restartable_server):
 # Test 11: Error propagation during reconnection
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_error_propagation_during_reconnection(websocket_server):
     """Test that errors are properly propagated during reconnection scenarios.
@@ -764,18 +832,22 @@ async def test_error_propagation_during_reconnection(websocket_server):
     """
     print("\n=== ERROR PROPAGATION DURING RECONNECTION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "error-propagation-test",
-        "server_url": WS_SERVER_URL,
-        "client_id": "error-propagation-test",
-        "method_timeout": 10
-    })
+    ws = await connect_to_server(
+        {
+            "name": "error-propagation-test",
+            "server_url": WS_SERVER_URL,
+            "client_id": "error-propagation-test",
+            "method_timeout": 10,
+        }
+    )
 
-    await ws.register_service({
-        "id": "simple-service",
-        "config": {"visibility": "protected"},
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "simple-service",
+            "config": {"visibility": "protected"},
+            "ping": lambda: "pong",
+        }
+    )
 
     svc = await ws.get_service("simple-service")
     assert await svc.ping() == "pong"
@@ -812,6 +884,7 @@ async def test_error_propagation_during_reconnection(websocket_server):
 # Test 12: Reconnection with method_timeout enforcement
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_reconnection_method_timeout_enforcement(websocket_server):
     """Test that services work correctly after reconnection.
@@ -820,21 +893,25 @@ async def test_reconnection_method_timeout_enforcement(websocket_server):
     """
     print("\n=== METHOD TIMEOUT ENFORCEMENT DURING RECONNECTION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "timeout-enforcement-test",
-        "server_url": WS_SERVER_URL,
-        "client_id": "timeout-enforcement-test",
-        "method_timeout": 30
-    })
+    ws = await connect_to_server(
+        {
+            "name": "timeout-enforcement-test",
+            "server_url": WS_SERVER_URL,
+            "client_id": "timeout-enforcement-test",
+            "method_timeout": 30,
+        }
+    )
 
     async def quick_operation():
         return "quick"
 
-    await ws.register_service({
-        "id": "timeout-service",
-        "config": {"visibility": "protected"},
-        "quick": quick_operation
-    })
+    await ws.register_service(
+        {
+            "id": "timeout-service",
+            "config": {"visibility": "protected"},
+            "quick": quick_operation,
+        }
+    )
 
     svc = await ws.get_service("timeout-service")
 
@@ -856,7 +933,9 @@ async def test_reconnection_method_timeout_enforcement(websocket_server):
             svc = await ws.get_service("timeout-service")
             result = await asyncio.wait_for(svc.quick(), timeout=5.0)
             if result == "quick":
-                print(f"✅ Quick operation works after reconnection (attempt {attempt + 1})")
+                print(
+                    f"✅ Quick operation works after reconnection (attempt {attempt + 1})"
+                )
                 success = True
                 break
         except Exception as e:
@@ -873,6 +952,7 @@ async def test_reconnection_method_timeout_enforcement(websocket_server):
 # Test 13: Event loop blocking detection
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_event_loop_blocking_detection(restartable_server):
     """Test behavior when event loop gets blocked.
@@ -882,12 +962,14 @@ async def test_event_loop_blocking_detection(restartable_server):
     """
     print("\n=== EVENT LOOP BLOCKING DETECTION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "blocking-detection-test",
-        "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
-        "client_id": "blocking-detection-test",
-        "method_timeout": 30
-    })
+    ws = await connect_to_server(
+        {
+            "name": "blocking-detection-test",
+            "server_url": f"ws://127.0.0.1:{restartable_server.port}/ws",
+            "client_id": "blocking-detection-test",
+            "method_timeout": 30,
+        }
+    )
 
     blocking_completed = asyncio.Event()
 
@@ -908,13 +990,15 @@ async def test_event_loop_blocking_detection(restartable_server):
         await asyncio.sleep(0.1)
         return "async done"
 
-    await ws.register_service({
-        "id": "blocking-service",
-        "config": {"visibility": "protected"},
-        "blocking_task": async_wrapper_blocking,
-        "proper_task": proper_async_task,
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "blocking-service",
+            "config": {"visibility": "protected"},
+            "blocking_task": async_wrapper_blocking,
+            "proper_task": proper_async_task,
+            "ping": lambda: "pong",
+        }
+    )
 
     svc = await ws.get_service("blocking-service")
 
@@ -947,6 +1031,7 @@ async def test_event_loop_blocking_detection(restartable_server):
 # Test 14: Multiple clients reconnection coordination
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_multiple_clients_reconnection(websocket_server):
     """Test that multiple clients can reconnect independently.
@@ -963,26 +1048,31 @@ async def test_multiple_clients_reconnection(websocket_server):
     reconnection_events = {i: [] for i in range(NUM_CLIENTS)}
 
     for i in range(NUM_CLIENTS):
-        ws = await connect_to_server({
-            "name": f"multi-client-{i}",
-            "server_url": WS_SERVER_URL,
-            "client_id": f"multi-client-{i}"
-        })
+        ws = await connect_to_server(
+            {
+                "name": f"multi-client-{i}",
+                "server_url": WS_SERVER_URL,
+                "client_id": f"multi-client-{i}",
+            }
+        )
 
         def make_handler(idx):
             def handler(info):
                 reconnection_events[idx].append(time.time())
                 print(f"📡 Client {idx} reconnected")
+
             return handler
 
         ws.rpc.on("connected", make_handler(i))
 
-        await ws.register_service({
-            "id": f"service-{i}",
-            "config": {"visibility": "protected"},
-            "get_id": lambda idx=i: idx,
-            "ping": lambda: "pong"
-        })
+        await ws.register_service(
+            {
+                "id": f"service-{i}",
+                "config": {"visibility": "protected"},
+                "get_id": lambda idx=i: idx,
+                "ping": lambda: "pong",
+            }
+        )
 
         clients.append(ws)
 
@@ -1005,7 +1095,9 @@ async def test_multiple_clients_reconnection(websocket_server):
     for i, ws in enumerate(clients):
         for attempt in range(5):  # Retry up to 5 times
             try:
-                svc = await asyncio.wait_for(ws.get_service(f"service-{i}"), timeout=3.0)
+                svc = await asyncio.wait_for(
+                    ws.get_service(f"service-{i}"), timeout=3.0
+                )
                 result = await asyncio.wait_for(svc.ping(), timeout=2.0)
                 if result == "pong":
                     success_count += 1
@@ -1024,7 +1116,9 @@ async def test_multiple_clients_reconnection(websocket_server):
         print(f"   Client {i}: {len(reconnection_events[i])} reconnection events")
 
     # All clients should reconnect
-    assert success_count == NUM_CLIENTS, f"All {NUM_CLIENTS} clients should reconnect, got {success_count}"
+    assert (
+        success_count == NUM_CLIENTS
+    ), f"All {NUM_CLIENTS} clients should reconnect, got {success_count}"
 
     # Cleanup
     for ws in clients:
@@ -1039,6 +1133,7 @@ async def test_multiple_clients_reconnection(websocket_server):
 # =============================================================================
 # Test 15: os._exit prevention test
 # =============================================================================
+
 
 @pytest.mark.asyncio
 async def test_os_exit_not_called_on_graceful_operations(websocket_server):
@@ -1055,17 +1150,21 @@ async def test_os_exit_not_called_on_graceful_operations(websocket_server):
     """
     print("\n=== OS._EXIT PREVENTION TEST ===")
 
-    ws = await connect_to_server({
-        "name": "exit-prevention-test",
-        "server_url": WS_SERVER_URL,
-        "client_id": "exit-prevention-test"
-    })
+    ws = await connect_to_server(
+        {
+            "name": "exit-prevention-test",
+            "server_url": WS_SERVER_URL,
+            "client_id": "exit-prevention-test",
+        }
+    )
 
-    await ws.register_service({
-        "id": "test-service",
-        "config": {"visibility": "protected"},
-        "ping": lambda: "pong"
-    })
+    await ws.register_service(
+        {
+            "id": "test-service",
+            "config": {"visibility": "protected"},
+            "ping": lambda: "pong",
+        }
+    )
 
     # Patch os._exit to track if it's called
     exit_called = [False]
@@ -1077,6 +1176,7 @@ async def test_os_exit_not_called_on_graceful_operations(websocket_server):
         # Don't actually exit
 
     import os
+
     original_exit = os._exit
     os._exit = mock_exit
 
@@ -1089,11 +1189,13 @@ async def test_os_exit_not_called_on_graceful_operations(websocket_server):
         print("✅ Normal disconnection: os._exit not called")
 
         # Reconnect for next test
-        ws = await connect_to_server({
-            "name": "exit-prevention-test-2",
-            "server_url": WS_SERVER_URL,
-            "client_id": "exit-prevention-test-2"
-        })
+        ws = await connect_to_server(
+            {
+                "name": "exit-prevention-test-2",
+                "server_url": WS_SERVER_URL,
+                "client_id": "exit-prevention-test-2",
+            }
+        )
         exit_called[0] = False
 
         # Test 2: Force disconnect (should reconnect, not exit)

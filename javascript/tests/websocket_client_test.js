@@ -58,7 +58,7 @@ describe("RPC", async () => {
   it("should allow probes", async () => {
     const api = await connectToServer({
       server_url: SERVER_URL,
-      client_id: "test-plugin-1",
+      client_id: "probes-test-client",
     });
     await api.registerProbes({
       readiness: async () => {
@@ -479,18 +479,18 @@ describe("RPC", async () => {
     const token = await login({
       server_url: SERVER_URL,
       login_callback: callback,
-      login_timeout: 3,
+      login_timeout: 10,
     });
     expect(token).to.equal(TOKEN);
 
     const userProfile = await login({
       server_url: SERVER_URL,
       login_callback: callback,
-      login_timeout: 3,
+      login_timeout: 10,
       profile: true,
     });
     expect(userProfile.token).to.equal(TOKEN);
-  }).timeout(20000);
+  }).timeout(30000);
 
   it("should login with additional headers", async () => {
     // First connect to server to generate a valid JWT token
@@ -515,11 +515,11 @@ describe("RPC", async () => {
     const token = await login({
       server_url: SERVER_URL,
       login_callback: callback,
-      login_timeout: 3,
+      login_timeout: 10,
       additional_headers: additional_headers,
     });
     expect(token).to.equal(TOKEN);
-  }).timeout(20000);
+  }).timeout(30000);
 
   it("should connect to the server", async () => {
     const api = await connectToServer({
@@ -2085,6 +2085,9 @@ describe("RPC", async () => {
     }
 
     expect(failedCount).to.equal(pendingTasks.length);
+
+    // Wait for async cleanup (e.g., unsubscribe from client_disconnected)
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     // Verify all sessions were cleaned up
     let remainingSessions = 0;

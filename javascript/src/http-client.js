@@ -113,8 +113,7 @@ export class HTTPStreamingRPCConnection {
     this.connection_info = null;
     this.manager_id = null;
 
-    this._stream_reader = null;
-    this._stream_controller = null;
+    this._abort_controller = null;
   }
 
   /**
@@ -170,9 +169,9 @@ export class HTTPStreamingRPCConnection {
       `Opening HTTP streaming connection to ${this._server_url} (format=${this._format})`,
     );
 
-    // Build stream URL
-    const workspace = this._workspace || "public";
-    let stream_url = `${this._server_url}/${workspace}/rpc?client_id=${this._client_id}`;
+    // Build stream URL - workspace is part of path, default to "public" for anonymous
+    const ws = this._workspace || "public";
+    let stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
     if (this._format === "msgpack") {
       stream_url += "&format=msgpack";
     }
@@ -226,11 +225,11 @@ export class HTTPStreamingRPCConnection {
       try {
         // OPTIMIZATION: Browser fetch automatically streams responses
         // and negotiates HTTP/2 when available for better performance
+        this._abort_controller = new AbortController();
         const response = await fetch(url, {
           method: "GET",
           headers: this._get_headers(true),
-          // keepalive flag for connection reuse (important for reconnections)
-          keepalive: true,
+          signal: this._abort_controller.signal,
         });
 
         if (!response.ok) {
@@ -442,10 +441,11 @@ export class HTTPStreamingRPCConnection {
       return;
     }
 
-    // Pass to message handler (convert to msgpack for RPC)
+    // Pass to message handler directly as object
+    // The RPC handler supports plain objects (no need to re-encode to msgpack)
+    // JSON messages already have main + extra data merged by the server
     if (this._handle_message) {
-      const data = msgpackEncode(message);
-      await this._handle_message(data);
+      await this._handle_message(message);
     }
   }
 
@@ -463,20 +463,21 @@ export class HTTPStreamingRPCConnection {
       throw new Error("Connection is closed");
     }
 
-    // Build POST URL - use the connected workspace
-    const workspace = this._workspace || "public";
-    const post_url = `${this._server_url}/${workspace}/rpc?client_id=${this._client_id}`;
+    // Build POST URL - workspace is part of path (must be set after connection)
+    const ws = this._workspace || "public";
+    let post_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
 
     // Ensure data is Uint8Array
     const body = data instanceof Uint8Array ? data : new Uint8Array(data);
 
-    // OPTIMIZATION: keepalive flag hints to browser to reuse connections
-    // This is particularly important for rapid successive requests
+    // Note: keepalive has a 64KB body size limit in browsers, so only use
+    // it for small payloads. For large payloads, skip keepalive.
+    const useKeepalive = body.length < 60000;
     const response = await fetch(post_url, {
       method: "POST",
       headers: this._get_headers(false),
       body: body,
-      keepalive: true,  // Enable connection reuse
+      ...(useKeepalive && { keepalive: true }),
     });
 
     if (!response.ok) {
@@ -503,6 +504,12 @@ export class HTTPStreamingRPCConnection {
     if (this._closed) return;
 
     this._closed = true;
+
+    // Abort any active stream fetch to release the connection immediately
+    if (this._abort_controller) {
+      this._abort_controller.abort();
+      this._abort_controller = null;
+    }
 
     if (this._handle_disconnected) {
       this._handle_disconnected(reason);
@@ -573,15 +580,11 @@ export async function _connectToServerHTTP(config) {
     server_base_url: connection_info.public_base_url,
   });
 
-  await waitFor(
-    () => rpc._services_registered,
-    null,
-    config.method_timeout || 120,
-    "Timeout waiting for services to register",
-  );
+  await rpc.waitFor("services_registered", config.method_timeout || 120);
 
   const wm = await rpc.get_manager_service({
     timeout: config.method_timeout || 30,
+    case_conversion: "camel",
   });
   wm.rpc = rpc;
 
@@ -619,7 +622,7 @@ export async function _connectToServerHTTP(config) {
   wm.serve = schemaFunction(serve, {
     name: "serve",
     description: "Run event loop forever",
-    parameters: {},
+    parameters: { type: "object", properties: {} },
   });
 
   if (connection_info) {

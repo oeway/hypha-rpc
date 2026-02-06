@@ -134,7 +134,9 @@ class HTTPStreamingRPCConnection:
                     if response.status_code == 200:
                         logger.debug("Token refresh requested successfully")
                     else:
-                        logger.warning(f"Token refresh request failed: {response.status_code}")
+                        logger.warning(
+                            f"Token refresh request failed: {response.status_code}"
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to send refresh token request: {e}")
 
@@ -177,11 +179,14 @@ class HTTPStreamingRPCConnection:
         # Try to enable HTTP/2 if h2 is available
         try:
             import h2  # noqa
+
             http2_enabled = True
             logger.info("HTTP/2 enabled for improved performance")
         except ImportError:
             http2_enabled = False
-            logger.debug("HTTP/2 not available (install httpx[http2] for better performance)")
+            logger.debug(
+                "HTTP/2 not available (install httpx[http2] for better performance)"
+            )
 
         return httpx.AsyncClient(
             timeout=httpx.Timeout(self._timeout, connect=30.0),
@@ -198,14 +203,16 @@ class HTTPStreamingRPCConnection:
 
     async def open(self):
         """Open the streaming connection."""
-        logger.info(f"Opening HTTP streaming connection to {self._server_url} (format={self._format})")
+        logger.info(
+            f"Opening HTTP streaming connection to {self._server_url} (format={self._format})"
+        )
 
         if self._http_client is None:
             self._http_client = await self._create_http_client()
 
-        # Build stream URL
-        workspace = self._workspace or "public"
-        stream_url = f"{self._server_url}/{workspace}/rpc"
+        # Build stream URL - workspace is part of path, default to "public" for anonymous
+        ws = self._workspace or "public"
+        stream_url = f"{self._server_url}/{ws}/rpc"
         params = {"client_id": self._client_id}
         if self._format == "msgpack":
             params["format"] = "msgpack"
@@ -357,15 +364,15 @@ class HTTPStreamingRPCConnection:
             # Process complete frames from buffer
             while len(buffer) >= 4:
                 # Read 4-byte length prefix (big-endian)
-                length = int.from_bytes(buffer[:4], 'big')
+                length = int.from_bytes(buffer[:4], "big")
 
                 if len(buffer) < 4 + length:
                     # Incomplete frame, wait for more data
                     break
 
                 # Extract the frame
-                frame_data = buffer[4:4 + length]
-                buffer = buffer[4 + length:]
+                frame_data = buffer[4 : 4 + length]
+                buffer = buffer[4 + length :]
 
                 try:
                     # For msgpack, first check if it's a control message
@@ -440,8 +447,9 @@ class HTTPStreamingRPCConnection:
         if self._http_client is None:
             self._http_client = await self._create_http_client()
 
-        workspace = self._workspace or "public"
-        url = f"{self._server_url}/{workspace}/rpc"
+        # Build POST URL - workspace is part of path (must be set after connection)
+        ws = self._workspace or "public"
+        url = f"{self._server_url}/{ws}/rpc"
         params = {"client_id": self._client_id}
 
         try:
@@ -454,7 +462,9 @@ class HTTPStreamingRPCConnection:
             )
 
             if response.status_code != 200:
-                error = response.json() if response.content else {"detail": "Unknown error"}
+                error = (
+                    response.json() if response.content else {"detail": "Unknown error"}
+                )
                 raise ConnectionError(f"POST failed: {error.get('detail', error)}")
 
         except httpx.TimeoutException:
@@ -528,6 +538,7 @@ def connect_to_server_http(config=None, **kwargs):
         ServerContextManager that can be used as async context manager
     """
     from .websocket_client import connect_to_server
+
     config = config or {}
     config.update(kwargs)
     config["transport"] = "http"
@@ -625,6 +636,7 @@ async def _connect_to_server_http(config: dict):
 
     # Handle force-exit from manager
     if connection.manager_id:
+
         async def handle_disconnect(message):
             if message.get("from") == "*/" + connection.manager_id:
                 logger.info(f"Disconnecting from server: {message.get('reason')}")
@@ -642,6 +654,7 @@ def get_remote_service_http(service_uri: str, config=None, **kwargs):
     For a unified interface, use get_remote_service with transport="http" instead.
     """
     from .websocket_client import get_remote_service
+
     config = config or {}
     config.update(kwargs)
     config["transport"] = "http"

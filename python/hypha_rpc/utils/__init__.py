@@ -20,10 +20,10 @@ from munch import Munch, munchify
 def ensure_event_loop():
     """
     Ensure there's an event loop available for the current thread.
-    
+
     This function checks if there's a running event loop or an event loop
     set for the current thread. If neither exists, it creates a new one.
-    
+
     This is useful for preventing RuntimeError when calling asyncio.Future()
     or other asyncio operations from threads without event loops.
     """
@@ -33,7 +33,7 @@ def ensure_event_loop():
         return  # Running loop exists, nothing to do
     except RuntimeError:
         pass
-    
+
     try:
         # Check if there's a loop set for this thread
         loop = asyncio.get_event_loop()
@@ -50,7 +50,7 @@ def ensure_event_loop():
 def safe_create_future():
     """
     Safely create an asyncio.Future() that works from any thread context.
-    
+
     This is a more targeted approach than ensure_event_loop() - it only
     creates an event loop if absolutely necessary for Future creation.
     """
@@ -187,7 +187,9 @@ class ObjectProxy(Munch):
 
     def _repr_html_(self):
         obj_id = f"object-proxy-{uuid.uuid4().hex}"
-        html_content = self._render_html(self.toDict(), level=0, label=f"{type(self).__name__} at {hex(id(self))}")
+        html_content = self._render_html(
+            self.toDict(), level=0, label=f"{type(self).__name__} at {hex(id(self))}"
+        )
         style = f"""
     <style>
     #{obj_id} ul {{
@@ -213,17 +215,21 @@ class ObjectProxy(Munch):
         return f'{style}<div id="{obj_id}" class="object-proxy">{html_content}</div>'
 
     def _render_html(self, data, level=0, label="dict"):
-        parts = [f'<details><summary>{html.escape(label)}</summary><ul>']
+        parts = [f"<details><summary>{html.escape(label)}</summary><ul>"]
 
         # Handle lists
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
                     item_label = f"{type(item).__name__} at {hex(id(item))}"
-                    parts.append(f"<li>{self._render_html(item, level + 1, label=item_label)}</li>")
+                    parts.append(
+                        f"<li>{self._render_html(item, level + 1, label=item_label)}</li>"
+                    )
                 elif isinstance(item, list):
                     item_label = f"list at {hex(id(item))}"
-                    parts.append(f"<li>{self._render_html(item, level + 1, label=item_label)}</li>")
+                    parts.append(
+                        f"<li>{self._render_html(item, level + 1, label=item_label)}</li>"
+                    )
                 else:
                     parts.append(f"<li>{html.escape(str(item))}</li>")
         # Handle dicts
@@ -571,7 +577,7 @@ def callable_doc(any_callable):
     """Return the docstring of a callable."""
     if isinstance(any_callable, partial):
         return any_callable.func.__doc__
-    
+
     try:
         return any_callable.__doc__
     except AttributeError:

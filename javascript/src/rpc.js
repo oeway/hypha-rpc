@@ -692,7 +692,8 @@ export class RPC extends MessageEmitter {
       main["ctx"] = JSON.parse(JSON.stringify(main));
       Object.assign(main["ctx"], this.default_context);
       this._fire(main["type"], main);
-    } else if (message instanceof ArrayBuffer) {
+    } else if (message instanceof ArrayBuffer || ArrayBuffer.isView(message)) {
+      // Handle both ArrayBuffer (WebSocket) and Uint8Array/ArrayBufferView (HTTP transport)
       let unpacker = decodeMulti(message);
       const { done, value } = unpacker.next();
       const main = value;
@@ -736,31 +737,12 @@ export class RPC extends MessageEmitter {
       }
     }
 
-    // Unsubscribe from client_disconnected events if subscribed
+    // Clean up client_disconnected subscription
     if (this._clientDisconnectedSubscription) {
-      try {
-        // Get the manager service to unsubscribe (non-blocking)
-        if (this._connection && this._connection.manager_id) {
-          this.get_remote_service("*/" + this._connection.manager_id)
-            .then((manager) => {
-              if (
-                manager.unsubscribe &&
-                typeof manager.unsubscribe === "function"
-              ) {
-                return manager.unsubscribe("client_disconnected");
-              }
-            })
-            .catch((e) => {
-              console.debug(
-                `Error unsubscribing from client_disconnected: ${e}`,
-              );
-            });
-        }
-        // Remove the local event handler
-        this.off("client_disconnected");
-      } catch (e) {
-        console.debug(`Error unsubscribing from client_disconnected: ${e}`);
-      }
+      // Remove the local event handler (no need to unsubscribe from server -
+      // the server will clean up when it detects the disconnection)
+      this.off("client_disconnected");
+      this._clientDisconnectedSubscription = null;
     }
 
     // Clean up background tasks
@@ -1882,11 +1864,14 @@ export class RPC extends MessageEmitter {
   ) {
     let target_id = encoded_method._rtarget;
     if (remote_workspace && !target_id.includes("/")) {
-      if (remote_workspace !== target_id) {
-        target_id = remote_workspace + "/" + target_id;
+      // Don't modify target_id if it starts with */ (workspace manager service)
+      if (!target_id.startsWith("*/")) {
+        if (remote_workspace !== target_id) {
+          target_id = remote_workspace + "/" + target_id;
+        }
+        // Fix the target id to be an absolute id
+        encoded_method._rtarget = target_id;
       }
-      // Fix the target id to be an absolute id
-      encoded_method._rtarget = target_id;
     }
     let method_id = encoded_method._rmethod;
     let with_promise = encoded_method._rpromise || false;

@@ -505,6 +505,20 @@ function normalizeServerUrl(server_url) {
   return server_url;
 }
 
+/**
+ * Login to the hypha server.
+ *
+ * Configuration options:
+ *   server_url: The server URL (required)
+ *   workspace: Target workspace (optional)
+ *   login_service_id: Login service ID (default: "public/hypha-login")
+ *   expires_in: Token expiration time (optional)
+ *   login_timeout: Timeout for login process (default: 60)
+ *   login_callback: Callback function for login URL (optional)
+ *   profile: Whether to return user profile (optional)
+ *   additional_headers: Additional HTTP headers (optional)
+ *   transport: Transport type - "websocket" (default) or "http"
+ */
 export async function login(config) {
   const service_id = config.login_service_id || "public/hypha-login";
   const workspace = config.workspace;
@@ -513,11 +527,13 @@ export async function login(config) {
   const callback = config.login_callback;
   const profile = config.profile;
   const additional_headers = config.additional_headers;
+  const transport = config.transport || "websocket";
 
   const server = await connectToServer({
     name: "initial login client",
     server_url: config.server_url,
     additional_headers: additional_headers,
+    transport: transport,
   });
   try {
     const svc = await server.getService(service_id);
@@ -541,15 +557,27 @@ export async function login(config) {
   }
 }
 
+/**
+ * Logout from the hypha server.
+ *
+ * Configuration options:
+ *   server_url: The server URL (required)
+ *   login_service_id: Login service ID (default: "public/hypha-login")
+ *   logout_callback: Callback function for logout URL (optional)
+ *   additional_headers: Additional HTTP headers (optional)
+ *   transport: Transport type - "websocket" (default) or "http"
+ */
 export async function logout(config) {
   const service_id = config.login_service_id || "public/hypha-login";
   const callback = config.logout_callback;
   const additional_headers = config.additional_headers;
+  const transport = config.transport || "websocket";
 
   const server = await connectToServer({
     name: "initial logout client",
     server_url: config.server_url,
     additional_headers: additional_headers,
+    transport: transport,
   });
   try {
     const svc = await server.getService(service_id);
