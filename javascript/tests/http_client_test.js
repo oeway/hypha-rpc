@@ -11,7 +11,6 @@ describe("HTTP Streaming RPC Client", () => {
       server_url: SERVER_URL,
       client_id: "http-test-client",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     expect(server).to.exist;
@@ -33,7 +32,6 @@ describe("HTTP Streaming RPC Client", () => {
       server_url: SERVER_URL,
       client_id: "http-service-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -75,7 +73,6 @@ describe("HTTP Streaming RPC Client", () => {
       server_url: SERVER_URL,
       client_id: "http-context-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -118,8 +115,7 @@ describe("HTTP Streaming RPC Client", () => {
         server_url: "https://127.0.0.1:9394", // Wrong protocol
         client_id: "https-fail-test",
         method_timeout: 5,
-        format: "msgpack",
-      });
+        });
 
       // If we get here, the test failed (should have thrown)
       expect.fail("Should have thrown an error for HTTPS on HTTP server");
@@ -138,7 +134,6 @@ describe("HTTP Streaming RPC Client", () => {
       server_url: SERVER_URL,
       client_id: "http-binary-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -179,33 +174,6 @@ describe("HTTP Streaming RPC Client", () => {
     }
   });
 
-  it("should support JSON format for HTTP transport", async function () {
-    this.timeout(30000);
-
-    const server = await connectToServerHTTP({
-      server_url: SERVER_URL,
-      client_id: "http-json-test",
-      method_timeout: 10,
-      format: "json", // Use JSON instead of msgpack
-    });
-
-    try {
-      await server.registerService({
-        id: "http-json-service",
-        config: { visibility: "public" },
-        echo: (msg) => `JSON: ${msg}`,
-      });
-
-      const svc = await server.getService("http-json-service");
-      const result = await svc.echo("test");
-
-      expect(result).to.equal("JSON: test");
-      console.log("✓ HTTP JSON format working");
-    } finally {
-      await server.disconnect();
-    }
-  });
-
   it("should handle large payloads via HTTP transport", async function () {
     this.timeout(60000);
 
@@ -213,7 +181,6 @@ describe("HTTP Streaming RPC Client", () => {
       server_url: SERVER_URL,
       client_id: "http-large-payload-test",
       method_timeout: 30,
-      format: "msgpack",
     });
 
     try {
@@ -254,7 +221,6 @@ describe("HTTP Streaming RPC Client", () => {
       server_url: SERVER_URL,
       client_id: "http-error-test",
       method_timeout: 20,
-      format: "msgpack",
     });
 
     try {
@@ -289,7 +255,6 @@ describe("HTTP Streaming RPC Client", () => {
       server_url: SERVER_URL,
       client_id: "http-workspace-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -312,7 +277,6 @@ describe("HTTP Manager Service Interaction", () => {
       server_url: SERVER_URL,
       client_id: "http-manager-access-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -340,7 +304,6 @@ describe("HTTP Manager Service Interaction", () => {
       server_url: SERVER_URL,
       client_id: "http-manager-register-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -381,7 +344,6 @@ describe("HTTP Manager Service Interaction", () => {
       server_url: SERVER_URL,
       client_id: "http-user-ws-manager-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -418,7 +380,6 @@ describe("HTTP Manager Service Interaction", () => {
       server_url: SERVER_URL,
       client_id: "http-service-info-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -463,7 +424,6 @@ describe("HTTP Manager Service Interaction", () => {
       server_url: SERVER_URL,
       client_id: "http-manager-error-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -488,7 +448,6 @@ describe("HTTP Manager Service Interaction", () => {
       server_url: SERVER_URL,
       client_id: "http-manager-unregister-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {
@@ -527,7 +486,6 @@ describe("HTTP Manager Service Interaction", () => {
       server_url: SERVER_URL,
       client_id: "http-concurrent-manager-test",
       method_timeout: 10,
-      format: "msgpack",
     });
 
     try {

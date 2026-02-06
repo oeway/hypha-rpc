@@ -91,8 +91,6 @@ interface ServerConfig {
   webrtc?: boolean | "auto";
   /** WebRTC configuration */
   webrtc_config?: any;
-  /** Stream format for HTTP transport: "json" or "msgpack" */
-  format?: "json" | "msgpack";
 }
 
 interface LoginConfig {
@@ -137,8 +135,7 @@ interface HTTPStreamingRPCConnection {
     token?: string | null,
     reconnection_token?: string | null,
     timeout?: number,
-    token_refresh_interval?: number,
-    format?: "json" | "msgpack"
+    token_refresh_interval?: number
   ): HTTPStreamingRPCConnection;
 
   on_message(handler: Function): void;

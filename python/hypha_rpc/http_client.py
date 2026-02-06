@@ -2,7 +2,7 @@
 
 This module provides HTTP-based RPC transport as an alternative to WebSocket.
 It uses:
-- HTTP GET with streaming (NDJSON) for server-to-client messages
+- HTTP GET with streaming (msgpack) for server-to-client messages
 - HTTP POST for client-to-server messages
 
 Benefits:
@@ -15,7 +15,6 @@ Benefits:
 import asyncio
 import inspect
 import io
-import json
 import logging
 import os
 import sys
@@ -41,9 +40,7 @@ class HTTPStreamingRPCConnection:
     """HTTP Streaming RPC Connection.
 
     Uses HTTP GET with streaming for receiving messages and HTTP POST for sending messages.
-    Supports two formats:
-    - NDJSON (default): JSON lines for text-based messages
-    - msgpack: Binary format with length-prefixed frames for binary data support
+    Uses msgpack binary format with length-prefixed frames for efficient binary data support.
     """
 
     def __init__(
@@ -56,7 +53,6 @@ class HTTPStreamingRPCConnection:
         timeout: float = 60,
         ssl=None,
         token_refresh_interval: float = 2 * 60 * 60,
-        format: str = "json",  # "json" or "msgpack"
     ):
         """Initialize HTTP streaming connection.
 
@@ -69,7 +65,6 @@ class HTTPStreamingRPCConnection:
             timeout: Request timeout in seconds
             ssl: SSL configuration (True/False/SSLContext)
             token_refresh_interval: Interval for token refresh
-            format: Stream format - "json" (NDJSON) or "msgpack" (binary with length prefix)
         """
         self._server_url = server_url.rstrip("/")
         self._client_id = client_id
@@ -79,7 +74,6 @@ class HTTPStreamingRPCConnection:
         self._timeout = timeout
         self._ssl = ssl
         self._token_refresh_interval = token_refresh_interval
-        self._format = format
 
         self._handle_message: Optional[Callable] = None
         self._handle_disconnected: Optional[Callable] = None
@@ -150,16 +144,13 @@ class HTTPStreamingRPCConnection:
         """Get HTTP headers with authentication.
 
         Args:
-            for_stream: If True, set Accept header based on format preference
+            for_stream: If True, set Accept header for msgpack stream
         """
         headers = {
             "Content-Type": "application/msgpack",
         }
         if for_stream:
-            if self._format == "msgpack":
-                headers["Accept"] = "application/x-msgpack-stream"
-            else:
-                headers["Accept"] = "application/x-ndjson"
+            headers["Accept"] = "application/x-msgpack-stream"
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
@@ -203,9 +194,7 @@ class HTTPStreamingRPCConnection:
 
     async def open(self):
         """Open the streaming connection."""
-        logger.info(
-            f"Opening HTTP streaming connection to {self._server_url} (format={self._format})"
-        )
+        logger.info(f"Opening HTTP streaming connection to {self._server_url}")
 
         if self._http_client is None:
             self._http_client = await self._create_http_client()
@@ -214,13 +203,11 @@ class HTTPStreamingRPCConnection:
         ws = self._workspace or "public"
         stream_url = f"{self._server_url}/{ws}/rpc"
         params = {"client_id": self._client_id}
-        if self._format == "msgpack":
-            params["format"] = "msgpack"
 
         # Add reconnection token if available (for reconnection)
         if self._reconnection_token:
             params["reconnection_token"] = self._reconnection_token
-            logger.info(f"Using reconnection token for HTTP streaming connection")
+            logger.info("Using reconnection token for HTTP streaming connection")
 
         try:
             # Start streaming in background task
@@ -302,12 +289,8 @@ class HTTPStreamingRPCConnection:
 
                     retry = 0  # Reset retry counter on successful connection
 
-                    if self._format == "msgpack":
-                        # Binary msgpack stream with 4-byte length prefix
-                        await self._process_msgpack_stream(response)
-                    else:
-                        # NDJSON stream (line-based)
-                        await self._process_ndjson_stream(response)
+                    # Process binary msgpack stream with 4-byte length prefix
+                    await self._process_msgpack_stream(response)
 
             except httpx.ReadTimeout:
                 logger.warning("Stream read timeout, reconnecting...")
@@ -334,23 +317,6 @@ class HTTPStreamingRPCConnection:
 
         if not self._closed and self._handle_disconnected:
             self._handle_disconnected("Stream ended")
-
-    async def _process_ndjson_stream(self, response):
-        """Process NDJSON (line-based JSON) stream."""
-        async for line in response.aiter_lines():
-            if self._closed:
-                break
-
-            if not line.strip():
-                continue
-
-            try:
-                message = json.loads(line)
-                await self._handle_stream_message(message)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse JSON message: {e}")
-            except Exception as e:
-                logger.error(f"Error handling message: {e}")
 
     async def _process_msgpack_stream(self, response):
         """Process msgpack stream with 4-byte length prefix."""
@@ -404,36 +370,6 @@ class HTTPStreamingRPCConnection:
                             self._handle_message(frame_data)
                 except Exception as e:
                     logger.error(f"Error handling msgpack message: {e}")
-
-    async def _handle_stream_message(self, message: dict):
-        """Handle a decoded stream message."""
-        # Handle connection info
-        if message.get("type") == "connection_info":
-            self.connection_info = message
-            return
-
-        # Handle ping (keep-alive)
-        if message.get("type") == "ping":
-            return
-
-        # Handle reconnection token refresh
-        if message.get("type") == "reconnection_token":
-            self._reconnection_token = message.get("reconnection_token")
-            return
-
-        # Handle errors
-        if message.get("type") == "error":
-            logger.error(f"Server error: {message.get('message')}")
-            return
-
-        # Pass to message handler (convert to msgpack for RPC)
-        if self._handle_message:
-            # Convert to msgpack bytes for RPC layer
-            data = msgpack.packb(message)
-            if self._is_async:
-                await self._handle_message(data)
-            else:
-                self._handle_message(data)
 
     async def emit_message(self, data: bytes):
         """Send a message to the server via HTTP POST.
@@ -562,8 +498,6 @@ async def _connect_to_server_http(config: dict):
         timeout=config.get("method_timeout", 30),
         ssl=config.get("ssl"),
         token_refresh_interval=config.get("token_refresh_interval", 2 * 60 * 60),
-        # Default to msgpack for full binary support and proper RPC message handling
-        format=config.get("format", "msgpack"),
     )
 
     connection_info = await connection.open()
