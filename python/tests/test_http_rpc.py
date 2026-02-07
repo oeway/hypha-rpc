@@ -1,23 +1,25 @@
 """Test HTTP RPC transport for hypha-rpc standalone tests.
 
-These tests connect to a remote Hypha server to test HTTP transport functionality.
+These tests use a local Hypha server to ensure deterministic behavior,
+avoiding load-balancer routing issues with remote multi-instance servers.
 """
 
 import pytest
 import numpy as np
 import asyncio
 from hypha_rpc import connect_to_server
+from . import WS_SERVER_URL
 
 
-# Use public test server - these tests require a running Hypha server
-SERVER_URL = "https://hypha.aicell.io"
+# Local server URL (started by websocket_server fixture)
+SERVER_URL = WS_SERVER_URL
 
 
 class TestHTTPObjectTransmission:
     """Test HTTP transport with complex objects and callbacks."""
 
     @pytest.mark.asyncio
-    async def test_http_numpy_array_transmission(self):
+    async def test_http_numpy_array_transmission(self, websocket_server):
         """Test transmitting numpy arrays over HTTP transport."""
         # Service provider via WebSocket
         ws_server = await connect_to_server(
@@ -96,7 +98,7 @@ class TestHTTPObjectTransmission:
             await ws_server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_nested_objects_transmission(self):
+    async def test_http_nested_objects_transmission(self, websocket_server):
         """Test transmitting nested complex objects over HTTP."""
         ws_server = await connect_to_server(
             {
@@ -180,7 +182,7 @@ class TestHTTPObjectTransmission:
             await ws_server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_callbacks_basic(self):
+    async def test_http_callbacks_basic(self, websocket_server):
         """Test basic callback functionality over HTTP transport."""
         ws_server = await connect_to_server(
             {
@@ -266,7 +268,7 @@ class TestHTTPObjectTransmission:
             await ws_server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_async_callbacks(self):
+    async def test_http_async_callbacks(self, websocket_server):
         """Test async callback functionality over HTTP transport."""
         ws_server = await connect_to_server(
             {
@@ -328,7 +330,7 @@ class TestHTTPObjectTransmission:
             await ws_server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_callback_with_numpy(self):
+    async def test_http_callback_with_numpy(self, websocket_server):
         """Test callbacks that pass numpy arrays over HTTP."""
         ws_server = await connect_to_server(
             {
@@ -405,7 +407,7 @@ class TestHTTPObjectTransmission:
             await ws_server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_binary_data_transmission(self):
+    async def test_http_binary_data_transmission(self, websocket_server):
         """Test transmitting raw binary data over HTTP."""
         ws_server = await connect_to_server(
             {
@@ -473,7 +475,7 @@ class TestHTTPManagerService:
     """Test HTTP transport interaction with workspace manager service."""
 
     @pytest.mark.asyncio
-    async def test_http_manager_service_basic_access(self):
+    async def test_http_manager_service_basic_access(self, websocket_server):
         """Test that HTTP clients can access the manager service."""
         server = await connect_to_server(
             {
@@ -500,7 +502,7 @@ class TestHTTPManagerService:
             await server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_manager_service_registration(self):
+    async def test_http_manager_service_registration(self, websocket_server):
         """Test service registration via HTTP manager service."""
         server = await connect_to_server(
             {
@@ -544,7 +546,7 @@ class TestHTTPManagerService:
             await server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_cross_workspace_manager_access(self):
+    async def test_http_cross_workspace_manager_access(self, websocket_server):
         """Test that HTTP clients in their own workspace can access the manager."""
         # Connect without specifying workspace (will be assigned a user workspace)
         server = await connect_to_server(
@@ -585,7 +587,7 @@ class TestHTTPManagerService:
             await server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_manager_get_service_info(self):
+    async def test_http_manager_get_service_info(self, websocket_server):
         """Test getting detailed service info via HTTP manager."""
         server = await connect_to_server(
             {
@@ -636,7 +638,7 @@ class TestHTTPManagerService:
             await server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_manager_service_with_token(self):
+    async def test_http_manager_service_with_token(self, websocket_server):
         """Test HTTP manager access with authentication token."""
         # First, connect via WebSocket to get a token
         ws_server = await connect_to_server(
@@ -689,7 +691,7 @@ class TestHTTPManagerService:
             await ws_server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_manager_list_services_filtering(self):
+    async def test_http_manager_list_services_filtering(self, websocket_server):
         """Test listing services with different filters via HTTP."""
         server = await connect_to_server(
             {
@@ -727,7 +729,7 @@ class TestHTTPReconnection:
     """Test HTTP transport reconnection behavior."""
 
     @pytest.mark.asyncio
-    async def test_http_reconnection_restores_services(self):
+    async def test_http_reconnection_restores_services(self, websocket_server):
         """Test that HTTP stream reconnection re-registers services.
 
         Simulates a stream disconnect by closing the underlying HTTP client,
@@ -824,7 +826,7 @@ class TestHTTPReconnection:
             await server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_reconnection_preserves_workspace(self):
+    async def test_http_reconnection_preserves_workspace(self, websocket_server):
         """Test that workspace is preserved across HTTP reconnections."""
         server = await connect_to_server(
             {
@@ -871,7 +873,7 @@ class TestHTTPReconnection:
             await server.disconnect()
 
     @pytest.mark.asyncio
-    async def test_http_reconnection_cross_transport(self):
+    async def test_http_reconnection_cross_transport(self, websocket_server):
         """Test that an HTTP client can call a WebSocket service after reconnection."""
         # Service provider via WebSocket
         ws_server = await connect_to_server(
