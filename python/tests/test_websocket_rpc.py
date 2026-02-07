@@ -141,6 +141,72 @@ async def test_service_with_builtin_key(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_dotdict_return_values(websocket_server):
+    """Test that dict results from RPC calls are returned as dot-accessible objects."""
+    from hypha_rpc.utils import ObjectProxy
+
+    async with connect_to_server(
+        {
+            "name": "dotdict test",
+            "server_url": WS_SERVER_URL,
+            "client_id": "dotdict-test-client",
+        }
+    ) as api:
+        await api.register_service(
+            {
+                "name": "DotDict Test Service",
+                "id": "dotdict-service",
+                "config": {"visibility": "protected"},
+                "get_flat": lambda: {"id": "abc", "name": "test"},
+                "get_nested": lambda: {
+                    "id": "xyz",
+                    "config": {"timeout": 30, "retry": True},
+                },
+                "get_deep": lambda: {
+                    "level1": {
+                        "level2": {"level3": {"value": 42}},
+                    },
+                },
+                "get_mixed": lambda: {
+                    "items": [1, 2, 3],
+                    "meta": {"count": 3, "tags": ["a", "b"]},
+                },
+            }
+        )
+
+        svc = await api.get_service("dotdict-service")
+
+        # Test flat dict has dot access
+        flat = await svc.get_flat()
+        assert isinstance(flat, ObjectProxy), f"Expected ObjectProxy, got {type(flat)}"
+        assert flat.id == "abc"
+        assert flat.name == "test"
+
+        # Test nested dict has dot access at all levels
+        nested = await svc.get_nested()
+        assert isinstance(nested, ObjectProxy)
+        assert nested.id == "xyz"
+        assert isinstance(nested.config, ObjectProxy), (
+            f"Nested dict should be ObjectProxy, got {type(nested.config)}"
+        )
+        assert nested.config.timeout == 30
+        assert nested.config.retry is True
+
+        # Test deeply nested dicts
+        deep = await svc.get_deep()
+        assert isinstance(deep, ObjectProxy)
+        assert deep.level1.level2.level3.value == 42
+
+        # Test mixed dict with lists
+        mixed = await svc.get_mixed()
+        assert isinstance(mixed, ObjectProxy)
+        assert mixed.items == [1, 2, 3]
+        assert isinstance(mixed.meta, ObjectProxy)
+        assert mixed.meta.count == 3
+        assert mixed.meta.tags == ["a", "b"]
+
+
+@pytest.mark.asyncio
 async def test_login(websocket_server):
     """Test login to the server."""
     # First connect to server to generate a valid JWT token
