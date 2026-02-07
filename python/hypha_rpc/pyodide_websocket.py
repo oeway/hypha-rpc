@@ -152,7 +152,6 @@ class PyodideWebsocketRPCConnection:
         self._is_async = False
         self._legacy_auth = None
         self._closed = False
-        self._last_message = None  # Store the last sent message
         self.connection_info = None
         self._enable_reconnect = False
         self.manager_id = None
@@ -412,11 +411,6 @@ class PyodideWebsocketRPCConnection:
                         # which includes re-registering all services to the server
                         await asyncio.sleep(0.5)
 
-                        # Resend last message if there was one
-                        if self._last_message:
-                            logger.info("Resending last message after reconnection")
-                            self._websocket.send(to_js(self._last_message))
-                            self._last_message = None
                         logger.warning(
                             f"Successfully reconnected to the server {self._server_url.split('?')[0]} (services re-registered)"
                         )
@@ -461,9 +455,7 @@ class PyodideWebsocketRPCConnection:
             await self.open()
 
         try:
-            self._last_message = data  # Store the message before sending
             self._websocket.send(to_js(data))
-            self._last_message = None  # Clear after successful send
         except Exception as exp:
             logger.error("Failed to send data, error: %s", exp)
             raise exp
@@ -471,7 +463,6 @@ class PyodideWebsocketRPCConnection:
     async def disconnect(self, reason=None):
         """Disconnect the WebSocket."""
         self._closed = True
-        self._last_message = None
         if self._websocket and self._websocket.readyState == WebSocket.OPEN:
             self._websocket.close(1000, reason)
         if self._refresh_token_task:

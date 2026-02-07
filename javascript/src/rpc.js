@@ -27,6 +27,60 @@ const ArrayBufferView = Object.getPrototypeOf(
   Object.getPrototypeOf(new Uint8Array()),
 ).constructor;
 
+/**
+ * Check if a value is a primitive type that needs no encoding/decoding.
+ */
+function _isPrimitive(v) {
+  if (v === null || v === undefined) return true;
+  const t = typeof v;
+  return t === "number" || t === "string" || t === "boolean";
+}
+
+/**
+ * Check if an array (and nested arrays/objects) contains only primitives.
+ */
+function _allPrimitivesArray(arr) {
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (_isPrimitive(v)) continue;
+    if (v instanceof Uint8Array) continue;
+    if (Array.isArray(v)) {
+      if (!_allPrimitivesArray(v)) return false;
+      continue;
+    }
+    if (v && v.constructor === Object) {
+      if ("_rtype" in v) return false;
+      if (!_allPrimitivesObject(v)) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Check if an object (and nested objects/arrays) contains only primitives.
+ */
+function _allPrimitivesObject(obj) {
+  const values = Object.values(obj);
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (_isPrimitive(v)) continue;
+    if (v instanceof Uint8Array) continue;
+    if (Array.isArray(v)) {
+      if (!_allPrimitivesArray(v)) return false;
+      continue;
+    }
+    if (v && v.constructor === Object) {
+      if ("_rtype" in v) return false;
+      if (!_allPrimitivesObject(v)) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 function _appendBuffer(buffer1, buffer2) {
   const tmp = new Uint8Array(buffer1.byteLength + buffer2.byteLength);
   tmp.set(new Uint8Array(buffer1), 0);
@@ -343,6 +397,8 @@ export class RPC extends MessageEmitter {
     this._object_store = {
       services: this._services,
     };
+    // Index: target_id -> Set of top-level session keys for fast cleanup
+    this._targetIdIndex = {};
 
     // Track background tasks for proper cleanup
     this._background_tasks = new Set();
@@ -689,8 +745,7 @@ export class RPC extends MessageEmitter {
     if (typeof message === "string") {
       const main = JSON.parse(message);
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      main["ctx"] = Object.assign({}, main, this.default_context);
       this._fire(main["type"], main);
     } else if (message instanceof ArrayBuffer || ArrayBuffer.isView(message)) {
       // Handle both ArrayBuffer (WebSocket) and Uint8Array/ArrayBufferView (HTTP transport)
@@ -698,8 +753,7 @@ export class RPC extends MessageEmitter {
       const { done, value } = unpacker.next();
       const main = value;
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      main["ctx"] = Object.assign({}, main, this.default_context);
       if (!done) {
         let extra = unpacker.next();
         Object.assign(main, extra.value);
@@ -707,8 +761,7 @@ export class RPC extends MessageEmitter {
       this._fire(main["type"], main);
     } else if (typeof message === "object") {
       // Add trusted context to the method call
-      message["ctx"] = JSON.parse(JSON.stringify(message));
-      Object.assign(message["ctx"], this.default_context);
+      message["ctx"] = Object.assign({}, message, this.default_context);
       this._fire(message["type"], message);
     } else {
       throw new Error("Invalid message format");
@@ -804,67 +857,86 @@ export class RPC extends MessageEmitter {
     }
   }
 
+  _removeFromTargetIdIndex(sessionId) {
+    /**
+     * Remove a session from the target_id index.
+     * Call this before removing a session from _object_store.
+     */
+    const topKey = sessionId.split(".")[0];
+    const session = this._object_store[topKey];
+    if (session && typeof session === "object") {
+      const targetId = session.target_id;
+      if (targetId && targetId in this._targetIdIndex) {
+        this._targetIdIndex[targetId].delete(topKey);
+        if (this._targetIdIndex[targetId].size === 0) {
+          delete this._targetIdIndex[targetId];
+        }
+      }
+    }
+  }
+
   _cleanupSessionsForClient(clientId) {
     let sessionsCleaned = 0;
 
-    // Iterate through all top-level session keys
-    for (const sessionKey of Object.keys(this._object_store)) {
-      if (sessionKey === "services" || sessionKey === "message_cache") {
-        continue;
-      }
+    // Use index for O(1) lookup instead of iterating all sessions
+    const sessionKeys = this._targetIdIndex[clientId];
+    if (!sessionKeys) return 0;
 
+    for (const sessionKey of sessionKeys) {
       const session = this._object_store[sessionKey];
       if (!session || typeof session !== "object") {
         continue;
       }
 
-      // Check if this session belongs to the disconnected client
-      // Sessions have a target_id property that identifies which client they're calling
-      if (session.target_id === clientId) {
-        // Reject any pending promises in this session
-        if (session.reject && typeof session.reject === "function") {
-          console.debug(`Rejecting session ${sessionKey}`);
-          try {
-            session.reject(new Error(`Client disconnected: ${clientId}`));
-          } catch (e) {
-            console.warn(`Error rejecting session ${sessionKey}: ${e}`);
-          }
-        }
-
-        if (session.resolve && typeof session.resolve === "function") {
-          console.debug(`Resolving session ${sessionKey} with error`);
-          try {
-            session.resolve(new Error(`Client disconnected: ${clientId}`));
-          } catch (e) {
-            console.warn(`Error resolving session ${sessionKey}: ${e}`);
-          }
-        }
-
-        // Clear any timers
-        if (session.timer && typeof session.timer.clear === "function") {
-          try {
-            session.timer.clear();
-          } catch (e) {
-            console.warn(`Error clearing timer for ${sessionKey}: ${e}`);
-          }
-        }
-
-        // Clear heartbeat tasks
-        if (session.heartbeat_task) {
-          try {
-            clearInterval(session.heartbeat_task);
-          } catch (e) {
-            console.warn(`Error clearing heartbeat for ${sessionKey}: ${e}`);
-          }
-        }
-
-        // Remove the entire session
-        delete this._object_store[sessionKey];
-        sessionsCleaned++;
-        console.debug(`Cleaned up session: ${sessionKey}`);
+      // Verify the session still belongs to this client
+      if (session.target_id !== clientId) {
+        continue;
       }
+
+      // Reject any pending promises in this session
+      if (session.reject && typeof session.reject === "function") {
+        console.debug(`Rejecting session ${sessionKey}`);
+        try {
+          session.reject(new Error(`Client disconnected: ${clientId}`));
+        } catch (e) {
+          console.warn(`Error rejecting session ${sessionKey}: ${e}`);
+        }
+      }
+
+      if (session.resolve && typeof session.resolve === "function") {
+        console.debug(`Resolving session ${sessionKey} with error`);
+        try {
+          session.resolve(new Error(`Client disconnected: ${clientId}`));
+        } catch (e) {
+          console.warn(`Error resolving session ${sessionKey}: ${e}`);
+        }
+      }
+
+      // Clear any timers
+      if (session.timer && typeof session.timer.clear === "function") {
+        try {
+          session.timer.clear();
+        } catch (e) {
+          console.warn(`Error clearing timer for ${sessionKey}: ${e}`);
+        }
+      }
+
+      // Clear heartbeat tasks
+      if (session.heartbeat_task) {
+        try {
+          clearInterval(session.heartbeat_task);
+        } catch (e) {
+          console.warn(`Error clearing heartbeat for ${sessionKey}: ${e}`);
+        }
+      }
+
+      // Remove the entire session
+      delete this._object_store[sessionKey];
+      sessionsCleaned++;
+      console.debug(`Cleaned up session: ${sessionKey}`);
     }
 
+    delete this._targetIdIndex[clientId];
     return sessionsCleaned;
   }
 
@@ -913,6 +985,9 @@ export class RPC extends MessageEmitter {
       for (const key of keysToDelete) {
         delete this._object_store[key];
       }
+
+      // Clear the target_id index since all sessions are removed
+      this._targetIdIndex = {};
     } catch (e) {
       console.error(`Error during cleanup on disconnect: ${e}`);
     }
@@ -965,11 +1040,13 @@ export class RPC extends MessageEmitter {
   async get_manager_service(config) {
     config = config || {};
 
-    // Add retry logic
+    // Add retry logic with exponential backoff
     const maxRetries = 20;
-    const retryDelay = 500; // 500ms
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      // Exponential backoff: 500ms, 1s, 2s, 4s, ... capped at 10s
+      const retryDelay = Math.min(500 * Math.pow(2, attempt), 10000);
+
       if (!this._connection.manager_id) {
         if (attempt < maxRetries - 1) {
           console.warn(
@@ -1402,6 +1479,7 @@ export class RPC extends MessageEmitter {
         if (clear_after_called && self._object_store[session_id]) {
           // For promise callbacks (resolve/reject), clean up the entire session
           if (name === "resolve" || name === "reject") {
+            self._removeFromTargetIdIndex(session_id);
             delete self._object_store[session_id];
           } else {
             // For other callbacks, just clean up this specific callback
@@ -1483,6 +1561,9 @@ export class RPC extends MessageEmitter {
      * Complete session cleanup with resource management.
      */
     try {
+      // Clean up target_id index before deleting the session
+      this._removeFromTargetIdIndex(session_id);
+
       const store = this._get_session_store(session_id, false);
       if (!store) {
         console.debug(`Session ${session_id} already cleaned up`);
@@ -1677,6 +1758,9 @@ export class RPC extends MessageEmitter {
       delete this._object_store[key];
     }
 
+    // Clear the target_id index since all sessions are removed
+    this._targetIdIndex = {};
+
     console.debug(`Force cleaning up ${cleaned_count} sessions`);
   }
 
@@ -1846,7 +1930,10 @@ export class RPC extends MessageEmitter {
     let message_package = msgpack_packb(main_message);
     if (extra_data) {
       const extra = msgpack_packb(extra_data);
-      message_package = new Uint8Array([...message_package, ...extra]);
+      const combined = new Uint8Array(message_package.length + extra.length);
+      combined.set(message_package);
+      combined.set(extra, message_package.length);
+      message_package = combined;
     }
     const total_size = message_package.length;
     if (total_size > this._long_message_chunk_size + 1024) {
@@ -1880,6 +1967,7 @@ export class RPC extends MessageEmitter {
 
     function remote_method() {
       return new Promise(async (resolve, reject) => {
+        try {
         let local_session_id = randId();
         if (local_parent) {
           // Store the children session under the parent
@@ -1895,6 +1983,12 @@ export class RPC extends MessageEmitter {
           return;
         }
         store["target_id"] = target_id;
+        // Update target_id index for fast session cleanup
+        const topKey = local_session_id.split(".")[0];
+        if (!(target_id in self._targetIdIndex)) {
+          self._targetIdIndex[target_id] = new Set();
+        }
+        self._targetIdIndex[target_id].add(topKey);
         const args = await self._encode(
           Array.prototype.slice.call(arguments),
           local_session_id,
@@ -1955,6 +2049,8 @@ export class RPC extends MessageEmitter {
             reject(error_msg);
             // Then clean up the entire session to stop all callbacks
             if (self._object_store[local_session_id]) {
+              // Clean up target_id index before deleting the session
+              self._removeFromTargetIdIndex(local_session_id);
               delete self._object_store[local_session_id];
               console.debug(
                 `Cleaned up session ${local_session_id} after timeout`,
@@ -2011,7 +2107,10 @@ export class RPC extends MessageEmitter {
         let message_package = msgpack_packb(main_message);
         if (extra_data) {
           const extra = msgpack_packb(extra_data);
-          message_package = new Uint8Array([...message_package, ...extra]);
+          const combined = new Uint8Array(message_package.length + extra.length);
+          combined.set(message_package);
+          combined.set(extra, message_package.length);
+          message_package = combined;
         }
         const total_size = message_package.length;
         if (
@@ -2061,6 +2160,9 @@ export class RPC extends MessageEmitter {
               }
             });
         }
+        } catch (err) {
+          reject(err);
+        }
       });
     }
 
@@ -2094,6 +2196,7 @@ export class RPC extends MessageEmitter {
   }
 
   async _handle_method(data) {
+    let resolve = null;
     let reject = null;
     let heartbeat_task = null;
     try {
@@ -2123,7 +2226,6 @@ export class RPC extends MessageEmitter {
       }
       const local_parent = data.parent;
 
-      let resolve, reject;
       if (data.promise) {
         // Decode the promise with the remote session id
         // Such that the session id will be passed to the remote as a parent session id
@@ -2674,6 +2776,12 @@ export class RPC extends MessageEmitter {
       Array.isArray(aObject) ||
       aObject instanceof RemoteService
     ) {
+      // Fast path: if all values are primitives, return as-is
+      if (isarray) {
+        if (_allPrimitivesArray(aObject)) return aObject;
+      } else if (!("_rtype" in aObject) && !(aObject instanceof RemoteService)) {
+        if (_allPrimitivesObject(aObject)) return aObject;
+      }
       bObject = isarray ? [] : {};
       const keys = Object.keys(aObject);
       for (let k of keys) {
@@ -2867,6 +2975,12 @@ export class RPC extends MessageEmitter {
       }
     } else if (aObject.constructor === Object || Array.isArray(aObject)) {
       const isarray = Array.isArray(aObject);
+      // Fast path: skip recursive descent if all values are primitives
+      if (isarray) {
+        if (_allPrimitivesArray(aObject)) return aObject;
+      } else {
+        if (_allPrimitivesObject(aObject)) return aObject;
+      }
       bObject = isarray ? [] : {};
       for (let k of Object.keys(aObject)) {
         if (isarray || aObject.hasOwnProperty(k)) {

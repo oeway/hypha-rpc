@@ -69,7 +69,6 @@ class WebsocketRPCConnection:
         self._handle_message = None
         self._handle_disconnected = None  # Disconnection handler
         self._handle_connected = None  # Connection open handler
-        self._last_message = None  # Store the last sent message
         assert server_url and client_id
         self._server_url = server_url
         self._client_id = client_id
@@ -312,9 +311,7 @@ class WebsocketRPCConnection:
             await self.open()
 
         try:
-            self._last_message = data  # Store the message before sending
             await self._websocket.send(data)
-            self._last_message = None  # Clear after successful send
         except Exception as exp:
             logger.error(f"Failed to send message: {exp}")
             raise exp
@@ -411,20 +408,11 @@ class WebsocketRPCConnection:
                                 # which includes re-registering all services to the server
                                 await asyncio.sleep(0.5)
 
-                                # Resend last message if there was one
-                                if self._last_message:
-                                    logger.info(
-                                        "Resending last message after reconnection"
-                                    )
-                                    await self._websocket.send(self._last_message)
-                                    self._last_message = None
                                 logger.warning(
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
                                 )
-                                # Emit reconnection success event
-                                if self._handle_connected:
-                                    await self._handle_connected(connection_info)
+                                # Note: Do NOT call _handle_connected here - it's already called inside open()
                                 break
                             except NotImplementedError as e:
                                 logger.error(
@@ -526,7 +514,6 @@ class WebsocketRPCConnection:
     async def disconnect(self, reason=None):
         """Disconnect."""
         self._closed = True
-        self._last_message = None
         if self._websocket and not self._websocket.state == State.CLOSED:
             try:
                 await self._websocket.close(code=1000)
@@ -545,6 +532,9 @@ class WebsocketRPCConnection:
         try:
             if isinstance(message, str):
                 main = json.loads(message)
+                # Add trusted context to the method call
+                main["ctx"] = main.copy()
+                main["ctx"].update(self.default_context)
                 self._fire(main["type"], main)
             elif isinstance(message, bytes):
                 try:
@@ -568,11 +558,16 @@ class WebsocketRPCConnection:
                     try:
                         text = message.decode("utf-8")
                         main = json.loads(text)
+                        main["ctx"] = main.copy()
+                        main["ctx"].update(self.default_context)
                         self._fire(main["type"], main)
                     except Exception as e2:
                         logger.error(f"Failed to decode message as UTF-8: {e2}")
                         raise
             elif isinstance(message, dict):
+                # Add trusted context to the method call
+                message["ctx"] = message.copy()
+                message["ctx"].update(self.default_context)
                 self._fire(message["type"], message)
             else:
                 raise Exception(f"Invalid message type: {type(message)}")
@@ -713,8 +708,6 @@ async def login(config):
             print(f"Please open your browser and login at {context['login_url']}")
 
         return await svc.check(context["key"], timeout=timeout, profile=profile)
-    except Exception as error:
-        raise error
     finally:
         await server.disconnect()
 
@@ -764,16 +757,16 @@ async def logout(config):
             print(f"Please open your browser to logout at {context['logout_url']}")
 
         return context
-    except Exception as error:
-        raise error
     finally:
         await server.disconnect()
 
 
-async def webrtc_get_service(wm, rtc_service_id, query, config=None, **kwargs):
+async def webrtc_get_service(wm, query, config=None, **kwargs):
     config = config or {}
     config.update(kwargs)
-    webrtc = config.get("webrtc")
+    # Default to "auto" since this wrapper is only used when connection was
+    # established with webrtc=True
+    webrtc = config.get("webrtc", "auto")
     webrtc_config = config.get("webrtc_config")
     if "webrtc" in config:
         del config["webrtc"]
@@ -792,11 +785,16 @@ async def webrtc_get_service(wm, rtc_service_id, query, config=None, **kwargs):
 
     if ":" in svc.id and "/" in svc.id and AIORTC_AVAILABLE:
         try:
-            # Assuming that the client registered
-            # a webrtc service with the client_id + "-rtc"
+            # Extract the remote client_id from the service id
+            # svc.id format: "workspace/client_id:service_id"
+            ws_and_client = svc.id.split(":")[0]  # "workspace/client_id"
+            remote_client_id = ws_and_client.split("/")[-1]  # "client_id"
+            remote_workspace = "/".join(ws_and_client.split("/")[:-1])  # "workspace"
+            # Connect to the remote client's RTC service
+            remote_rtc_service_id = f"{remote_workspace}/{remote_client_id}-rtc"
             peer = await get_rtc_service(
                 wm,
-                rtc_service_id,
+                remote_rtc_service_id,
                 webrtc_config,
             )
             rtc_svc = await peer.get_service(svc.id.split(":")[1], config)
@@ -1112,7 +1110,7 @@ async def _connect_to_server(config):
         # TODO: add webrtc options to the get_service schema
         parameters = _wm.get_service.__schema__.get("parameters")
         wm.get_service = schema_function(
-            partial(webrtc_get_service, _wm, f"{workspace}/{client_id}-rtc"),
+            partial(webrtc_get_service, _wm),
             name="get_service",
             description=description,
             parameters=parameters,

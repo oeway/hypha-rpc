@@ -820,6 +820,56 @@ def test_rtc_service_auto(websocket_server):
     assert svc.echo("hello") == "hello", "echo service failed"
 
 
+def test_rtc_service_auto_cross_client(websocket_server):
+    """Test RTC auto mode across two different clients.
+
+    Client A (provider) registers an echo service with webrtc=True.
+    Client B (consumer) connects to the same workspace with webrtc=True,
+    then fetches Client A's service. This should establish a WebRTC
+    peer connection to Client A's RTC service (not Client B's own).
+    """
+    from hypha_rpc import connect_to_server_sync
+
+    # Client A: provider with webrtc enabled
+    client_a = connect_to_server_sync(
+        {
+            "client_id": "rtc-cross-provider",
+            "server_url": WS_SERVER_URL,
+            "webrtc": True,
+        }
+    )
+    workspace = client_a.config.workspace
+    token = client_a.generate_token()
+
+    client_a.register_service(
+        {
+            "id": "cross-echo",
+            "config": {"visibility": "public"},
+            "type": "echo",
+            "echo": lambda x: x,
+            "add": lambda a, b: a + b,
+        }
+    )
+
+    # Client B: consumer with webrtc enabled, same workspace
+    client_b = connect_to_server_sync(
+        {
+            "client_id": "rtc-cross-consumer",
+            "server_url": WS_SERVER_URL,
+            "workspace": workspace,
+            "token": token,
+            "webrtc": True,
+        }
+    )
+
+    # Client B fetches Client A's service - this should use WebRTC
+    svc = client_b.get_service("rtc-cross-provider:cross-echo")
+    assert svc.echo("hello-cross") == "hello-cross", "cross-client echo failed"
+    assert svc.add(3, 4) == 7, "cross-client add failed"
+    # Verify it was actually obtained via WebRTC
+    assert hasattr(svc, "_webrtc") and svc._webrtc, "service should be via webrtc"
+
+
 def test_connect_to_server_sync_lock(websocket_server):
     """Test connecting to the server sync with thread locking."""
     server = connect_to_server_sync(

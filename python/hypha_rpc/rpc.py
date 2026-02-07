@@ -19,6 +19,12 @@ from .utils import ObjectProxy, DefaultObjectProxy
 import msgpack
 import shortuuid
 
+# Module-level numpy check (done once, not per RPC instance)
+try:
+    import numpy as _numpy_module
+except ImportError:
+    _numpy_module = None
+
 from .utils import (
     MessageEmitter,
     format_traceback,
@@ -430,6 +436,12 @@ class RemoteFunction:
             local_session_id = self._local_parent + "." + local_session_id
         store = self._rpc._get_session_store(local_session_id, create=True)
         store["target_id"] = self._encoded_method["_rtarget"]
+        # Update target_id index for fast session cleanup
+        top_key = local_session_id.split(".")[0]
+        target_id = self._encoded_method["_rtarget"]
+        if target_id not in self._rpc._target_id_index:
+            self._rpc._target_id_index[target_id] = set()
+        self._rpc._target_id_index[target_id].add(top_key)
         args = self._rpc._encode(
             arguments,
             session_id=local_session_id,
@@ -473,6 +485,8 @@ class RemoteFunction:
                     reject(error_msg)
                 # Then clean up the entire session to stop all callbacks
                 if local_session_id in self._rpc._object_store:
+                    # Clean up target_id index before deleting the session
+                    self._rpc._remove_from_target_id_index(local_session_id)
                     del self._rpc._object_store[local_session_id]
                     logger.debug(f"Cleaned up session {local_session_id} after timeout")
 
@@ -624,6 +638,8 @@ class RPC(MessageEmitter):
         self._object_store = {
             "services": self._services,
         }
+        # Index: target_id -> set of top-level session keys for fast cleanup
+        self._target_id_index = {}
 
         if HAS_PYDANTIC:
             self.register_codec(
@@ -806,7 +822,7 @@ class RPC(MessageEmitter):
 
             self._emit_message = _emit_message
 
-        self.check_modules()
+        self.NUMPY_MODULE = _numpy_module if _numpy_module is not None else False
 
     def register_codec(self, config: dict):
         """Register codec."""
@@ -909,12 +925,8 @@ class RPC(MessageEmitter):
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         data = cache[key]
-        # concatenate all the chunks
-        total = len(data)
-        content = b""
-        for i in range(total):
-            content += data[i]
-        data = content
+        # concatenate all the chunks efficiently using join (avoids O(n^2) copy)
+        data = b"".join(data[i] for i in range(len(data)))
         logger.debug("Processing message %s (size=%d)", key, len(data))
         unpacker = msgpack.Unpacker(
             io.BytesIO(data), max_buffer_size=self._max_message_buffer_size
@@ -1120,65 +1132,83 @@ class RPC(MessageEmitter):
         except Exception as e:
             logger.error(f"Error handling client disconnection for {client_id}: {e}")
 
+    def _remove_from_target_id_index(self, session_id):
+        """Remove a session from the target_id index.
+
+        Call this whenever a session is removed from _object_store to keep
+        the index consistent and prevent stale entries from accumulating.
+        """
+        top_key = session_id.split(".")[0]
+        # Look up the session's target_id from the store before deletion
+        session = self._object_store.get(top_key)
+        if isinstance(session, dict):
+            target_id = session.get("target_id")
+            if target_id and target_id in self._target_id_index:
+                self._target_id_index[target_id].discard(top_key)
+                if not self._target_id_index[target_id]:
+                    del self._target_id_index[target_id]
+
     def _cleanup_sessions_for_client(self, client_id):
-        """Clean up all sessions for a specific client."""
+        """Clean up all sessions for a specific client using target_id index."""
         sessions_cleaned = 0
 
-        # Iterate through all top-level session keys
-        for session_key in list(self._object_store.keys()):
-            if session_key in ("services", "message_cache"):
-                continue
+        # Use index for O(1) lookup instead of iterating all sessions
+        session_keys = self._target_id_index.pop(client_id, None)
+        if not session_keys:
+            return 0
 
+        for session_key in session_keys:
             session = self._object_store.get(session_key)
             if not isinstance(session, dict):
                 continue
 
-            # Check if this session belongs to the disconnected client
-            # Sessions have a target_id property that identifies which client they're calling
-            if session.get("target_id") == client_id:
-                logger.debug(
-                    f"Found session {session_key} for disconnected client: {client_id}"
-                )
+            # Verify the session still belongs to this client
+            if session.get("target_id") != client_id:
+                continue
 
-                # Reject any pending promises in this session
-                if "reject" in session and callable(session["reject"]):
-                    logger.debug(f"Rejecting session {session_key}")
-                    try:
-                        session["reject"](
-                            RemoteException(f"Client disconnected: {client_id}")
-                        )
-                    except Exception as e:
-                        logger.warning(f"Error rejecting session {session_key}: {e}")
+            logger.debug(
+                f"Found session {session_key} for disconnected client: {client_id}"
+            )
 
-                if "resolve" in session and callable(session["resolve"]):
-                    logger.debug(f"Resolving session {session_key} with error")
-                    try:
-                        session["resolve"](
-                            RemoteException(f"Client disconnected: {client_id}")
-                        )
-                    except Exception as e:
-                        logger.warning(f"Error resolving session {session_key}: {e}")
+            # Reject any pending promises in this session
+            if "reject" in session and callable(session["reject"]):
+                logger.debug(f"Rejecting session {session_key}")
+                try:
+                    session["reject"](
+                        RemoteException(f"Client disconnected: {client_id}")
+                    )
+                except Exception as e:
+                    logger.warning(f"Error rejecting session {session_key}: {e}")
 
-                # Clear any timers
-                if session.get("timer"):
-                    try:
-                        session["timer"].clear()
-                    except Exception as e:
-                        logger.warning(f"Error clearing timer for {session_key}: {e}")
+            if "resolve" in session and callable(session["resolve"]):
+                logger.debug(f"Resolving session {session_key} with error")
+                try:
+                    session["resolve"](
+                        RemoteException(f"Client disconnected: {client_id}")
+                    )
+                except Exception as e:
+                    logger.warning(f"Error resolving session {session_key}: {e}")
 
-                # Clear heartbeat tasks
-                if session.get("heartbeat_task"):
-                    try:
-                        session["heartbeat_task"].cancel()
-                    except Exception as e:
-                        logger.warning(
-                            f"Error clearing heartbeat for {session_key}: {e}"
-                        )
+            # Clear any timers
+            if session.get("timer"):
+                try:
+                    session["timer"].clear()
+                except Exception as e:
+                    logger.warning(f"Error clearing timer for {session_key}: {e}")
 
-                # Remove the entire session
-                del self._object_store[session_key]
-                sessions_cleaned += 1
-                logger.debug(f"Cleaned up session: {session_key}")
+            # Clear heartbeat tasks
+            if session.get("heartbeat_task"):
+                try:
+                    session["heartbeat_task"].cancel()
+                except Exception as e:
+                    logger.warning(
+                        f"Error clearing heartbeat for {session_key}: {e}"
+                    )
+
+            # Remove the entire session
+            del self._object_store[session_key]
+            sessions_cleaned += 1
+            logger.debug(f"Cleaned up session: {session_key}")
 
         return sessions_cleaned
 
@@ -1216,6 +1246,9 @@ class RPC(MessageEmitter):
             # Delete all marked sessions
             for key in keys_to_delete:
                 del self._object_store[key]
+
+            # Clear the target_id index since all sessions are removed
+            self._target_id_index.clear()
 
         except Exception as e:
             logger.error(f"Error during cleanup on disconnect: {e}")
@@ -1284,7 +1317,7 @@ class RPC(MessageEmitter):
 
         service = self._services.get(service_id)
         if not service:
-            raise KeyError("Service not found: %s", service_id)
+            raise KeyError(f"Service not found: {service_id}")
         # Note: Do NOT mutate service["config"]["workspace"] here!
         # Doing so would corrupt the stored service config when called from
         # a different workspace (e.g., "public"), causing reconnection to fail
@@ -1584,18 +1617,6 @@ class RPC(MessageEmitter):
             await manager.unregister_service(service_id)
         del self._services[service_id]
 
-    def check_modules(self):
-        """Check if all the modules exists."""
-        try:
-            import numpy as np
-
-            self.NUMPY_MODULE = np
-        except ImportError:
-            self.NUMPY_MODULE = False
-            logger.warning(
-                "Failed to import numpy, ndarray encoding/decoding will not work"
-            )
-
     def _encode_callback(
         self,
         name,
@@ -1729,6 +1750,9 @@ class RPC(MessageEmitter):
         try:
             levels = session_id.split(".")
 
+            # Clean up target_id index before deleting the session
+            self._remove_from_target_id_index(session_id)
+
             # Navigate to the session and delete it safely
             if len(levels) == 1:
                 # Top-level session - delete directly from object store
@@ -1793,6 +1817,8 @@ class RPC(MessageEmitter):
         try:
             levels = session_id.split(".")
             if len(levels) == 1 and levels[0] in self._object_store:
+                # Clean up target_id index before deleting
+                self._remove_from_target_id_index(session_id)
                 del self._object_store[levels[0]]
                 logger.debug(f"Fallback cleanup: deleted session {session_id}")
         except Exception as e:
@@ -2462,6 +2488,51 @@ class RPC(MessageEmitter):
                 store = store[level]
             return store
 
+    @staticmethod
+    def _is_primitive(v):
+        """Check if value is a primitive type that needs no encoding."""
+        return v is None or isinstance(v, (int, float, bool, str, bytes))
+
+    @staticmethod
+    def _all_primitives_list(lst):
+        """Check if a list (and nested lists/dicts) contains only primitives."""
+        for v in lst:
+            if v is None or isinstance(v, (int, float, bool, str, bytes)):
+                continue
+            # Use exact type check to exclude subclasses (e.g. ObjectProxy)
+            if type(v) is list:
+                if not RPC._all_primitives_list(v):
+                    return False
+                continue
+            if type(v) is dict:
+                if "_rtype" in v:
+                    return False
+                if not RPC._all_primitives_dict(v):
+                    return False
+                continue
+            return False
+        return True
+
+    @staticmethod
+    def _all_primitives_dict(d):
+        """Check if a dict (and nested dicts/lists) contains only primitives."""
+        for v in d.values():
+            if v is None or isinstance(v, (int, float, bool, str, bytes)):
+                continue
+            # Use exact type check to exclude subclasses (e.g. ObjectProxy)
+            if type(v) is list:
+                if not RPC._all_primitives_list(v):
+                    return False
+                continue
+            if type(v) is dict:
+                if "_rtype" in v:
+                    return False
+                if not RPC._all_primitives_dict(v):
+                    return False
+                continue
+            return False
+        return True
+
     def _encode(
         self,
         a_object,
@@ -2674,6 +2745,14 @@ class RPC(MessageEmitter):
                 "_rdoc": "Remote generator",
             }
         elif isinstance(a_object, (list, dict)):
+            # Fast path: if all values are primitives, return as-is
+            # Only for plain list/dict, not subclasses like ObjectProxy
+            if type(a_object) is list:
+                if self._all_primitives_list(a_object):
+                    return a_object
+            elif type(a_object) is dict:
+                if "_rtype" not in a_object and self._all_primitives_dict(a_object):
+                    return a_object
             keys = range(len(a_object)) if isarray else a_object.keys()
             b_object = [] if isarray else {}
             for key in keys:
@@ -2875,6 +2954,14 @@ class RPC(MessageEmitter):
             if isinstance(a_object, tuple):
                 a_object = list(a_object)
             isarray = isinstance(a_object, list)
+            # Fast path: skip recursive descent if all values are primitives
+            # Only for plain list/dict, not subclasses
+            if type(a_object) is list:
+                if self._all_primitives_list(a_object):
+                    return a_object
+            elif type(a_object) is dict:
+                if self._all_primitives_dict(a_object):
+                    return ObjectProxy(a_object)
             b_object = [] if isarray else ObjectProxy()
             keys = range(len(a_object)) if isarray else a_object.keys()
             for key in keys:

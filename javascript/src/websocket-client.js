@@ -62,7 +62,6 @@ class WebsocketRPCConnection {
     this._token_refresh_interval = token_refresh_interval;
     this.manager_id = null;
     this._refresh_token_task = null;
-    this._last_message = null; // Store the last sent message
     this._reconnect_timeouts = new Set(); // Track reconnection timeouts
     this._additional_headers = additional_headers;
   }
@@ -174,13 +173,13 @@ class WebsocketRPCConnection {
           if (this.connection_info.reconnection_token_life_time) {
             // make sure the token refresh interval is less than the token life time
             if (
-              this.token_refresh_interval >
+              this._token_refresh_interval >
               this.connection_info.reconnection_token_life_time / 1.5
             ) {
               console.warn(
-                `Token refresh interval is too long (${this.token_refresh_interval}), setting it to 1.5 times of the token life time(${this.connection_info.reconnection_token_life_time}).`,
+                `Token refresh interval is too long (${this._token_refresh_interval}), setting it to 1.5 times of the token life time(${this.connection_info.reconnection_token_life_time}).`,
               );
-              this.token_refresh_interval =
+              this._token_refresh_interval =
                 this.connection_info.reconnection_token_life_time / 1.5;
             }
           }
@@ -345,19 +344,10 @@ class WebsocketRPCConnection {
             // which includes re-registering all services to the server
             await new Promise((resolve) => setTimeout(resolve, 500));
 
-            // Resend last message if there was one
-            if (this._last_message) {
-              console.info("Resending last message after reconnection");
-              this._websocket.send(this._last_message);
-              this._last_message = null;
-            }
             console.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
-            // Emit reconnection success event
-            if (this._handle_connected) {
-              this._handle_connected(this.connection_info);
-            }
+            // Note: Do NOT call _handle_connected here - it's already called inside open()
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
               console.warn("Server refused to reconnect:", e);
@@ -467,9 +457,7 @@ class WebsocketRPCConnection {
       await this.open();
     }
     try {
-      this._last_message = data; // Store the message before sending
       this._websocket.send(data);
-      this._last_message = null; // Clear after successful send
     } catch (exp) {
       console.error(`Failed to send data, error: ${exp}`);
       throw exp;
@@ -478,7 +466,6 @@ class WebsocketRPCConnection {
 
   disconnect(reason) {
     this._closed = true;
-    this._last_message = null; // Clear last message on disconnect
     // Ensure websocket is closed if it exists and is not already closed or closing
     if (
       this._websocket &&
@@ -607,9 +594,11 @@ export async function logout(config) {
   }
 }
 
-async function webrtcGetService(wm, rtc_service_id, query, config) {
+async function webrtcGetService(wm, query, config) {
   config = config || {};
-  const webrtc = config.webrtc;
+  // Default to "auto" since this wrapper is only used when connection was
+  // established with webrtc: true
+  const webrtc = config.webrtc !== undefined ? config.webrtc : "auto";
   const webrtc_config = config.webrtc_config;
   if (config.webrtc !== undefined) delete config.webrtc;
   if (config.webrtc_config !== undefined) delete config.webrtc_config;
@@ -622,8 +611,14 @@ async function webrtcGetService(wm, rtc_service_id, query, config) {
   if (webrtc === true || webrtc === "auto") {
     if (svc.id.includes(":") && svc.id.includes("/")) {
       try {
-        // Assuming that the client registered a webrtc service with the client_id + "-rtc"
-        const peer = await getRTCService(wm, rtc_service_id, webrtc_config);
+        // Extract remote client_id from service id
+        // svc.id format: "workspace/client_id:service_id"
+        const wsAndClient = svc.id.split(":")[0]; // "workspace/client_id"
+        const parts = wsAndClient.split("/");
+        const remoteClientId = parts[parts.length - 1]; // "client_id"
+        const remoteWorkspace = parts.slice(0, -1).join("/"); // "workspace"
+        const remoteRtcServiceId = `${remoteWorkspace}/${remoteClientId}-rtc`;
+        const peer = await getRTCService(wm, remoteRtcServiceId, webrtc_config);
         const rtcSvc = await peer.getService(svc.id.split(":")[1], config);
         rtcSvc._webrtc = true;
         rtcSvc._peer = peer;
@@ -951,7 +946,7 @@ export async function connectToServer(config) {
     // TODO: Fix the schema for adding options for webrtc
     const parameters = _wm.getService.__schema__.parameters;
     wm.getService = schemaFunction(
-      webrtcGetService.bind(null, _wm, `${workspace}/${clientId}-rtc`),
+      webrtcGetService.bind(null, _wm),
       {
         name: "getService",
         description,

@@ -82,6 +82,7 @@ class HTTPStreamingRPCConnection:
 
         self._closed = False
         self._enable_reconnect = False
+        self._is_reconnection = False
         self._stream_task: Optional[asyncio.Task] = None
         self._refresh_token_task: Optional[asyncio.Task] = None
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -272,12 +273,25 @@ class HTTPStreamingRPCConnection:
         self._enable_reconnect = True
         self._closed = False
         retry = 0
+        self._is_reconnection = False
 
         while not self._closed and retry < MAX_RETRY:
             try:
+                # Update params with latest reconnection token before each attempt
+                if self._reconnection_token:
+                    params["reconnection_token"] = self._reconnection_token
+
+                # Update URL with current workspace (may have changed after initial connection)
+                ws = self._workspace or "public"
+                current_url = f"{self._server_url}/{ws}/rpc"
+
+                # Recreate HTTP client if it was closed (e.g. after network failure)
+                if self._http_client is None:
+                    self._http_client = await self._create_http_client()
+
                 async with self._http_client.stream(
                     "GET",
-                    url,
+                    current_url,
                     params=params,
                     headers=self._get_headers(for_stream=True),
                 ) as response:
@@ -306,11 +320,14 @@ class HTTPStreamingRPCConnection:
             except Exception as e:
                 logger.error(f"Stream error: {e}")
 
+            # After the first connection attempt, all subsequent ones are reconnections
+            self._is_reconnection = True
+
             # Reconnection logic
             if not self._closed and self._enable_reconnect:
                 retry += 1
                 delay = min(1.0 * (2 ** min(retry, 6)), 60.0)  # Max 60s
-                logger.info(f"Reconnecting in {delay:.1f}s (attempt {retry})")
+                logger.warning(f"Stream disconnected, reconnecting in {delay:.1f}s (attempt {retry})")
                 await asyncio.sleep(delay)
             else:
                 break
@@ -351,6 +368,14 @@ class HTTPStreamingRPCConnection:
                         msg_type = message.get("type")
                         if msg_type == "connection_info":
                             self.connection_info = message
+                            # On reconnection, update state and notify RPC layer.
+                            # Run as background task so the stream can continue
+                            # processing incoming RPC responses (the reconnection
+                            # handler sends RPC calls that need stream responses).
+                            if self._is_reconnection:
+                                asyncio.create_task(
+                                    self._handle_reconnection(message)
+                                )
                             continue
                         elif msg_type == "ping":
                             continue
@@ -371,11 +396,40 @@ class HTTPStreamingRPCConnection:
                 except Exception as e:
                     logger.error(f"Error handling msgpack message: {e}")
 
+    async def _handle_reconnection(self, connection_info):
+        """Handle reconnection: update state and notify RPC layer."""
+        self.manager_id = connection_info.get("manager_id")
+        self._workspace = connection_info.get("workspace")
+
+        if "reconnection_token" in connection_info:
+            self._reconnection_token = connection_info["reconnection_token"]
+
+        # Adjust token refresh interval if needed
+        if "reconnection_token_life_time" in connection_info:
+            token_life_time = connection_info["reconnection_token_life_time"]
+            if self._token_refresh_interval > token_life_time / 1.5:
+                self._token_refresh_interval = token_life_time / 1.5
+
+        logger.warning(
+            f"Stream reconnected to workspace: {self._workspace}, "
+            f"manager_id: {self.manager_id}"
+        )
+
+        # Notify RPC layer so it can re-register services
+        if self._handle_connected:
+            await self._handle_connected(self.connection_info)
+
+        # Wait a short time for services to be re-registered
+        await asyncio.sleep(0.5)
+
     async def emit_message(self, data: bytes):
         """Send a message to the server via HTTP POST.
 
         Uses optimized connection pooling with keep-alive for better performance.
         HTTP client automatically handles efficient transfer for all payload sizes.
+
+        Includes retry logic to handle transient issues such as load balancer
+        routing POST requests to a different server instance than the GET stream.
         """
         if self._closed:
             raise ConnectionError("Connection is closed")
@@ -388,27 +442,50 @@ class HTTPStreamingRPCConnection:
         url = f"{self._server_url}/{ws}/rpc"
         params = {"client_id": self._client_id}
 
-        try:
-            # httpx handles large payloads efficiently with connection pooling
-            response = await self._http_client.post(
-                url,
-                content=data,
-                params=params,
-                headers=self._get_headers(),
-            )
-
-            if response.status_code != 200:
-                error = (
-                    response.json() if response.content else {"detail": "Unknown error"}
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # httpx handles large payloads efficiently with connection pooling
+                response = await self._http_client.post(
+                    url,
+                    content=data,
+                    params=params,
+                    headers=self._get_headers(),
                 )
-                raise ConnectionError(f"POST failed: {error.get('detail', error)}")
 
-        except httpx.TimeoutException:
-            logger.error("Request timeout")
-            raise TimeoutError("Request timeout")
-        except Exception as e:
-            logger.error(f"Failed to send message: {e}")
-            raise
+                if response.status_code != 200:
+                    error = (
+                        response.json() if response.content else {"detail": "Unknown error"}
+                    )
+                    detail = error.get("detail", str(error))
+                    # Retry on 400 errors that indicate the server doesn't recognize
+                    # our stream (e.g., load balancer routed to a different instance)
+                    if response.status_code == 400 and attempt < max_retries - 1:
+                        logger.warning(
+                            f"POST failed (attempt {attempt + 1}/{max_retries}): {detail}, retrying..."
+                        )
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    raise ConnectionError(f"POST failed: {detail}")
+
+                return  # Success
+
+            except httpx.TimeoutException:
+                logger.error("Request timeout")
+                raise TimeoutError("Request timeout")
+            except ConnectionError:
+                raise
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Failed to send message (attempt {attempt + 1}/{max_retries}): {e}, retrying..."
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                else:
+                    logger.error(f"Failed to send message: {e}")
+                    raise
 
     async def disconnect(self, reason: Optional[str] = None):
         """Disconnect and cleanup."""

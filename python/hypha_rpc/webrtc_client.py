@@ -55,8 +55,7 @@ class WebRTCConnection:
         self._handle_message = None
         self._logger = logger
         self._handle_disconnected = None
-        self._handle_connected = lambda x: None
-        self._last_message = None  # Store the last sent message
+        self._handle_connected = None
         self._data_channel.on("open", self._on_channel_open)
         self._data_channel.on("message", self.handle_message)
         self._data_channel.on("close", self.closed)
@@ -64,13 +63,8 @@ class WebRTCConnection:
 
     async def _on_channel_open(self, event):
         """Handle channel open event."""
-        await self._handle_connected(event)
-        # Resend last message if there was one
-        if self._last_message:
-            if self._logger:
-                self._logger.info("Resending last message after reconnection")
-            self._data_channel.send(self._last_message)
-            self._last_message = None
+        if self._handle_connected:
+            await self._handle_connected(event)
 
     def handle_message(self, data):
         """Register a message handler."""
@@ -107,9 +101,7 @@ class WebRTCConnection:
             raise Exception("No handler for message")
 
         try:
-            self._last_message = data  # Store the message before sending
             self._data_channel.send(data)
-            self._last_message = None  # Clear after successful send
         except Exception as exp:
             if self._logger:
                 self._logger.error("Failed to send data, error: %s", exp)
@@ -117,7 +109,6 @@ class WebRTCConnection:
 
     async def disconnect(self, reason=None):
         """Disconnect."""
-        self._last_message = None  # Clear last message on disconnect
         self._data_channel = None
         if self._logger:
             self._logger.info("Data channel connection disconnected (%s)", reason)
@@ -294,12 +285,12 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
             logger.info("Webrtc-based RPC connection established")
 
         @pc.on("connectionstatechange")
-        def on_connectionstatechange():
+        async def on_connectionstatechange():
             if pc.connectionState == "failed":
                 logger.error("WebRTC Connection failed")
                 if not fut.done():
                     fut.set_exception(Exception("WebRTC Connection failed"))
-                pc.close()
+                await pc.close()
             elif pc.connectionState == "closed":
                 logger.info("WebRTC Connection closed")
                 if not fut.done():
