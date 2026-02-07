@@ -2494,6 +2494,24 @@ class RPC(MessageEmitter):
         return v is None or isinstance(v, (int, float, bool, str, bytes))
 
     @staticmethod
+    def _all_scalars_list(lst):
+        """Check if a list contains only scalar primitives (no dicts).
+
+        Used by _decode fast path: dicts must always go through recursive
+        decoding to be wrapped as ObjectProxy, so they are not "scalar".
+        """
+        for v in lst:
+            if v is None or isinstance(v, (int, float, bool, str, bytes)):
+                continue
+            if type(v) is list:
+                if not RPC._all_scalars_list(v):
+                    return False
+                continue
+            # dicts and anything else disqualify the fast path
+            return False
+        return True
+
+    @staticmethod
     def _all_primitives_list(lst):
         """Check if a list (and nested lists/dicts) contains only primitives."""
         for v in lst:
@@ -2957,11 +2975,14 @@ class RPC(MessageEmitter):
             # Fast path: skip recursive descent if all values are primitives
             # Only for plain list/dict, not subclasses
             if type(a_object) is list:
-                if self._all_primitives_list(a_object):
+                # For decode, lists can only be fast-pathed if they contain
+                # no dicts at any level (dicts must be wrapped as ObjectProxy)
+                if self._all_scalars_list(a_object):
                     return a_object
             elif type(a_object) is dict:
                 if self._all_primitives_dict(a_object):
-                    return ObjectProxy(a_object)
+                    # fromDict recursively converts nested dicts to ObjectProxy
+                    return ObjectProxy.fromDict(a_object)
             b_object = [] if isarray else ObjectProxy()
             keys = range(len(a_object)) if isarray else a_object.keys()
             for key in keys:
