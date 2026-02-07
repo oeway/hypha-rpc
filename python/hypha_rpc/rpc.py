@@ -19,6 +19,12 @@ from .utils import ObjectProxy, DefaultObjectProxy
 import msgpack
 import shortuuid
 
+# Module-level numpy check (done once, not per RPC instance)
+try:
+    import numpy as _numpy_module
+except ImportError:
+    _numpy_module = None
+
 from .utils import (
     MessageEmitter,
     format_traceback,
@@ -816,7 +822,7 @@ class RPC(MessageEmitter):
 
             self._emit_message = _emit_message
 
-        self.check_modules()
+        self.NUMPY_MODULE = _numpy_module if _numpy_module is not None else False
 
     def register_codec(self, config: dict):
         """Register codec."""
@@ -919,12 +925,8 @@ class RPC(MessageEmitter):
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
         data = cache[key]
-        # concatenate all the chunks
-        total = len(data)
-        content = b""
-        for i in range(total):
-            content += data[i]
-        data = content
+        # concatenate all the chunks efficiently using join (avoids O(n^2) copy)
+        data = b"".join(data[i] for i in range(len(data)))
         logger.debug("Processing message %s (size=%d)", key, len(data))
         unpacker = msgpack.Unpacker(
             io.BytesIO(data), max_buffer_size=self._max_message_buffer_size
@@ -1315,7 +1317,7 @@ class RPC(MessageEmitter):
 
         service = self._services.get(service_id)
         if not service:
-            raise KeyError("Service not found: %s", service_id)
+            raise KeyError(f"Service not found: {service_id}")
         # Note: Do NOT mutate service["config"]["workspace"] here!
         # Doing so would corrupt the stored service config when called from
         # a different workspace (e.g., "public"), causing reconnection to fail
@@ -1614,18 +1616,6 @@ class RPC(MessageEmitter):
             )
             await manager.unregister_service(service_id)
         del self._services[service_id]
-
-    def check_modules(self):
-        """Check if all the modules exists."""
-        try:
-            import numpy as np
-
-            self.NUMPY_MODULE = np
-        except ImportError:
-            self.NUMPY_MODULE = False
-            logger.warning(
-                "Failed to import numpy, ndarray encoding/decoding will not work"
-            )
 
     def _encode_callback(
         self,

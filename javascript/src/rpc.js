@@ -745,8 +745,7 @@ export class RPC extends MessageEmitter {
     if (typeof message === "string") {
       const main = JSON.parse(message);
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      main["ctx"] = Object.assign({}, main, this.default_context);
       this._fire(main["type"], main);
     } else if (message instanceof ArrayBuffer || ArrayBuffer.isView(message)) {
       // Handle both ArrayBuffer (WebSocket) and Uint8Array/ArrayBufferView (HTTP transport)
@@ -754,8 +753,7 @@ export class RPC extends MessageEmitter {
       const { done, value } = unpacker.next();
       const main = value;
       // Add trusted context to the method call
-      main["ctx"] = JSON.parse(JSON.stringify(main));
-      Object.assign(main["ctx"], this.default_context);
+      main["ctx"] = Object.assign({}, main, this.default_context);
       if (!done) {
         let extra = unpacker.next();
         Object.assign(main, extra.value);
@@ -763,8 +761,7 @@ export class RPC extends MessageEmitter {
       this._fire(main["type"], main);
     } else if (typeof message === "object") {
       // Add trusted context to the method call
-      message["ctx"] = JSON.parse(JSON.stringify(message));
-      Object.assign(message["ctx"], this.default_context);
+      message["ctx"] = Object.assign({}, message, this.default_context);
       this._fire(message["type"], message);
     } else {
       throw new Error("Invalid message format");
@@ -1043,11 +1040,13 @@ export class RPC extends MessageEmitter {
   async get_manager_service(config) {
     config = config || {};
 
-    // Add retry logic
+    // Add retry logic with exponential backoff
     const maxRetries = 20;
-    const retryDelay = 500; // 500ms
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      // Exponential backoff: 500ms, 1s, 2s, 4s, ... capped at 10s
+      const retryDelay = Math.min(500 * Math.pow(2, attempt), 10000);
+
       if (!this._connection.manager_id) {
         if (attempt < maxRetries - 1) {
           console.warn(
@@ -1931,7 +1930,10 @@ export class RPC extends MessageEmitter {
     let message_package = msgpack_packb(main_message);
     if (extra_data) {
       const extra = msgpack_packb(extra_data);
-      message_package = new Uint8Array([...message_package, ...extra]);
+      const combined = new Uint8Array(message_package.length + extra.length);
+      combined.set(message_package);
+      combined.set(extra, message_package.length);
+      message_package = combined;
     }
     const total_size = message_package.length;
     if (total_size > this._long_message_chunk_size + 1024) {
@@ -1965,6 +1967,7 @@ export class RPC extends MessageEmitter {
 
     function remote_method() {
       return new Promise(async (resolve, reject) => {
+        try {
         let local_session_id = randId();
         if (local_parent) {
           // Store the children session under the parent
@@ -2104,7 +2107,10 @@ export class RPC extends MessageEmitter {
         let message_package = msgpack_packb(main_message);
         if (extra_data) {
           const extra = msgpack_packb(extra_data);
-          message_package = new Uint8Array([...message_package, ...extra]);
+          const combined = new Uint8Array(message_package.length + extra.length);
+          combined.set(message_package);
+          combined.set(extra, message_package.length);
+          message_package = combined;
         }
         const total_size = message_package.length;
         if (
@@ -2154,6 +2160,9 @@ export class RPC extends MessageEmitter {
               }
             });
         }
+        } catch (err) {
+          reject(err);
+        }
       });
     }
 
@@ -2187,6 +2196,7 @@ export class RPC extends MessageEmitter {
   }
 
   async _handle_method(data) {
+    let resolve = null;
     let reject = null;
     let heartbeat_task = null;
     try {
@@ -2216,7 +2226,6 @@ export class RPC extends MessageEmitter {
       }
       const local_parent = data.parent;
 
-      let resolve, reject;
       if (data.promise) {
         // Decode the promise with the remote session id
         // Such that the session id will be passed to the remote as a parent session id

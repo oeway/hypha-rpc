@@ -412,9 +412,7 @@ class WebsocketRPCConnection:
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
                                 )
-                                # Emit reconnection success event
-                                if self._handle_connected:
-                                    await self._handle_connected(connection_info)
+                                # Note: Do NOT call _handle_connected here - it's already called inside open()
                                 break
                             except NotImplementedError as e:
                                 logger.error(
@@ -534,6 +532,9 @@ class WebsocketRPCConnection:
         try:
             if isinstance(message, str):
                 main = json.loads(message)
+                # Add trusted context to the method call
+                main["ctx"] = main.copy()
+                main["ctx"].update(self.default_context)
                 self._fire(main["type"], main)
             elif isinstance(message, bytes):
                 try:
@@ -557,11 +558,16 @@ class WebsocketRPCConnection:
                     try:
                         text = message.decode("utf-8")
                         main = json.loads(text)
+                        main["ctx"] = main.copy()
+                        main["ctx"].update(self.default_context)
                         self._fire(main["type"], main)
                     except Exception as e2:
                         logger.error(f"Failed to decode message as UTF-8: {e2}")
                         raise
             elif isinstance(message, dict):
+                # Add trusted context to the method call
+                message["ctx"] = message.copy()
+                message["ctx"].update(self.default_context)
                 self._fire(message["type"], message)
             else:
                 raise Exception(f"Invalid message type: {type(message)}")
@@ -702,8 +708,6 @@ async def login(config):
             print(f"Please open your browser and login at {context['login_url']}")
 
         return await svc.check(context["key"], timeout=timeout, profile=profile)
-    except Exception as error:
-        raise error
     finally:
         await server.disconnect()
 
@@ -753,8 +757,6 @@ async def logout(config):
             print(f"Please open your browser to logout at {context['logout_url']}")
 
         return context
-    except Exception as error:
-        raise error
     finally:
         await server.disconnect()
 

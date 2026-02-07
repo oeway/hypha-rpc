@@ -353,15 +353,8 @@ export class HTTPStreamingRPCConnection {
    * @returns {Object|null} Decoded control message or null
    */
   _tryDecodeControlMessage(frame_data) {
-    // Quick check: Control messages are small (< 10KB typically)
-    // RPC messages with extra data are often larger
-    if (frame_data.length > 10000) {
-      return null; // Likely an RPC message with large payload
-    }
-
     try {
-      // Use decodeMulti to handle frames with multiple msgpack objects
-      // This returns an array of decoded objects
+      // Decode the first msgpack object in the frame
       const decoded = msgpackDecode(frame_data);
 
       // Control messages are simple objects with a "type" field
@@ -381,7 +374,7 @@ export class HTTPStreamingRPCConnection {
       // Not a control message
       return null;
     } catch {
-      // Decode failed or has extra data - this is an RPC message
+      // Decode failed - this is an RPC message
       return null;
     }
   }
@@ -391,33 +384,42 @@ export class HTTPStreamingRPCConnection {
    */
   async _processMsgpackStream(response) {
     const reader = response.body.getReader();
-    let buffer = new Uint8Array(0);
+    // Growing buffer to avoid O(n^2) re-allocation on every chunk
+    let buffer = new Uint8Array(4096);
+    let bufferLen = 0;
 
     while (!this._closed) {
       const { done, value } = await reader.read();
 
       if (done) break;
 
-      // Append new chunk to buffer
-      const newBuffer = new Uint8Array(buffer.length + value.length);
-      newBuffer.set(buffer);
-      newBuffer.set(value, buffer.length);
-      buffer = newBuffer;
+      // Grow buffer if needed (double size until it fits)
+      const needed = bufferLen + value.length;
+      if (needed > buffer.length) {
+        let newSize = buffer.length;
+        while (newSize < needed) newSize *= 2;
+        const grown = new Uint8Array(newSize);
+        grown.set(buffer.subarray(0, bufferLen));
+        buffer = grown;
+      }
+      buffer.set(value, bufferLen);
+      bufferLen += value.length;
 
       // Process complete frames from buffer
-      while (buffer.length >= 4) {
+      let offset = 0;
+      while (bufferLen - offset >= 4) {
         // Read 4-byte length prefix (big-endian)
         const length =
-          (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
+          (buffer[offset] << 24) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3];
 
-        if (buffer.length < 4 + length) {
+        if (bufferLen - offset < 4 + length) {
           // Incomplete frame, wait for more data
           break;
         }
 
-        // Extract the frame
-        const frame_data = buffer.slice(4, 4 + length);
-        buffer = buffer.slice(4 + length);
+        // Extract the frame (slice creates a copy, which is needed since buffer is reused)
+        const frame_data = buffer.slice(offset + 4, offset + 4 + length);
+        offset += 4 + length;
 
         // Try to decode as control message first
         const controlMsg = this._tryDecodeControlMessage(frame_data);
@@ -454,6 +456,14 @@ export class HTTPStreamingRPCConnection {
             console.error(`Error in message handler: ${error.message}`);
           }
         }
+      }
+      // Compact: shift remaining data to the front of the buffer
+      if (offset > 0) {
+        const remaining = bufferLen - offset;
+        if (remaining > 0) {
+          buffer.copyWithin(0, offset, bufferLen);
+        }
+        bufferLen = remaining;
       }
     }
   }

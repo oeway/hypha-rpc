@@ -173,13 +173,13 @@ class WebsocketRPCConnection {
           if (this.connection_info.reconnection_token_life_time) {
             // make sure the token refresh interval is less than the token life time
             if (
-              this.token_refresh_interval >
+              this._token_refresh_interval >
               this.connection_info.reconnection_token_life_time / 1.5
             ) {
               console.warn(
-                `Token refresh interval is too long (${this.token_refresh_interval}), setting it to 1.5 times of the token life time(${this.connection_info.reconnection_token_life_time}).`,
+                `Token refresh interval is too long (${this._token_refresh_interval}), setting it to 1.5 times of the token life time(${this.connection_info.reconnection_token_life_time}).`,
               );
-              this.token_refresh_interval =
+              this._token_refresh_interval =
                 this.connection_info.reconnection_token_life_time / 1.5;
             }
           }
@@ -347,10 +347,7 @@ class WebsocketRPCConnection {
             console.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
-            // Emit reconnection success event
-            if (this._handle_connected) {
-              this._handle_connected(this.connection_info);
-            }
+            // Note: Do NOT call _handle_connected here - it's already called inside open()
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
               console.warn("Server refused to reconnect:", e);
