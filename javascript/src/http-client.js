@@ -522,28 +522,53 @@ export class HTTPStreamingRPCConnection {
     // Ensure data is Uint8Array
     const body = data instanceof Uint8Array ? data : new Uint8Array(data);
 
-    try {
-      // Note: keepalive has a 64KB body size limit in browsers, so only use
-      // it for small payloads. For large payloads, skip keepalive.
-      const useKeepalive = body.length < 60000;
-      const response = await fetch(post_url, {
-        method: "POST",
-        headers: this._get_headers(false),
-        body: body,
-        ...(useKeepalive && { keepalive: true }),
-      });
+    // Retry logic to handle transient issues such as load balancer
+    // routing POST requests to a different server instance than the GET stream
+    const maxRetries = 3;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Note: keepalive has a 64KB body size limit in browsers, so only use
+        // it for small payloads. For large payloads, skip keepalive.
+        const useKeepalive = body.length < 60000;
+        const response = await fetch(post_url, {
+          method: "POST",
+          headers: this._get_headers(false),
+          body: body,
+          ...(useKeepalive && { keepalive: true }),
+        });
 
-      if (!response.ok) {
-        const error_text = await response.text();
-        throw new Error(
-          `POST failed with status ${response.status}: ${error_text}`,
-        );
+        if (!response.ok) {
+          const error_text = await response.text();
+          // Retry on 400 errors that indicate the server doesn't recognize
+          // our stream (e.g., load balancer routed to a different instance)
+          if (response.status === 400 && attempt < maxRetries - 1) {
+            console.warn(
+              `POST failed (attempt ${attempt + 1}/${maxRetries}): ${error_text}, retrying...`,
+            );
+            await new Promise((r) =>
+              setTimeout(r, 500 * (attempt + 1)),
+            );
+            continue;
+          }
+          throw new Error(
+            `POST failed with status ${response.status}: ${error_text}`,
+          );
+        }
+
+        return true;
+      } catch (error) {
+        if (attempt < maxRetries - 1 && !this._closed) {
+          console.warn(
+            `Failed to send message (attempt ${attempt + 1}/${maxRetries}): ${error.message}, retrying...`,
+          );
+          await new Promise((r) =>
+            setTimeout(r, 500 * (attempt + 1)),
+          );
+        } else {
+          console.error(`Failed to send message: ${error.message}`);
+          throw error;
+        }
       }
-
-      return true;
-    } catch (error) {
-      console.error(`Failed to send message: ${error.message}`);
-      throw error;
     }
   }
 

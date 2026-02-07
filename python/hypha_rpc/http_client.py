@@ -427,6 +427,9 @@ class HTTPStreamingRPCConnection:
 
         Uses optimized connection pooling with keep-alive for better performance.
         HTTP client automatically handles efficient transfer for all payload sizes.
+
+        Includes retry logic to handle transient issues such as load balancer
+        routing POST requests to a different server instance than the GET stream.
         """
         if self._closed:
             raise ConnectionError("Connection is closed")
@@ -439,27 +442,50 @@ class HTTPStreamingRPCConnection:
         url = f"{self._server_url}/{ws}/rpc"
         params = {"client_id": self._client_id}
 
-        try:
-            # httpx handles large payloads efficiently with connection pooling
-            response = await self._http_client.post(
-                url,
-                content=data,
-                params=params,
-                headers=self._get_headers(),
-            )
-
-            if response.status_code != 200:
-                error = (
-                    response.json() if response.content else {"detail": "Unknown error"}
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # httpx handles large payloads efficiently with connection pooling
+                response = await self._http_client.post(
+                    url,
+                    content=data,
+                    params=params,
+                    headers=self._get_headers(),
                 )
-                raise ConnectionError(f"POST failed: {error.get('detail', error)}")
 
-        except httpx.TimeoutException:
-            logger.error("Request timeout")
-            raise TimeoutError("Request timeout")
-        except Exception as e:
-            logger.error(f"Failed to send message: {e}")
-            raise
+                if response.status_code != 200:
+                    error = (
+                        response.json() if response.content else {"detail": "Unknown error"}
+                    )
+                    detail = error.get("detail", str(error))
+                    # Retry on 400 errors that indicate the server doesn't recognize
+                    # our stream (e.g., load balancer routed to a different instance)
+                    if response.status_code == 400 and attempt < max_retries - 1:
+                        logger.warning(
+                            f"POST failed (attempt {attempt + 1}/{max_retries}): {detail}, retrying..."
+                        )
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    raise ConnectionError(f"POST failed: {detail}")
+
+                return  # Success
+
+            except httpx.TimeoutException:
+                logger.error("Request timeout")
+                raise TimeoutError("Request timeout")
+            except ConnectionError:
+                raise
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Failed to send message (attempt {attempt + 1}/{max_retries}): {e}, retrying..."
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                else:
+                    logger.error(f"Failed to send message: {e}")
+                    raise
 
     async def disconnect(self, reason: Optional[str] = None):
         """Disconnect and cleanup."""
