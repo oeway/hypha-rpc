@@ -458,6 +458,46 @@ describe("RPC", async () => {
     expect(await svc3.my_func(2, 3)).to.equal(5);
   }).timeout(40000);
 
+  it("should connect via webrtc (auto, cross-client)", async () => {
+    // Client A: provider with webrtc enabled
+    const clientA = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rtc-cross-provider-js",
+      webrtc: true,
+    });
+    const workspace = clientA.config.workspace;
+    const token = await clientA.generateToken();
+
+    await clientA.registerService({
+      id: "cross-echo-js",
+      config: {
+        visibility: "public",
+      },
+      type: "echo",
+      echo: (x) => x,
+      add: (a, b) => a + b,
+    });
+
+    // Client B: consumer with webrtc enabled, same workspace
+    const clientB = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rtc-cross-consumer-js",
+      workspace: workspace,
+      token: token,
+      webrtc: true,
+    });
+
+    // Client B fetches Client A's service - should use WebRTC to Client A
+    const svc = await clientB.getService("rtc-cross-provider-js:cross-echo-js");
+    expect(await svc.echo("hello-cross")).to.equal("hello-cross");
+    expect(await svc.add(3, 4)).to.equal(7);
+    // Verify it was obtained via WebRTC
+    expect(svc._webrtc).to.equal(true);
+
+    await clientA.disconnect();
+    await clientB.disconnect();
+  }).timeout(40000);
+
   it("should login to the server", async () => {
     // First connect to server to generate a valid JWT token
     const api = await connectToServer({

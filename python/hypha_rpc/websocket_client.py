@@ -759,10 +759,12 @@ async def logout(config):
         await server.disconnect()
 
 
-async def webrtc_get_service(wm, rtc_service_id, query, config=None, **kwargs):
+async def webrtc_get_service(wm, query, config=None, **kwargs):
     config = config or {}
     config.update(kwargs)
-    webrtc = config.get("webrtc")
+    # Default to "auto" since this wrapper is only used when connection was
+    # established with webrtc=True
+    webrtc = config.get("webrtc", "auto")
     webrtc_config = config.get("webrtc_config")
     if "webrtc" in config:
         del config["webrtc"]
@@ -781,11 +783,16 @@ async def webrtc_get_service(wm, rtc_service_id, query, config=None, **kwargs):
 
     if ":" in svc.id and "/" in svc.id and AIORTC_AVAILABLE:
         try:
-            # Assuming that the client registered
-            # a webrtc service with the client_id + "-rtc"
+            # Extract the remote client_id from the service id
+            # svc.id format: "workspace/client_id:service_id"
+            ws_and_client = svc.id.split(":")[0]  # "workspace/client_id"
+            remote_client_id = ws_and_client.split("/")[-1]  # "client_id"
+            remote_workspace = "/".join(ws_and_client.split("/")[:-1])  # "workspace"
+            # Connect to the remote client's RTC service
+            remote_rtc_service_id = f"{remote_workspace}/{remote_client_id}-rtc"
             peer = await get_rtc_service(
                 wm,
-                rtc_service_id,
+                remote_rtc_service_id,
                 webrtc_config,
             )
             rtc_svc = await peer.get_service(svc.id.split(":")[1], config)
@@ -1101,7 +1108,7 @@ async def _connect_to_server(config):
         # TODO: add webrtc options to the get_service schema
         parameters = _wm.get_service.__schema__.get("parameters")
         wm.get_service = schema_function(
-            partial(webrtc_get_service, _wm, f"{workspace}/{client_id}-rtc"),
+            partial(webrtc_get_service, _wm),
             name="get_service",
             description=description,
             parameters=parameters,

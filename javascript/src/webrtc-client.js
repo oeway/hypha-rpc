@@ -19,13 +19,14 @@ class WebRTCConnection {
       if (data instanceof Blob) {
         data = await data.arrayBuffer();
       }
-      this._handle_message(data);
+      if (this._handle_message) {
+        this._handle_message(data);
+      }
     };
-    const self = this;
-    this._data_channel.onclose = function () {
+    this._data_channel.onclose = () => {
       if (this._handle_disconnected) this._handle_disconnected("closed");
-      console.log("websocket closed");
-      self._data_channel = null;
+      console.log("data channel closed");
+      this._data_channel = null;
     };
   }
 

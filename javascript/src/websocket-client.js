@@ -597,9 +597,11 @@ export async function logout(config) {
   }
 }
 
-async function webrtcGetService(wm, rtc_service_id, query, config) {
+async function webrtcGetService(wm, query, config) {
   config = config || {};
-  const webrtc = config.webrtc;
+  // Default to "auto" since this wrapper is only used when connection was
+  // established with webrtc: true
+  const webrtc = config.webrtc !== undefined ? config.webrtc : "auto";
   const webrtc_config = config.webrtc_config;
   if (config.webrtc !== undefined) delete config.webrtc;
   if (config.webrtc_config !== undefined) delete config.webrtc_config;
@@ -612,8 +614,14 @@ async function webrtcGetService(wm, rtc_service_id, query, config) {
   if (webrtc === true || webrtc === "auto") {
     if (svc.id.includes(":") && svc.id.includes("/")) {
       try {
-        // Assuming that the client registered a webrtc service with the client_id + "-rtc"
-        const peer = await getRTCService(wm, rtc_service_id, webrtc_config);
+        // Extract remote client_id from service id
+        // svc.id format: "workspace/client_id:service_id"
+        const wsAndClient = svc.id.split(":")[0]; // "workspace/client_id"
+        const parts = wsAndClient.split("/");
+        const remoteClientId = parts[parts.length - 1]; // "client_id"
+        const remoteWorkspace = parts.slice(0, -1).join("/"); // "workspace"
+        const remoteRtcServiceId = `${remoteWorkspace}/${remoteClientId}-rtc`;
+        const peer = await getRTCService(wm, remoteRtcServiceId, webrtc_config);
         const rtcSvc = await peer.getService(svc.id.split(":")[1], config);
         rtcSvc._webrtc = true;
         rtcSvc._peer = peer;
@@ -941,7 +949,7 @@ export async function connectToServer(config) {
     // TODO: Fix the schema for adding options for webrtc
     const parameters = _wm.getService.__schema__.parameters;
     wm.getService = schemaFunction(
-      webrtcGetService.bind(null, _wm, `${workspace}/${clientId}-rtc`),
+      webrtcGetService.bind(null, _wm),
       {
         name: "getService",
         description,
