@@ -10,13 +10,7 @@ class WebRTCConnection {
     this._handle_disconnected = null;
     this._handle_connected = () => {};
     this.manager_id = null;
-    this._last_message = null;
     this._data_channel.onopen = async () => {
-      if (this._last_message) {
-        console.info("Resending last message after connection established");
-        this._data_channel.send(this._last_message);
-        this._last_message = null;
-      }
       this._handle_connected &&
         this._handle_connected({ channel: this._data_channel });
     };
@@ -51,9 +45,7 @@ class WebRTCConnection {
   async emit_message(data) {
     assert(this._handle_message, "No handler for message");
     try {
-      this._last_message = data;
       this._data_channel.send(data);
-      this._last_message = null;
     } catch (exp) {
       console.error(`Failed to send data, error: ${exp}`);
       throw exp;
@@ -61,7 +53,6 @@ class WebRTCConnection {
   }
 
   async disconnect(reason) {
-    this._last_message = null;
     this._data_channel = null;
     console.info(`data channel connection disconnected (${reason})`);
   }

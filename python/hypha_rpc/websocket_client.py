@@ -69,7 +69,6 @@ class WebsocketRPCConnection:
         self._handle_message = None
         self._handle_disconnected = None  # Disconnection handler
         self._handle_connected = None  # Connection open handler
-        self._last_message = None  # Store the last sent message
         assert server_url and client_id
         self._server_url = server_url
         self._client_id = client_id
@@ -312,9 +311,7 @@ class WebsocketRPCConnection:
             await self.open()
 
         try:
-            self._last_message = data  # Store the message before sending
             await self._websocket.send(data)
-            self._last_message = None  # Clear after successful send
         except Exception as exp:
             logger.error(f"Failed to send message: {exp}")
             raise exp
@@ -411,13 +408,6 @@ class WebsocketRPCConnection:
                                 # which includes re-registering all services to the server
                                 await asyncio.sleep(0.5)
 
-                                # Resend last message if there was one
-                                if self._last_message:
-                                    logger.info(
-                                        "Resending last message after reconnection"
-                                    )
-                                    await self._websocket.send(self._last_message)
-                                    self._last_message = None
                                 logger.warning(
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
@@ -526,7 +516,6 @@ class WebsocketRPCConnection:
     async def disconnect(self, reason=None):
         """Disconnect."""
         self._closed = True
-        self._last_message = None
         if self._websocket and not self._websocket.state == State.CLOSED:
             try:
                 await self._websocket.close(code=1000)

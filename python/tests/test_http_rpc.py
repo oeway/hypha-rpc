@@ -723,6 +723,237 @@ class TestHTTPManagerService:
             await server.disconnect()
 
 
+class TestHTTPReconnection:
+    """Test HTTP transport reconnection behavior."""
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_restores_services(self):
+        """Test that HTTP stream reconnection re-registers services.
+
+        Simulates a stream disconnect by closing the underlying HTTP client,
+        which forces the stream loop to reconnect. After reconnection, the
+        connection_info is received again, _handle_connected is called, and
+        services should be re-registered and usable.
+        """
+        server = await connect_to_server(
+            {
+                "server_url": SERVER_URL,
+                "client_id": "http-reconnect-test",
+                "transport": "http",
+            }
+        )
+
+        try:
+            # Register a service
+            await server.register_service(
+                {
+                    "id": "reconnect-service",
+                    "config": {"visibility": "public"},
+                    "ping": lambda: "pong",
+                    "echo": lambda x: x,
+                }
+            )
+
+            # Verify service works before disconnect
+            svc = await server.get_service("reconnect-service")
+            assert await svc.ping() == "pong"
+            assert await svc.echo("hello") == "hello"
+            print("Initial service working")
+
+            # Track reconnection events
+            reconnection_events = []
+            original_handle_connected = server.rpc._connection._handle_connected
+
+            async def tracking_handle_connected(info):
+                reconnection_events.append(info)
+                print(f"Reconnected to workspace: {info.get('workspace')}")
+                if original_handle_connected:
+                    await original_handle_connected(info)
+
+            server.rpc._connection._handle_connected = tracking_handle_connected
+
+            # Force stream disconnection by closing the underlying HTTP client.
+            # This causes the active GET stream to fail, triggering the
+            # reconnection logic in _stream_loop.
+            conn = server.rpc._connection
+            if conn._http_client:
+                await conn._http_client.aclose()
+                conn._http_client = None
+
+            # Wait for reconnection (stream loop should detect the error,
+            # create a new HTTP client, and reconnect)
+            max_wait = 20
+            start = asyncio.get_event_loop().time()
+            while (
+                asyncio.get_event_loop().time() - start < max_wait
+                and len(reconnection_events) == 0
+            ):
+                await asyncio.sleep(0.5)
+
+            assert len(reconnection_events) > 0, (
+                f"Should have received reconnection event within {max_wait}s"
+            )
+
+            # Give time for services to be re-registered
+            await asyncio.sleep(2)
+
+            # Verify service works after reconnection
+            success = False
+            for attempt in range(10):
+                try:
+                    svc = await asyncio.wait_for(
+                        server.get_service("reconnect-service"), timeout=5.0
+                    )
+                    result = await asyncio.wait_for(svc.ping(), timeout=5.0)
+                    if result == "pong":
+                        print(f"Service working after reconnection (attempt {attempt + 1})")
+                        success = True
+                        break
+                except Exception as e:
+                    print(f"Attempt {attempt + 1}: {type(e).__name__}: {e}")
+                    await asyncio.sleep(1)
+
+            assert success, "Service should work after HTTP stream reconnection"
+
+            # Also test echo still works
+            result = await svc.echo("after-reconnect")
+            assert result == "after-reconnect"
+            print("Echo working after reconnection")
+
+        finally:
+            await server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_preserves_workspace(self):
+        """Test that workspace is preserved across HTTP reconnections."""
+        server = await connect_to_server(
+            {
+                "server_url": SERVER_URL,
+                "client_id": "http-ws-preserve-test",
+                "transport": "http",
+            }
+        )
+
+        try:
+            original_workspace = server.config.get("workspace")
+            assert original_workspace is not None
+
+            # Force stream disconnection
+            conn = server.rpc._connection
+            original_manager_id = conn.manager_id
+
+            if conn._http_client:
+                await conn._http_client.aclose()
+                conn._http_client = None
+
+            # Wait for reconnection
+            await asyncio.sleep(5)
+
+            # Workspace should be the same after reconnection
+            new_workspace = conn._workspace
+            assert new_workspace == original_workspace, (
+                f"Workspace changed: {original_workspace} -> {new_workspace}"
+            )
+
+            # manager_id should be updated (new session on server)
+            # but workspace should remain the same
+            print(
+                f"Workspace preserved: {new_workspace}, "
+                f"manager_id: {original_manager_id} -> {conn.manager_id}"
+            )
+
+            # Verify we can still list services (uses workspace manager)
+            services = await server.list_services()
+            assert isinstance(services, list)
+            print(f"Listed {len(services)} services after reconnection")
+
+        finally:
+            await server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_reconnection_cross_transport(self):
+        """Test that an HTTP client can call a WebSocket service after reconnection."""
+        # Service provider via WebSocket
+        ws_server = await connect_to_server(
+            {
+                "server_url": SERVER_URL,
+                "client_id": "ws-provider-reconnect-test",
+            }
+        )
+
+        try:
+            workspace = ws_server.config["workspace"]
+            token = await ws_server.generate_token()
+
+            # Register service on WebSocket client
+            await ws_server.register_service(
+                {
+                    "id": "ws-service",
+                    "name": "WS Service",
+                    "config": {"visibility": "public"},
+                    "add": lambda a, b: a + b,
+                }
+            )
+
+            # HTTP client connects to same workspace
+            http_server = await connect_to_server(
+                {
+                    "server_url": SERVER_URL,
+                    "workspace": workspace,
+                    "client_id": "http-consumer-reconnect-test",
+                    "transport": "http",
+                    "token": token,
+                }
+            )
+
+            try:
+                # Verify cross-transport call works
+                svc = await http_server.get_service(
+                    f"{ws_server.config['client_id']}:ws-service"
+                )
+                assert await svc.add(3, 4) == 7
+                print("Cross-transport call working before reconnection")
+
+                # Force HTTP stream disconnection
+                conn = http_server.rpc._connection
+                if conn._http_client:
+                    await conn._http_client.aclose()
+                    conn._http_client = None
+
+                # Wait for reconnection
+                await asyncio.sleep(5)
+
+                # Cross-transport call should still work after reconnection
+                success = False
+                for attempt in range(10):
+                    try:
+                        svc = await asyncio.wait_for(
+                            http_server.get_service(
+                                f"{ws_server.config['client_id']}:ws-service"
+                            ),
+                            timeout=5.0,
+                        )
+                        result = await asyncio.wait_for(svc.add(10, 20), timeout=5.0)
+                        if result == 30:
+                            print(
+                                f"Cross-transport call working after reconnection "
+                                f"(attempt {attempt + 1})"
+                            )
+                            success = True
+                            break
+                    except Exception as e:
+                        print(f"Attempt {attempt + 1}: {type(e).__name__}: {e}")
+                        await asyncio.sleep(1)
+
+                assert success, "Cross-transport call should work after reconnection"
+
+            finally:
+                await http_server.disconnect()
+
+        finally:
+            await ws_server.disconnect()
+
+
 if __name__ == "__main__":
     # Allow running tests directly
     pytest.main([__file__, "-v", "-s"])

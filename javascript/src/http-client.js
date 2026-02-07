@@ -102,10 +102,12 @@ export class HTTPStreamingRPCConnection {
 
     this._closed = false;
     this._enable_reconnect = false;
+    this._is_reconnection = false;
     this.connection_info = null;
     this.manager_id = null;
 
     this._abort_controller = null;
+    this._refresh_token_task = null;
   }
 
   /**
@@ -185,11 +187,81 @@ export class HTTPStreamingRPCConnection {
     }
     this._workspace = this.connection_info.workspace;
 
+    if (this.connection_info.reconnection_token) {
+      this._reconnection_token = this.connection_info.reconnection_token;
+    }
+
+    // Adjust token refresh interval based on server's token lifetime
+    if (this.connection_info.reconnection_token_life_time) {
+      const token_life_time =
+        this.connection_info.reconnection_token_life_time;
+      if (this._token_refresh_interval > token_life_time / 1.5) {
+        console.warn(
+          `Token refresh interval (${this._token_refresh_interval}s) is too long, ` +
+            `adjusting to ${(token_life_time / 1.5).toFixed(0)}s based on token lifetime`,
+        );
+        this._token_refresh_interval = token_life_time / 1.5;
+      }
+    }
+
+    console.info(
+      `HTTP streaming connected to workspace: ${this._workspace}, ` +
+        `manager_id: ${this.manager_id}`,
+    );
+
+    // Start token refresh
+    if (this._token_refresh_interval > 0) {
+      this._startTokenRefresh();
+    }
+
     if (this._handle_connected) {
-      await this._handle_connected();
+      await this._handle_connected(this.connection_info);
     }
 
     return this.connection_info;
+  }
+
+  /**
+   * Start periodic token refresh via POST.
+   */
+  _startTokenRefresh() {
+    // Clear existing refresh if any
+    if (this._refresh_token_task) {
+      clearInterval(this._refresh_token_task);
+    }
+
+    // Initial delay of 2s, then periodic refresh
+    setTimeout(() => {
+      this._sendRefreshToken();
+      this._refresh_token_task = setInterval(() => {
+        this._sendRefreshToken();
+      }, this._token_refresh_interval * 1000);
+    }, 2000);
+  }
+
+  /**
+   * Send a token refresh request via POST.
+   */
+  async _sendRefreshToken() {
+    if (this._closed) return;
+    try {
+      const ws = this._workspace || "public";
+      const url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+      const { encode } = await import("@msgpack/msgpack");
+      const body = encode({ type: "refresh_token" });
+      const response = await fetch(url, {
+        method: "POST",
+        headers: this._get_headers(false),
+        body: body,
+      });
+      if (response.ok) {
+        console.debug("Token refresh requested successfully");
+      } else {
+        console.warn(`Token refresh request failed: ${response.status}`);
+      }
+    } catch (e) {
+      console.warn(`Failed to send refresh token request: ${e.message}`);
+    }
   }
 
   /**
@@ -202,14 +274,24 @@ export class HTTPStreamingRPCConnection {
    * - Stream responses efficiently with backpressure handling
    */
   async _startStreamLoop(url) {
+    this._enable_reconnect = true;
+    this._closed = false;
     let retry = 0;
+    this._is_reconnection = false;
 
     while (!this._closed && retry < MAX_RETRY) {
       try {
+        // Update URL with current workspace (may have changed after initial connection)
+        const ws = this._workspace || "public";
+        let stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+        if (this._reconnection_token) {
+          stream_url += `&reconnection_token=${encodeURIComponent(this._reconnection_token)}`;
+        }
+
         // OPTIMIZATION: Browser fetch automatically streams responses
         // and negotiates HTTP/2 when available for better performance
         this._abort_controller = new AbortController();
-        const response = await fetch(url, {
+        const response = await fetch(stream_url, {
           method: "GET",
           headers: this._get_headers(true),
           signal: this._abort_controller.signal,
@@ -235,12 +317,17 @@ export class HTTPStreamingRPCConnection {
         }
       }
 
+      // After the first connection attempt, all subsequent ones are reconnections
+      this._is_reconnection = true;
+
       // Reconnection logic
       if (!this._closed && this._enable_reconnect) {
         retry += 1;
-        // Exponential backoff with max 30 seconds
-        const delay = Math.min(Math.pow(2, retry) * 0.1, 30);
-        console.info(`Reconnecting in ${delay.toFixed(1)}s (attempt ${retry})`);
+        // Exponential backoff with max 60 seconds
+        const delay = Math.min(Math.pow(2, Math.min(retry, 6)), 60);
+        console.warn(
+          `Stream disconnected, reconnecting in ${delay.toFixed(1)}s (attempt ${retry})`,
+        );
         await new Promise((resolve) => setTimeout(resolve, delay * 1000));
       } else {
         break;
@@ -338,6 +425,15 @@ export class HTTPStreamingRPCConnection {
           const msg_type = controlMsg.type;
           if (msg_type === "connection_info") {
             this.connection_info = controlMsg;
+            // On reconnection, update state and notify RPC layer.
+            // Run as a non-blocking task so the stream can continue
+            // processing incoming RPC responses (the reconnection
+            // handler sends RPC calls that need stream responses).
+            if (this._is_reconnection) {
+              this._handleReconnection(controlMsg).catch((err) => {
+                console.error(`Reconnection handling failed: ${err.message}`);
+              });
+            }
             continue;
           } else if (msg_type === "ping" || msg_type === "pong") {
             continue;
@@ -363,6 +459,39 @@ export class HTTPStreamingRPCConnection {
   }
 
   /**
+   * Handle reconnection: update state and notify RPC layer.
+   */
+  async _handleReconnection(connection_info) {
+    this.manager_id = connection_info.manager_id;
+    this._workspace = connection_info.workspace;
+
+    if (connection_info.reconnection_token) {
+      this._reconnection_token = connection_info.reconnection_token;
+    }
+
+    // Adjust token refresh interval if needed
+    if (connection_info.reconnection_token_life_time) {
+      const token_life_time = connection_info.reconnection_token_life_time;
+      if (this._token_refresh_interval > token_life_time / 1.5) {
+        this._token_refresh_interval = token_life_time / 1.5;
+      }
+    }
+
+    console.warn(
+      `Stream reconnected to workspace: ${this._workspace}, ` +
+        `manager_id: ${this.manager_id}`,
+    );
+
+    // Notify RPC layer so it can re-register services
+    if (this._handle_connected) {
+      await this._handle_connected(this.connection_info);
+    }
+
+    // Wait a short time for services to be re-registered
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  /**
    * Send a message to the server via HTTP POST.
    *
    * OPTIMIZATION: Uses keepalive flag for connection reuse.
@@ -383,24 +512,29 @@ export class HTTPStreamingRPCConnection {
     // Ensure data is Uint8Array
     const body = data instanceof Uint8Array ? data : new Uint8Array(data);
 
-    // Note: keepalive has a 64KB body size limit in browsers, so only use
-    // it for small payloads. For large payloads, skip keepalive.
-    const useKeepalive = body.length < 60000;
-    const response = await fetch(post_url, {
-      method: "POST",
-      headers: this._get_headers(false),
-      body: body,
-      ...(useKeepalive && { keepalive: true }),
-    });
+    try {
+      // Note: keepalive has a 64KB body size limit in browsers, so only use
+      // it for small payloads. For large payloads, skip keepalive.
+      const useKeepalive = body.length < 60000;
+      const response = await fetch(post_url, {
+        method: "POST",
+        headers: this._get_headers(false),
+        body: body,
+        ...(useKeepalive && { keepalive: true }),
+      });
 
-    if (!response.ok) {
-      const error_text = await response.text();
-      throw new Error(
-        `POST failed with status ${response.status}: ${error_text}`,
-      );
+      if (!response.ok) {
+        const error_text = await response.text();
+        throw new Error(
+          `POST failed with status ${response.status}: ${error_text}`,
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.error(`Failed to send message: ${error.message}`);
+      throw error;
     }
-
-    return true;
   }
 
   /**
@@ -417,6 +551,12 @@ export class HTTPStreamingRPCConnection {
     if (this._closed) return;
 
     this._closed = true;
+
+    // Clear token refresh interval
+    if (this._refresh_token_task) {
+      clearInterval(this._refresh_token_task);
+      this._refresh_token_task = null;
+    }
 
     // Abort any active stream fetch to release the connection immediately
     if (this._abort_controller) {

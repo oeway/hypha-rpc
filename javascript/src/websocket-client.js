@@ -62,7 +62,6 @@ class WebsocketRPCConnection {
     this._token_refresh_interval = token_refresh_interval;
     this.manager_id = null;
     this._refresh_token_task = null;
-    this._last_message = null; // Store the last sent message
     this._reconnect_timeouts = new Set(); // Track reconnection timeouts
     this._additional_headers = additional_headers;
   }
@@ -345,12 +344,6 @@ class WebsocketRPCConnection {
             // which includes re-registering all services to the server
             await new Promise((resolve) => setTimeout(resolve, 500));
 
-            // Resend last message if there was one
-            if (this._last_message) {
-              console.info("Resending last message after reconnection");
-              this._websocket.send(this._last_message);
-              this._last_message = null;
-            }
             console.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
@@ -467,9 +460,7 @@ class WebsocketRPCConnection {
       await this.open();
     }
     try {
-      this._last_message = data; // Store the message before sending
       this._websocket.send(data);
-      this._last_message = null; // Clear after successful send
     } catch (exp) {
       console.error(`Failed to send data, error: ${exp}`);
       throw exp;
@@ -478,7 +469,6 @@ class WebsocketRPCConnection {
 
   disconnect(reason) {
     this._closed = true;
-    this._last_message = null; // Clear last message on disconnect
     // Ensure websocket is closed if it exists and is not already closed or closing
     if (
       this._websocket &&
