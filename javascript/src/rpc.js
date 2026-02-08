@@ -880,6 +880,10 @@ export class RPC extends MessageEmitter {
     // Remove the global unhandled rejection handler
     this._removeRejectionHandler();
 
+    // Remove ALL remaining event handlers to prevent memory leaks
+    // This clears any custom event listeners registered by users via .on()
+    this.off();
+
     // Clean up background tasks
     try {
       for (const task of this._background_tasks) {

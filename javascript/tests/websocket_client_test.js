@@ -2893,4 +2893,61 @@ describe("RPC", async () => {
 
     await api.disconnect();
   }).timeout(30000);
+
+  // TDD: Memory Leak Fix - Event Listener Cleanup
+  it("should remove all event listeners on disconnect to prevent memory leaks", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "test-event-listener-cleanup",
+    });
+
+    // Register multiple custom event listeners
+    const callCounts = {
+      custom1: 0,
+      custom2: 0,
+      custom3: 0,
+    };
+
+    const handler1 = () => callCounts.custom1++;
+    const handler2 = () => callCounts.custom2++;
+    const handler3 = () => callCounts.custom3++;
+
+    api.rpc.on("custom_event_1", handler1);
+    api.rpc.on("custom_event_2", handler2);
+    api.rpc.on("custom_event_3", handler3);
+
+    // Verify handlers are registered
+    expect(api.rpc._event_handlers["custom_event_1"]).to.have.lengthOf(1);
+    expect(api.rpc._event_handlers["custom_event_2"]).to.have.lengthOf(1);
+    expect(api.rpc._event_handlers["custom_event_3"]).to.have.lengthOf(1);
+
+    // Trigger events to confirm they work
+    api.rpc._fire("custom_event_1", {});
+    api.rpc._fire("custom_event_2", {});
+    api.rpc._fire("custom_event_3", {});
+
+    expect(callCounts.custom1).to.equal(1);
+    expect(callCounts.custom2).to.equal(1);
+    expect(callCounts.custom3).to.equal(1);
+
+    // Disconnect (this SHOULD clean up ALL event listeners to prevent memory leaks)
+    await api.disconnect();
+
+    // ASSERTION: All event handlers should be cleared after disconnect
+    // This is the failing test that demonstrates the memory leak
+    expect(Object.keys(api.rpc._event_handlers).length).to.equal(
+      0,
+      "All event handlers should be cleared after disconnect to prevent memory leaks"
+    );
+
+    // Additional verification: handlers should not fire after disconnect
+    api.rpc._fire("custom_event_1", {});
+    api.rpc._fire("custom_event_2", {});
+    api.rpc._fire("custom_event_3", {});
+
+    // Call counts should remain unchanged (handlers were removed)
+    expect(callCounts.custom1).to.equal(1);
+    expect(callCounts.custom2).to.equal(1);
+    expect(callCounts.custom3).to.equal(1);
+  }).timeout(20000);
 });
