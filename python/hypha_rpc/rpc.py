@@ -1231,7 +1231,7 @@ class RPC(MessageEmitter):
             except Exception:
                 pass
         timer = session.get("timer")
-        if timer:
+        if timer and getattr(timer, "started", False):
             try:
                 timer.clear()
             except Exception:

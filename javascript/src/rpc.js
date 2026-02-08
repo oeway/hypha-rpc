@@ -977,7 +977,7 @@ export class RPC extends MessageEmitter {
     if (session.heartbeat_task) {
       try { clearInterval(session.heartbeat_task); } catch (e) { /* ignore */ }
     }
-    if (session.timer && typeof session.timer.clear === "function") {
+    if (session.timer && session.timer.started && typeof session.timer.clear === "function") {
       try { session.timer.clear(); } catch (e) { /* ignore */ }
     }
   }
