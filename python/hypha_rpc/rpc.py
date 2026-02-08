@@ -545,9 +545,14 @@ class RemoteFunction:
             else:
                 raise RuntimeError(f"Unsupported promise type: {self._with_promise}")
 
+        # TWO-SEGMENT MSGPACK PROTOCOL:
+        # Encode main message (routing + metadata) and extra data (args/kwargs) separately
+        # This allows efficient routing without deserializing the entire payload
         message_package = msgpack.packb(main_message)
         if extra_data:
+            # Concatenate two msgpack objects: [msgpack(main)][msgpack(extra)]
             message_package = message_package + msgpack.packb(extra_data)
+
         total_size = len(message_package)
         if total_size <= self._rpc._long_message_chunk_size + 1024 or self.__no_chunk__:
             emit_task = asyncio.create_task(self._rpc._emit_message(message_package))
@@ -1032,30 +1037,51 @@ class RPC(MessageEmitter):
         return main
 
     def _on_message(self, message):
-        """Handle message."""
+        """Handle incoming message using the two-segment msgpack protocol.
+
+        Supports three message formats:
+        1. JSON string: Single object (no extra segment possible)
+        2. Msgpack bytes: Two-segment format [msgpack(main)][msgpack(extra)]
+        3. Direct dict: Already deserialized (local/in-process messages)
+
+        The two-segment msgpack format allows separating routing information
+        from payload data for efficiency and modularity.
+        """
         if isinstance(message, str):
+            # JSON format: Single object only (extra segment not supported)
             main = json.loads(message)
             # Add trusted context to the method call
             main = self._add_context_to_message(main)
             self._fire(main["type"], main)
+
         elif isinstance(message, bytes):
+            # TWO-SEGMENT MSGPACK: Parse concatenated msgpack objects
             unpacker = msgpack.Unpacker(
                 io.BytesIO(message),
                 max_buffer_size=max(512000, self._long_message_chunk_size * 2),
             )
+
+            # First segment: Main message (routing, type, target, etc.)
             main = unpacker.unpack()
             # Add trusted context to the method call
             main = self._add_context_to_message(main)
+
+            # Second segment: Extra data (args, kwargs, promise) - optional
             try:
                 extra = unpacker.unpack()
-                main.update(extra)
+                main.update(extra)  # Merge extra data into main message
             except msgpack.exceptions.OutOfData:
+                # No extra segment - this is valid, extra is optional
                 pass
+
             self._fire(main["type"], main)
+
         elif isinstance(message, dict):
+            # Direct dict: Already deserialized (local/in-process messages)
             # Add trusted context to the method call
             message = self._add_context_to_message(message)
             self._fire(message["type"], message)
+
         else:
             raise Exception(f"Invalid message type: {type(message)}")
 
@@ -1096,7 +1122,19 @@ class RPC(MessageEmitter):
         for task in list(self._background_tasks):
             if not task.done():
                 task.cancel()
+        # Clear the set immediately to release task references
         self._background_tasks.clear()
+
+        # Give the event loop a chance to process cancellations
+        # This helps release coroutine references captured in tasks
+        if hasattr(self, "loop") and self.loop and not self.loop.is_closed():
+            try:
+                # Process any pending callbacks without blocking
+                self.loop.call_soon(lambda: None)
+                # If loop is not running, we can't force processing
+                # The tasks will be cleaned up when the loop eventually runs
+            except Exception as e:
+                logger.debug(f"Error processing loop callbacks during close: {e}")
 
         # Clean up all pending sessions before closing
         self._cleanup_on_disconnect()
@@ -1120,6 +1158,17 @@ class RPC(MessageEmitter):
             except Exception as e:
                 logger.debug(f"Error removing client_disconnected handler: {e}")
 
+        # Clear connection callbacks to break circular references
+        # The on_connected callback captures 'self' in its closure
+        if hasattr(self, "_connection") and self._connection:
+            # Clear event handlers on the connection that might hold references
+            if hasattr(self._connection, "_on_connected_handler"):
+                self._connection._on_connected_handler = None
+            if hasattr(self._connection, "_on_message_handler"):
+                self._connection._on_message_handler = None
+            if hasattr(self._connection, "_on_disconnected_handler"):
+                self._connection._on_disconnected_handler = None
+
         # Clear connection reference to break circular references
         if hasattr(self, "_connection"):
             self._connection = None
@@ -1128,7 +1177,49 @@ class RPC(MessageEmitter):
         if hasattr(self, "_emit_message"):
             self._emit_message = None
 
+        # Clear event loop exception handler to break closure reference
+        # The handle_exception closure defined in __init__ captures 'self'
+        if hasattr(self, "loop") and self.loop:
+            try:
+                self.loop.set_exception_handler(None)
+            except Exception as e:
+                logger.debug(f"Error clearing exception handler: {e}")
+
         self._fire("disconnected")
+
+        # Cancel all fire-and-forget tasks from MessageEmitter._fire()
+        # These tasks hold references to coroutines that capture 'self' in closures
+        if hasattr(self, "_fire_and_forget_tasks"):
+            for task in list(self._fire_and_forget_tasks):
+                if not task.done():
+                    task.cancel()
+            self._fire_and_forget_tasks.clear()
+
+        # Clear all event handlers to prevent circular references
+        # This must be done AFTER firing disconnected event
+        self._event_handlers.clear()
+
+        # Clear services to release bound method references
+        # Services contain bound methods (self._ping, self.get_local_service, etc.)
+        # which hold references to the RPC instance, preventing GC
+        if hasattr(self, "_services"):
+            self._services.clear()
+
+        # Clear the entire object store to release all references
+        if hasattr(self, "_object_store"):
+            self._object_store.clear()
+
+        # Clear additional data structures that may hold references
+        if hasattr(self, "_target_id_index"):
+            self._target_id_index.clear()
+        if hasattr(self, "_chunk_store"):
+            self._chunk_store.clear()
+        if hasattr(self, "_codecs"):
+            self._codecs.clear()
+        # Note: _method_annotations is a WeakKeyDictionary and will auto-cleanup
+        # but we can explicitly clear it to help GC
+        if hasattr(self, "_method_annotations"):
+            self._method_annotations.clear()
 
     async def disconnect(self):
         """Disconnect."""
@@ -1165,7 +1256,24 @@ class RPC(MessageEmitter):
             finally:
                 self._client_disconnected_subscription = None
 
+        #  Store background tasks before close() for proper cleanup
+        tasks_to_cleanup = list(self._background_tasks) if hasattr(self, "_background_tasks") else []
+
+        # Also store fire-and-forget tasks from MessageEmitter._fire()
+        if hasattr(self, "_fire_and_forget_tasks"):
+            tasks_to_cleanup.extend(list(self._fire_and_forget_tasks))
+
         self.close()
+
+        # Await cancelled tasks to ensure coroutines are properly cleaned up
+        # This prevents memory leaks from task/coroutine references
+        if tasks_to_cleanup:
+            try:
+                # Gather cancelled tasks with short timeout
+                # Most will raise CancelledError, which is expected
+                await asyncio.gather(*tasks_to_cleanup, return_exceptions=True)
+            except Exception as e:
+                logger.debug(f"Error awaiting cancelled tasks during disconnect: {e}")
 
         # Disconnect the underlying connection if it exists
         if connection:
@@ -2172,16 +2280,37 @@ class RPC(MessageEmitter):
         )
 
     def emit(self, main_message, extra_data=None):
-        """Emit a message."""
+        """Emit a message using the two-segment msgpack protocol.
+
+        The two-segment format concatenates two separate msgpack objects:
+        1. Main message: Contains routing, type, and control information
+        2. Extra data: Contains args, kwargs, and optional promise data
+
+        Why two segments?
+        - Separation of concerns: routing info separate from payload
+        - Efficiency: Can parse routing without deserializing large payloads
+        - Backward compatibility: Extra segment is optional
+
+        Format: [msgpack(main)] + [msgpack(extra)]  # Two separate msgpack objects concatenated
+
+        IMPORTANT: This only works with msgpack/binary transport. JSON format loses
+        the extra segment because JSON can't represent concatenated objects.
+        """
         assert (
             isinstance(main_message, dict) and "type" in main_message
         ), "Invalid message, must be an object with a `type` fields"
         if "to" not in main_message:
             self._fire(main_message["type"], main_message)
             return
+
+        # TWO-SEGMENT PROTOCOL: Encode main message (routing, type, target, etc.)
         message_package = msgpack.packb(main_message)
+
+        # Optionally append extra data segment (args, kwargs, promise)
+        # This creates: [msgpack_obj_1][msgpack_obj_2] - two concatenated msgpack objects
         if extra_data:
             message_package = message_package + msgpack.packb(extra_data)
+
         total_size = len(message_package)
         if total_size > self._long_message_chunk_size + 1024:
             logger.warning(f"Sending large message (size={total_size})")

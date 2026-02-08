@@ -383,6 +383,7 @@ class MessageEmitter:
         """Set up instance."""
         self._event_handlers = {}
         self._logger = logger
+        self._fire_and_forget_tasks = set()  # Track fire-and-forget tasks to prevent memory leaks
 
     def on(self, event, handler):
         """Register an event handler."""
@@ -424,7 +425,11 @@ class MessageEmitter:
                 try:
                     ret = handler(data)
                     if inspect.isawaitable(ret):
-                        asyncio.ensure_future(ret)
+                        # Track fire-and-forget tasks to allow cleanup in close()
+                        task = asyncio.ensure_future(ret)
+                        self._fire_and_forget_tasks.add(task)
+                        # Remove task from set when it completes
+                        task.add_done_callback(self._fire_and_forget_tasks.discard)
                 except Exception as err:
                     traceback_error = traceback.format_exc()
                     if self._logger:
