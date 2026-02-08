@@ -29,6 +29,4 @@ wait-for-server.js
 stats.json
 stats-prod.json
 
-# Source maps - exclude to prevent missing source map warnings
-# Users debugging the library can build from source if needed
-dist/*.map
+# Source maps - included so consumers don't get missing source map warnings

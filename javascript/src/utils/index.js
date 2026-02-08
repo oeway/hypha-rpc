@@ -211,7 +211,7 @@ export async function loadRequirementsInWindow(requirements) {
             if (requirements[i].startsWith("mjs:")) {
               requirements[i] = requirements[i].slice(4);
             }
-            await import(/* webpackIgnore: true */ requirements[i]);
+            await new Function("url", "return import(url)")(requirements[i]);
           } else if (
             requirements[i].toLowerCase().endsWith(".js") ||
             requirements[i].startsWith("js:")

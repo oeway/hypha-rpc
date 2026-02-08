@@ -56,7 +56,7 @@
 import { RPC } from "./rpc.js";
 import { assert, randId, waitFor, parseServiceUrl } from "./utils/index.js";
 import { schemaFunction } from "./utils/schema.js";
-import { decode as msgpackDecode } from "@msgpack/msgpack";
+import { decode as msgpackDecode, encode as msgpackEncode } from "@msgpack/msgpack";
 
 const MAX_RETRY = 1000000;
 
@@ -247,8 +247,7 @@ export class HTTPStreamingRPCConnection {
     try {
       const ws = this._workspace || "public";
       const url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
-      const { encode } = await import("@msgpack/msgpack");
-      const body = encode({ type: "refresh_token" });
+      const body = msgpackEncode({ type: "refresh_token" });
       const response = await fetch(url, {
         method: "POST",
         headers: this._get_headers(false),
