@@ -496,7 +496,7 @@ class RemoteFunction:
                     )():
                         heartbeat.cancel()
                     t = session.get("timer")
-                    if t:
+                    if t and getattr(t, "started", False):
                         try:
                             t.clear()
                         except Exception:
@@ -577,7 +577,7 @@ class RemoteFunction:
                     reject(Exception(error_msg))
                 else:
                     logger.warning("Unhandled RPC method call error: %s", error_msg)
-                if timer:
+                if timer and timer.started:
                     timer.clear()
             else:
                 if timer:
@@ -1105,7 +1105,7 @@ class RPC(MessageEmitter):
                     logger.debug("Error cancelling heartbeat task: %s", e)
                 try:
                     timer = value.get("timer")
-                    if timer:
+                    if timer and getattr(timer, "started", False):
                         timer.clear()
                 except Exception as e:
                     logger.debug("Error clearing timer: %s", e)

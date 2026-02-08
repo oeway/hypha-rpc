@@ -1607,7 +1607,7 @@ export class RPC extends MessageEmitter {
       }
 
       // Clean up resources before removing session
-      if (store.timer && typeof store.timer.clear === "function") {
+      if (store.timer && store.timer.started && typeof store.timer.clear === "function") {
         try {
           store.timer.clear();
         } catch (error) {
@@ -2207,7 +2207,7 @@ export class RPC extends MessageEmitter {
                 // No reject callback available, log the error to prevent unhandled promise rejections
                 console.warn("Unhandled RPC method call error:", error_msg);
               }
-              if (timer) {
+              if (timer && timer.started) {
                 timer.clear();
               }
             });
@@ -2233,7 +2233,7 @@ export class RPC extends MessageEmitter {
                 // No reject callback available, log the error to prevent unhandled promise rejections
                 console.warn("Unhandled RPC method call error:", error_msg);
               }
-              if (timer) {
+              if (timer && timer.started) {
                 timer.clear();
               }
             });
