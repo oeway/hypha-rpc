@@ -158,6 +158,8 @@ class PyodideWebsocketRPCConnection:
         self._token_refresh_interval = token_refresh_interval
         self._refresh_token_task = None
         self._additional_headers = additional_headers
+        self._reconnect_task = None
+        self._reconnected_event = None
         assert ssl is None, "SSL is not supported in Pyodide"
         if self._server_url.startswith("wss://local-hypha-server:"):
             self._WebSocketClass = js.eval(
@@ -207,7 +209,7 @@ class PyodideWebsocketRPCConnection:
             while (
                 not self._closed
                 and self._websocket
-                and not self._websocket.readyState != WebSocket.CLOSED
+                and self._websocket.readyState != WebSocket.CLOSED
             ):
                 # Create the refresh token message
                 refresh_message = json.dumps({"type": "refresh_token"})
@@ -384,64 +386,89 @@ class PyodideWebsocketRPCConnection:
             and self._websocket
             and self._websocket.readyState == WebSocket.CLOSED
         ):
-            if evt.code in [1000, 1001]:
-                logger.info(
-                    f"Websocket connection closed (code: {evt.code}): {evt.reason}"
-                )
-                if self._handle_disconnected:
-                    self._handle_disconnected(evt.reason)
-                self._closed = True
-            elif self._enable_reconnect:
+            if self._enable_reconnect:
                 logger.warning(
                     f"Websocket connection closed unexpectedly (code: {evt.code}): {evt.reason}"
                 )
-                retry = 0
+                # Notify the RPC layer so it can reject pending calls immediately
+                if self._handle_disconnected:
+                    self._handle_disconnected(evt.reason)
 
-                async def reconnect():
-                    nonlocal retry
-                    try:
-                        logger.warning(
-                            f"Reconnecting to {self._server_url.split('?')[0]} (attempt #{retry})"
-                        )
-                        # Open the connection, this will trigger the on_connected callback
-                        connection_info = await self.open()
+                # Signal that reconnection is in progress
+                self._reconnected_event = asyncio.Event()
 
-                        # Wait a short time for services to be registered
-                        # This gives time for the on_connected callback to complete
-                        # which includes re-registering all services to the server
-                        await asyncio.sleep(0.5)
-
-                        logger.warning(
-                            f"Successfully reconnected to the server {self._server_url.split('?')[0]} (services re-registered)"
-                        )
-                    except ConnectionAbortedError as e:
-                        logger.warning("Failed to reconnect, connection aborted: %s", e)
-                        return
-                    except NotImplementedError as e:
-                        logger.error(
-                            f"{e}"
-                            "It appears that you are trying to connect "
-                            "to a hypha server that is older than 0.20.0, "
-                            "please upgrade the hypha server or "
-                            "use imjoy-rpc(https://pypi.org/project/imjoy-rpc/) "
-                            "with 'from imjoy_rpc.hypha import connect_to_sever' instead"
-                        )
-                        return
-                    except Exception as e:
-                        logger.warning("Failed to reconnect: %s", e)
-                        await asyncio.sleep(1)
-                        if (
-                            self._websocket
-                            and self._websocket.readyState == WebSocket.OPEN
-                        ):
+                async def reconnect_with_retry():
+                    retry = 0
+                    base_delay = 1.0
+                    max_delay = 60.0
+                    max_jitter = 0.1
+                    while retry < MAX_RETRY and not self._closed:
+                        try:
+                            logger.warning(
+                                "Reconnecting to %s (attempt #%s)",
+                                self._server_url.split("?")[0],
+                                retry,
+                            )
+                            connection_info = await self.open()
+                            await asyncio.sleep(0.5)
+                            logger.warning(
+                                "Successfully reconnected to %s (services re-registered)",
+                                self._server_url.split("?")[0],
+                            )
+                            if self._reconnected_event:
+                                self._reconnected_event.set()
+                                self._reconnected_event = None
                             return
-                        retry += 1
-                        if retry < MAX_RETRY:
-                            await reconnect()
-                        else:
-                            logger.error("Failed to reconnect after 5 attempts")
+                        except ConnectionAbortedError as e:
+                            logger.warning("Failed to reconnect, connection aborted: %s", e)
+                            self._closed = True
+                            if self._reconnected_event:
+                                self._reconnected_event.set()
+                                self._reconnected_event = None
+                            return
+                        except NotImplementedError as e:
+                            logger.error(
+                                "%s - It appears that you are trying to connect "
+                                "to a hypha server that is older than 0.20.0, "
+                                "please upgrade the hypha server or "
+                                "use imjoy-rpc(https://pypi.org/project/imjoy-rpc/) "
+                                "with 'from imjoy_rpc.hypha import connect_to_sever' instead",
+                                e,
+                            )
+                            if self._reconnected_event:
+                                self._reconnected_event.set()
+                                self._reconnected_event = None
+                            return
+                        except Exception as e:
+                            logger.warning("Failed to reconnect: %s", e)
+                            if (
+                                self._websocket
+                                and self._websocket.readyState == WebSocket.OPEN
+                            ):
+                                if self._reconnected_event:
+                                    self._reconnected_event.set()
+                                    self._reconnected_event = None
+                                return
+                            retry += 1
+                            # Exponential backoff with jitter
+                            import random
+                            delay = min(base_delay * (2 ** (retry - 1)), max_delay)
+                            jitter = random.uniform(-max_jitter, max_jitter) * delay
+                            final_delay = max(0.1, delay + jitter)
+                            logger.debug(
+                                "Waiting %.2fs before next reconnection attempt",
+                                final_delay,
+                            )
+                            await asyncio.sleep(final_delay)
 
-                asyncio.ensure_future(reconnect())
+                    if retry >= MAX_RETRY:
+                        logger.error("Failed to reconnect after %d attempts", MAX_RETRY)
+                        self._closed = True
+                        if self._reconnected_event:
+                            self._reconnected_event.set()
+                            self._reconnected_event = None
+
+                self._reconnect_task = asyncio.ensure_future(reconnect_with_retry())
         else:
             if self._handle_disconnected:
                 self._handle_disconnected(evt.reason)
@@ -449,10 +476,22 @@ class PyodideWebsocketRPCConnection:
     async def emit_message(self, data):
         """Emit a message."""
         if self._closed:
-            raise Exception("Connection is closed")
+            raise ConnectionError("Connection is closed")
         assert self._handle_message, "No handler for message"
         if not self._websocket or self._websocket.readyState == WebSocket.CLOSED:
-            await self.open()
+            # If reconnection is in progress, wait for it to complete
+            if self._reconnected_event is not None:
+                try:
+                    await asyncio.wait_for(
+                        self._reconnected_event.wait(), timeout=self._timeout
+                    )
+                except asyncio.TimeoutError:
+                    raise ConnectionError("WebSocket reconnection timed out")
+            # Check again after waiting
+            if self._closed:
+                raise ConnectionError("Connection is closed")
+            if not self._websocket or self._websocket.readyState == WebSocket.CLOSED:
+                await self.open()
 
         try:
             self._websocket.send(to_js(data))
@@ -468,4 +507,10 @@ class PyodideWebsocketRPCConnection:
         if self._refresh_token_task:
             self._refresh_token_task.cancel()
             self._refresh_token_task = None
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            self._reconnect_task = None
+        if self._reconnected_event:
+            self._reconnected_event.set()
+            self._reconnected_event = None
         logger.info(f"WebSocket connection disconnected ({reason})")

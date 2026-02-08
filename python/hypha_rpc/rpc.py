@@ -478,17 +478,35 @@ class RemoteFunction:
             # Heartbeat will keep resetting it, allowing methods to run indefinitely
             # IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
             async def timeout_callback(error_msg):
-                # First reject the promise
-                if asyncio.iscoroutinefunction(reject):
-                    await reject(error_msg)
-                else:
-                    reject(error_msg)
-                # Then clean up the entire session to stop all callbacks
-                if local_session_id in self._rpc._object_store:
-                    # Clean up target_id index before deleting the session
+                # First reject the promise - must pass an Exception, not a string
+                error = TimeoutError(error_msg)
+                try:
+                    if asyncio.iscoroutinefunction(reject):
+                        await reject(error)
+                    else:
+                        reject(error)
+                except Exception as e:
+                    logger.debug("Error rejecting timed-out call: %s", e)
+                # Clean up resources in the session before deleting it
+                session = self._rpc._object_store.get(local_session_id)
+                if isinstance(session, dict):
+                    heartbeat = session.get("heartbeat_task")
+                    if heartbeat and not getattr(
+                        heartbeat, "done", lambda: True
+                    )():
+                        heartbeat.cancel()
+                    t = session.get("timer")
+                    if t:
+                        try:
+                            t.clear()
+                        except Exception:
+                            pass
                     self._rpc._remove_from_target_id_index(local_session_id)
                     del self._rpc._object_store[local_session_id]
-                    logger.debug(f"Cleaned up session {local_session_id} after timeout")
+                    logger.debug("Cleaned up session %s after timeout", local_session_id)
+                elif local_session_id in self._rpc._object_store:
+                    self._rpc._remove_from_target_id_index(local_session_id)
+                    del self._rpc._object_store[local_session_id]
 
             timer = Timer(
                 self._rpc._method_timeout,
@@ -541,14 +559,14 @@ class RemoteFunction:
                     self._remote_parent,
                 )
             )
-        background_tasks.add(emit_task)
+        self._rpc._background_tasks.add(emit_task)
 
-        def handle_result(fut):
-            background_tasks.discard(fut)
-            if fut.exception():
+        def handle_result(emit_fut):
+            self._rpc._background_tasks.discard(emit_fut)
+            if emit_fut.exception():
                 error_msg = (
                     "Failed to send the request when calling method "
-                    f"({self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}), error: {fut.exception()}"
+                    f"({self._encoded_method['_rtarget']}:{self._encoded_method['_rmethod']}), error: {emit_fut.exception()}"
                 )
                 if reject:
                     reject(Exception(error_msg))
@@ -559,6 +577,31 @@ class RemoteFunction:
             else:
                 if timer:
                     timer.start()
+                if not self._with_promise:
+                    # Fire-and-forget: resolve immediately after message is sent
+                    # Without this, the future never resolves because no response
+                    # is expected. This is critical for heartbeat callbacks which
+                    # use _rpromise=False and are awaited in a loop.
+                    resolve(None)
+                    # Clean up the session created for encoding args since no
+                    # response will come back to trigger cleanup.
+                    # Only clean up if this is a top-level session (no parent),
+                    # otherwise we'd delete the parent session and all siblings.
+                    # Also skip cleanup if the session contains encoded callables
+                    # (e.g. generators) that need to persist for remote calls.
+                    if not self._local_parent:
+                        session = self._rpc._object_store.get(local_session_id)
+                        if isinstance(session, dict):
+                            has_live_entries = any(
+                                callable(v) or isinstance(v, dict)
+                                for k, v in session.items()
+                                if not k.startswith("_") and k != "target_id"
+                            )
+                            if not has_live_entries:
+                                self._rpc._remove_from_target_id_index(
+                                    local_session_id
+                                )
+                                del self._rpc._object_store[local_session_id]
 
         emit_task.add_done_callback(handle_result)
         return fut
@@ -568,9 +611,6 @@ class RemoteFunction:
 
     def __str__(self):
         return self.__repr__()
-
-
-background_tasks = set()
 
 
 class RPC(MessageEmitter):
@@ -610,6 +650,9 @@ class RPC(MessageEmitter):
         self._server_base_url = server_base_url
         self.loop = loop or asyncio.get_event_loop()
         self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
+        self._session_gc_task = None
+        self._session_ttl = 10 * 60  # 10 minutes default TTL for interface sessions
+        self._background_tasks = set()
         super().__init__(self._remote_logger)
 
         # Set up exception handler for unhandled asyncio futures
@@ -689,7 +732,9 @@ class RPC(MessageEmitter):
                     logger.info("Connection established, reporting services...")
                     try:
                         # Retry getting manager service with exponential backoff
-                        manager = await self._get_manager_with_retry()
+                        manager = await self.get_manager_service(
+                            {"timeout": 20, "case_conversion": "snake"}
+                        )
                         services_count = len(self._services)
                         registered_count = 0
                         failed_services = []
@@ -807,14 +852,41 @@ class RPC(MessageEmitter):
                         self._server_base_url = connection_info.get("public_base_url")
                     self._fire("connected", connection_info)
 
+                # Start session GC task if not already running
+                if self._session_gc_task is None or self._session_gc_task.done():
+                    self._session_gc_task = asyncio.ensure_future(self._session_gc_loop())
+
             connection.on_connected(on_connected)
+
+            # Register disconnect handler to reject all pending RPC calls
+            # This ensures no remote function call hangs forever when the connection drops
+            # But only reject if reconnection is NOT enabled - during reconnection,
+            # let the timer/timeout mechanism handle pending calls so they can
+            # succeed after reconnection
+            if hasattr(connection, "on_disconnected"):
+
+                def on_connection_lost(reason=None):
+                    # If reconnection is enabled, don't reject pending calls immediately
+                    # The timeout mechanism will handle them if reconnection fails
+                    if getattr(connection, "_enable_reconnect", False):
+                        logger.info(
+                            "Connection lost (%s), reconnection enabled - pending calls will be handled by timeout",
+                            reason,
+                        )
+                        return
+                    logger.warning(
+                        "Connection lost (%s), rejecting all pending RPC calls",
+                        reason,
+                    )
+                    self._reject_pending_calls(
+                        f"Connection lost: {reason or 'unknown reason'}"
+                    )
+
+                connection.on_disconnected(on_connection_lost)
+
             task = self.loop.create_task(on_connected(None))
-            # Store the background task reference for proper cleanup
-            self._background_task = task
-            # Mark the task with RPC reference for easier cleanup
-            task._rpc_ref = self
-            background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         else:
 
             async def _emit_message(_):
@@ -997,52 +1069,44 @@ class RPC(MessageEmitter):
             if key in ("services", "message_cache"):
                 continue
             if isinstance(value, dict):
-                if value.get("heartbeat_task"):
-                    value["heartbeat_task"].cancel()
-                if value.get("timer"):
-                    value["timer"].clear()
+                try:
+                    heartbeat_task = value.get("heartbeat_task")
+                    if heartbeat_task and not getattr(
+                        heartbeat_task, "done", lambda: True
+                    )():
+                        heartbeat_task.cancel()
+                except Exception as e:
+                    logger.debug("Error cancelling heartbeat task: %s", e)
+                try:
+                    timer = value.get("timer")
+                    if timer:
+                        timer.clear()
+                except Exception as e:
+                    logger.debug("Error clearing timer: %s", e)
                 self._close_sessions(value)
 
     def close(self):
         """Close the RPC connection and clean up resources."""
+        # Cancel session GC task
+        if self._session_gc_task and not self._session_gc_task.done():
+            self._session_gc_task.cancel()
+            self._session_gc_task = None
+
+        # Cancel any tracked background tasks (chunk sends, etc.)
+        for task in list(self._background_tasks):
+            if not task.done():
+                task.cancel()
+        self._background_tasks.clear()
+
         # Clean up all pending sessions before closing
         self._cleanup_on_disconnect()
         self._close_sessions(self._object_store)
 
-        # Clean up background tasks to prevent memory leaks
-        # Cancel any background tasks that might be holding references to this RPC
-        if hasattr(self, "_background_task") and self._background_task:
-            try:
-                if not self._background_task.done():
-                    self._background_task.cancel()
-                background_tasks.discard(self._background_task)
-            except Exception as e:
-                logger.debug(f"Error cleaning up background task: {e}")
-
-        # Clean up any other background tasks that might reference this RPC
-        tasks_to_remove = []
-        for task in list(background_tasks):
-            try:
-                if hasattr(task, "_rpc_ref") and task._rpc_ref is self:
-                    tasks_to_remove.append(task)
-                elif hasattr(task, "get_coro") and task.get_coro():
-                    # Check if task is related to this RPC by examining the coroutine
-                    coro = task.get_coro()
-                    if hasattr(coro, "cr_frame") and coro.cr_frame:
-                        # Look for references to this RPC in the task's frame
-                        frame_locals = coro.cr_frame.f_locals
-                        if "self" in frame_locals and frame_locals["self"] is self:
-                            tasks_to_remove.append(task)
-            except Exception as e:
-                logger.debug(f"Error checking background task: {e}")
-
-        for task in tasks_to_remove:
-            try:
-                if not task.done():
-                    task.cancel()
-                background_tasks.discard(task)
-            except Exception as e:
-                logger.debug(f"Error removing background task: {e}")
+        # Cancel all tracked background tasks (emit tasks, chunk sends, etc.)
+        for task in list(self._background_tasks):
+            if not task.done():
+                task.cancel()
+        self._background_tasks.clear()
 
         # Remove the local event handler for client_disconnected
         # Note: Actual unsubscription from server is done in async disconnect() method
@@ -1148,144 +1212,149 @@ class RPC(MessageEmitter):
                 if not self._target_id_index[target_id]:
                     del self._target_id_index[target_id]
 
+    def _cleanup_session_entry(self, session, reject_reason=None):
+        """Clean up a single session entry: reject promise, clear timer, cancel heartbeat.
+
+        Centralizes the cleanup logic used by multiple methods.
+        """
+        if not isinstance(session, dict):
+            return
+        if reject_reason and "reject" in session and callable(session["reject"]):
+            try:
+                session["reject"](ConnectionError(reject_reason))
+            except Exception as e:
+                logger.debug("Error rejecting session: %s", e)
+        heartbeat = session.get("heartbeat_task")
+        if heartbeat and not getattr(heartbeat, "done", lambda: True)():
+            try:
+                heartbeat.cancel()
+            except Exception:
+                pass
+        timer = session.get("timer")
+        if timer:
+            try:
+                timer.clear()
+            except Exception:
+                pass
+
     def _cleanup_sessions_for_client(self, client_id):
         """Clean up all sessions for a specific client using target_id index."""
         sessions_cleaned = 0
 
-        # Use index for O(1) lookup instead of iterating all sessions
         session_keys = self._target_id_index.pop(client_id, None)
         if not session_keys:
             return 0
 
+        reason = f"Client disconnected: {client_id}"
         for session_key in session_keys:
             session = self._object_store.get(session_key)
             if not isinstance(session, dict):
                 continue
-
-            # Verify the session still belongs to this client
             if session.get("target_id") != client_id:
                 continue
 
-            logger.debug(
-                f"Found session {session_key} for disconnected client: {client_id}"
-            )
-
-            # Reject any pending promises in this session
-            if "reject" in session and callable(session["reject"]):
-                logger.debug(f"Rejecting session {session_key}")
-                try:
-                    session["reject"](
-                        RemoteException(f"Client disconnected: {client_id}")
-                    )
-                except Exception as e:
-                    logger.warning(f"Error rejecting session {session_key}: {e}")
-
-            if "resolve" in session and callable(session["resolve"]):
-                logger.debug(f"Resolving session {session_key} with error")
-                try:
-                    session["resolve"](
-                        RemoteException(f"Client disconnected: {client_id}")
-                    )
-                except Exception as e:
-                    logger.warning(f"Error resolving session {session_key}: {e}")
-
-            # Clear any timers
-            if session.get("timer"):
-                try:
-                    session["timer"].clear()
-                except Exception as e:
-                    logger.warning(f"Error clearing timer for {session_key}: {e}")
-
-            # Clear heartbeat tasks
-            if session.get("heartbeat_task"):
-                try:
-                    session["heartbeat_task"].cancel()
-                except Exception as e:
-                    logger.warning(
-                        f"Error clearing heartbeat for {session_key}: {e}"
-                    )
-
-            # Remove the entire session
+            self._cleanup_session_entry(session, reason)
             del self._object_store[session_key]
             sessions_cleaned += 1
-            logger.debug(f"Cleaned up session: {session_key}")
+            logger.debug("Cleaned up session: %s", session_key)
 
         return sessions_cleaned
+
+    def _reject_pending_calls(self, reason="Connection lost"):
+        """Reject all pending RPC calls when the connection is lost.
+
+        Does NOT remove sessions (connection might be re-established).
+        """
+        try:
+            rejected_count = 0
+            for key in list(self._object_store.keys()):
+                if key in ("services", "message_cache"):
+                    continue
+                value = self._object_store.get(key)
+                if isinstance(value, dict):
+                    if "reject" in value and callable(value["reject"]):
+                        rejected_count += 1
+                    self._cleanup_session_entry(value, reason)
+            if rejected_count > 0:
+                logger.warning(
+                    "Rejected %d pending RPC call(s) due to: %s",
+                    rejected_count,
+                    reason,
+                )
+        except Exception as e:
+            logger.error("Error rejecting pending calls: %s", e)
 
     def _cleanup_on_disconnect(self):
         """Clean up all pending sessions when the local RPC disconnects."""
         try:
             logger.debug("Cleaning up all sessions due to local RPC disconnection")
 
-            # Get all keys to delete (everything except services)
             keys_to_delete = []
-
             for key in list(self._object_store.keys()):
                 if key == "services":
                     continue
-
                 value = self._object_store.get(key)
-
                 if isinstance(value, dict):
-                    # Reject any pending promises
-                    if "reject" in value and callable(value["reject"]):
-                        try:
-                            value["reject"](RemoteException("RPC connection closed"))
-                        except Exception as e:
-                            logger.debug(f"Error rejecting promise during cleanup: {e}")
-
-                    # Clean up timers and tasks
-                    if value.get("heartbeat_task"):
-                        value["heartbeat_task"].cancel()
-                    if value.get("timer"):
-                        value["timer"].clear()
-
-                # Mark ALL keys for deletion except services
+                    self._cleanup_session_entry(value, "RPC connection closed")
                 keys_to_delete.append(key)
 
-            # Delete all marked sessions
             for key in keys_to_delete:
                 del self._object_store[key]
 
-            # Clear the target_id index since all sessions are removed
             self._target_id_index.clear()
-
         except Exception as e:
-            logger.error(f"Error during cleanup on disconnect: {e}")
+            logger.error("Error during cleanup on disconnect: %s", e)
 
-    async def _get_manager_with_retry(self, max_retries=20):
-        """Get manager service with exponential backoff retry."""
-        base_delay = 0.5
-        max_delay = 10.0
-        last_error = None
+    async def _session_gc_loop(self):
+        """Periodically sweep sessions older than _session_ttl."""
+        try:
+            while True:
+                await asyncio.sleep(self._session_ttl / 2)
+                now = time.time()
+                keys_to_gc = []
+                for key in list(self._object_store.keys()):
+                    if key in ("services", "message_cache"):
+                        continue
+                    session = self._object_store.get(key)
+                    if not isinstance(session, dict):
+                        continue
+                    created_at = session.get("_created_at")
+                    if created_at is None:
+                        continue
+                    if now - created_at > self._session_ttl:
+                        keys_to_gc.append(key)
+                for key in keys_to_gc:
+                    session = self._object_store.get(key)
+                    if session is None:
+                        continue
+                    logger.debug("Session GC: cleaning up expired session %s", key)
+                    if "reject" in session and callable(session["reject"]):
+                        try:
+                            session["reject"](
+                                TimeoutError(f"Session expired (TTL={self._session_ttl}s): {key}")
+                            )
+                        except Exception:
+                            pass
+                    self._cleanup_session_resources(session)
+                    self._remove_from_target_id_index(key)
+                    try:
+                        del self._object_store[key]
+                    except KeyError:
+                        pass
+                if keys_to_gc:
+                    logger.debug("Session GC: cleaned up %d expired sessions", len(keys_to_gc))
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug("Session GC loop error: %s", e)
 
-        for attempt in range(max_retries):
-            try:
-                svc = await self.get_remote_service(
-                    f"*/{self._connection.manager_id}:default",
-                    {"timeout": 20, "case_conversion": "snake"},
-                )
-                return svc
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
-                )
-                if attempt < max_retries - 1:
-                    # Exponential backoff with maximum delay
-                    delay = min(base_delay * (2**attempt), max_delay)
-                    await asyncio.sleep(delay)
-
-        # If we get here, all retries failed
-        raise last_error
-
-    async def get_manager_service(self, config=None):
-        """Get remote root service."""
+    async def get_manager_service(self, config=None, max_retries=20):
+        """Get remote root service with retry."""
         config = config or {}
         assert self._connection.manager_id, "Manager id is not set"
 
-        max_retries = 20
-        retry_delay = 0.5
+        base_delay = 0.5
+        max_delay = 10.0
         last_error = None
 
         for attempt in range(max_retries):
@@ -1297,12 +1366,15 @@ class RPC(MessageEmitter):
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    f"Failed to get manager service (attempt {attempt+1}/{max_retries}): {e}"
+                    "Failed to get manager service (attempt %d/%d): %s",
+                    attempt + 1,
+                    max_retries,
+                    e,
                 )
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    await asyncio.sleep(delay)
 
-        # If we get here, all retries failed
         raise last_error
 
     def get_all_local_services(self):
@@ -1597,6 +1669,27 @@ class RPC(MessageEmitter):
                 raise Exception(f"Failed to notify workspace manager: {exp}")
         return service_info
 
+    def _remove_service_annotations(self, service_obj):
+        """Remove _method_annotations entries for all callables in a service."""
+        if isinstance(service_obj, dict):
+            for val in service_obj.values():
+                if callable(val):
+                    try:
+                        del self._method_annotations[val]
+                    except KeyError:
+                        pass
+                elif isinstance(val, (dict, list, tuple)):
+                    self._remove_service_annotations(val)
+        elif isinstance(service_obj, (list, tuple)):
+            for val in service_obj:
+                if callable(val):
+                    try:
+                        del self._method_annotations[val]
+                    except KeyError:
+                        pass
+                elif isinstance(val, (dict, list, tuple)):
+                    self._remove_service_annotations(val)
+
     async def unregister_service(self, service: Union[dict, str], notify: bool = True):
         """Register a service."""
         if isinstance(service, dict):
@@ -1615,6 +1708,8 @@ class RPC(MessageEmitter):
                 {"timeout": 20, "case_conversion": "snake"}
             )
             await manager.unregister_service(service_id)
+        # Clean up method annotations before removing the service
+        self._remove_service_annotations(self._services[service_id])
         del self._services[service_id]
 
     def _encode_callback(
@@ -1825,64 +1920,21 @@ class RPC(MessageEmitter):
             logger.error(f"Fallback cleanup failed for {session_id}: {e}")
 
     def _cleanup_session_resources(self, session_dict):
-        """Clean up resources within a session (timers, etc.) before deletion."""
+        """Clean up resources within a session (timers, heartbeats, tasks) before deletion."""
         if not isinstance(session_dict, dict):
             return
 
-        cleanup_errors = []
+        # Reuse common timer/heartbeat cleanup (without rejecting promise)
+        self._cleanup_session_entry(session_dict)
 
-        try:
-            # Clear any active timers
-            if "timer" in session_dict and session_dict["timer"]:
+        # Also cancel any other async tasks stored with _task suffix
+        for key, value in list(session_dict.items()):
+            if key.endswith("_task") and key != "heartbeat_task" and hasattr(value, "cancel"):
                 try:
-                    timer = session_dict["timer"]
-                    if hasattr(timer, "clear") and hasattr(timer, "started"):
-                        if timer.started:
-                            timer.clear()
-                            logger.debug("Cleared session timer during cleanup")
-                    elif hasattr(timer, "cancel"):
-                        # Some timers might have a cancel method instead
-                        timer.cancel()
-                        logger.debug("Cancelled session timer during cleanup")
-                except Exception as timer_error:
-                    cleanup_errors.append(f"timer: {timer_error}")
-
-            # Cancel any heartbeat tasks
-            if "heartbeat_task" in session_dict and session_dict["heartbeat_task"]:
-                try:
-                    task = session_dict["heartbeat_task"]
-                    if hasattr(task, "cancel") and not task.done():
-                        task.cancel()
-                        logger.debug("Cancelled heartbeat task during cleanup")
-                except Exception as task_error:
-                    cleanup_errors.append(f"heartbeat_task: {task_error}")
-
-            # Clean up any other async tasks that might be stored
-            for key, value in session_dict.items():
-                if key.endswith("_task") and hasattr(value, "cancel"):
-                    try:
-                        if not value.done():
-                            value.cancel()
-                            logger.debug(f"Cancelled {key} during cleanup")
-                    except Exception as cleanup_error:
-                        cleanup_errors.append(f"{key}: {cleanup_error}")
-
-            # Clean up promise manager resources
-            if "_promise_manager" in session_dict:
-                try:
-                    promise_manager = session_dict["_promise_manager"]
-                    if hasattr(promise_manager, "cleanup"):
-                        promise_manager.cleanup()
-                except Exception as pm_error:
-                    cleanup_errors.append(f"promise_manager: {pm_error}")
-
-        except Exception as e:
-            cleanup_errors.append(f"general: {e}")
-
-        if cleanup_errors:
-            logger.debug(
-                f"Some resource cleanup errors (non-critical): {cleanup_errors}"
-            )
+                    if not value.done():
+                        value.cancel()
+                except Exception:
+                    pass
 
     def _cleanup_empty_parent_containers(self, parent_levels):
         """Clean up empty parent containers from bottom up."""
@@ -2078,12 +2130,19 @@ class RPC(MessageEmitter):
             for idx in range(chunk_num):
                 start_byte = idx * self._long_message_chunk_size
                 chunk = package[start_byte : start_byte + self._long_message_chunk_size]
-                tasks.append(asyncio.create_task(append_chunk(idx, chunk)))
+                t = asyncio.create_task(append_chunk(idx, chunk))
+                self._background_tasks.add(t)
+                t.add_done_callback(self._background_tasks.discard)
+                tasks.append(t)
 
             # Wait for all chunks to finish uploading
             try:
                 await asyncio.gather(*tasks)
             except Exception as error:
+                # Cancel remaining tasks on failure
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
                 # If any chunk fails, clean up the message cache
                 try:
                     await message_cache.remove(message_id)
@@ -2295,6 +2354,10 @@ class RPC(MessageEmitter):
                     store = self._get_session_store(data["session"], create=False)
                     if store:
                         store["heartbeat_task"] = heartbeat_task
+                    else:
+                        # Track in background_tasks so it can be cancelled on close
+                        self._background_tasks.add(heartbeat_task)
+                        heartbeat_task.add_done_callback(self._background_tasks.discard)
             else:
                 resolve, reject = None, None
 
@@ -2479,6 +2542,9 @@ class RPC(MessageEmitter):
             # Create the last level
             if levels[-1] not in store:
                 store[levels[-1]] = {}
+                # Track creation time for session GC
+                if len(levels) == 1:
+                    store[levels[-1]]["_created_at"] = time.time()
 
             return store[levels[-1]]
         else:

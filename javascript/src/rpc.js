@@ -403,41 +403,52 @@ export class RPC extends MessageEmitter {
     // Track background tasks for proper cleanup
     this._background_tasks = new Set();
 
+    // Periodic session sweep for interface-object sessions (clear_after_called=false)
+    // that have no activity for a long time. Max age = 10 * method_timeout.
+    this._sessionMaxAge = (this._method_timeout || 30) * 10 * 1000;
+    this._sessionSweepInterval = setInterval(() => {
+      this._sweepStaleSessions();
+    }, this._sessionMaxAge / 2);
+
     // Set up global unhandled promise rejection handler for RPC-related errors
-    const handleUnhandledRejection = (event) => {
+    // Use a class-level reference counter so the handler is added once and removed
+    // only when the last RPC instance is closed.
+    this._unhandledRejectionHandler = (event) => {
       const reason = event.reason;
       if (reason && typeof reason === "object") {
-        // Check if this is a "Method not found" or "Session not found" error that we can ignore
         const reasonStr = reason.toString();
         if (
           reasonStr.includes("Method not found") ||
           reasonStr.includes("Session not found") ||
-          reasonStr.includes("Method expired") ||
-          reasonStr.includes("Session not found")
+          reasonStr.includes("Method expired")
         ) {
           console.debug(
             "Ignoring expected method/session not found error:",
             reason,
           );
-          event.preventDefault(); // Prevent the default unhandled rejection behavior
+          event.preventDefault();
           return;
         }
       }
       console.warn("Unhandled RPC promise rejection:", reason);
     };
 
-    // Only set the handler if we haven't already set one for this RPC instance
-    if (typeof window !== "undefined" && !window._hypha_rejection_handler_set) {
-      window.addEventListener("unhandledrejection", handleUnhandledRejection);
-      window._hypha_rejection_handler_set = true;
-    } else if (
-      typeof process !== "undefined" &&
-      !process._hypha_rejection_handler_set
-    ) {
-      process.on("unhandledRejection", (reason, promise) => {
-        handleUnhandledRejection({ reason, promise, preventDefault: () => {} });
-      });
-      process._hypha_rejection_handler_set = true;
+    this._unhandledRejectionNodeHandler = null;
+
+    if (!RPC._rejectionHandlerCount) {
+      RPC._rejectionHandlerCount = 0;
+    }
+    RPC._rejectionHandlerCount++;
+
+    if (RPC._rejectionHandlerCount === 1) {
+      if (typeof window !== "undefined") {
+        window.addEventListener("unhandledrejection", this._unhandledRejectionHandler);
+      } else if (typeof process !== "undefined") {
+        this._unhandledRejectionNodeHandler = (reason, promise) => {
+          this._unhandledRejectionHandler({ reason, promise, preventDefault: () => {} });
+        };
+        process.on("unhandledRejection", this._unhandledRejectionNodeHandler);
+      }
     }
 
     if (connection) {
@@ -460,8 +471,10 @@ export class RPC extends MessageEmitter {
           remove: this._remove_message.bind(this),
         },
       });
-      this.on("method", this._handle_method.bind(this));
-      this.on("error", console.error);
+      this._boundHandleMethod = this._handle_method.bind(this);
+      this._boundHandleError = console.error;
+      this.on("method", this._boundHandleMethod);
+      this.on("error", this._boundHandleError);
 
       assert(connection.emit_message && connection.on_message);
       assert(
@@ -476,7 +489,7 @@ export class RPC extends MessageEmitter {
           console.debug("Connection established, reporting services...");
           try {
             // Retry getting manager service with exponential backoff
-            const manager = await this._get_manager_with_retry();
+            const manager = await this.get_manager_service({ timeout: 20, case_conversion: "camel" });
             const services = Object.values(this._services);
             const servicesCount = services.length;
             let registeredCount = 0;
@@ -604,6 +617,29 @@ export class RPC extends MessageEmitter {
         }
       };
       connection.on_connected(onConnected);
+
+      // Register disconnect handler to reject all pending RPC calls
+      // This ensures no remote function call hangs forever when the connection drops
+      if (typeof connection.on_disconnected === "function") {
+        connection.on_disconnected((reason) => {
+          // If reconnection is enabled, don't reject pending calls immediately.
+          // The timeout mechanism will handle them if reconnection fails,
+          // allowing calls to succeed after a successful reconnection.
+          if (connection._enable_reconnect) {
+            console.info(
+              `Connection lost (${reason}), reconnection enabled - pending calls will be handled by timeout`,
+            );
+            return;
+          }
+          console.warn(
+            `Connection lost (${reason}), rejecting all pending RPC calls`,
+          );
+          this._rejectPendingCalls(
+            `Connection lost: ${reason || "unknown reason"}`,
+          );
+        });
+      }
+
       onConnected();
     } else {
       this._emit_message = function () {
@@ -657,12 +693,37 @@ export class RPC extends MessageEmitter {
     if (!this._object_store["message_cache"]) {
       this._object_store["message_cache"] = {};
     }
-    if (!overwrite && this._object_store["message_cache"][key]) {
+
+    // Evict stale cache entries (older than 5 minutes) and enforce size limit
+    const cache = this._object_store["message_cache"];
+    const MAX_CACHE_SIZE = 256;
+    const MAX_CACHE_AGE = 5 * 60 * 1000;
+    const cacheKeys = Object.keys(cache);
+    if (cacheKeys.length >= MAX_CACHE_SIZE) {
+      const now = Date.now();
+      for (const k of cacheKeys) {
+        const entry = cache[k];
+        if (entry && entry._cache_created_at && now - entry._cache_created_at > MAX_CACHE_AGE) {
+          delete cache[k];
+        }
+      }
+      // If still over limit, evict oldest entries
+      const remaining = Object.keys(cache);
+      if (remaining.length >= MAX_CACHE_SIZE) {
+        remaining
+          .sort((a, b) => (cache[a]._cache_created_at || 0) - (cache[b]._cache_created_at || 0))
+          .slice(0, remaining.length - MAX_CACHE_SIZE + 1)
+          .forEach((k) => delete cache[k]);
+      }
+    }
+
+    if (!overwrite && cache[key]) {
       throw new Error(
         `Message with the same key (${key}) already exists in the cache store, please use overwrite=true or remove it first.`,
       );
     }
-    this._object_store["message_cache"][key] = [];
+    cache[key] = [];
+    cache[key]._cache_created_at = Date.now();
   }
 
   _append_message(key, data, heartbeat, context) {
@@ -769,38 +830,58 @@ export class RPC extends MessageEmitter {
   }
 
   reset() {
+    this._removeRejectionHandler();
     this._event_handlers = {};
     this._services = {};
   }
 
-  close() {
-    // Clean up all pending sessions before closing
-    this._cleanupOnDisconnect();
-
-    // Clear all heartbeat intervals
-    for (const session_id in this._object_store) {
-      if (this._object_store.hasOwnProperty(session_id)) {
-        const session = this._object_store[session_id];
-        if (session && session.heartbeat_task) {
-          clearInterval(session.heartbeat_task);
-        }
-        if (session && session.timer) {
-          session.timer.clear();
+  _removeRejectionHandler() {
+    if (RPC._rejectionHandlerCount && RPC._rejectionHandlerCount > 0) {
+      RPC._rejectionHandlerCount--;
+      if (RPC._rejectionHandlerCount === 0) {
+        if (typeof window !== "undefined" && this._unhandledRejectionHandler) {
+          window.removeEventListener("unhandledrejection", this._unhandledRejectionHandler);
+        } else if (typeof process !== "undefined" && this._unhandledRejectionNodeHandler) {
+          process.removeListener("unhandledRejection", this._unhandledRejectionNodeHandler);
         }
       }
+    }
+    this._unhandledRejectionHandler = null;
+    this._unhandledRejectionNodeHandler = null;
+  }
+
+  close() {
+    // Clean up all pending sessions (rejects promises, clears timers/heartbeats, deletes sessions)
+    this._cleanupOnDisconnect();
+
+    // Remove method and error event listeners
+    if (this._boundHandleMethod) {
+      this.off("method", this._boundHandleMethod);
+      this._boundHandleMethod = null;
+    }
+    if (this._boundHandleError) {
+      this.off("error", this._boundHandleError);
+      this._boundHandleError = null;
     }
 
     // Clean up client_disconnected subscription
     if (this._clientDisconnectedSubscription) {
-      // Remove the local event handler (no need to unsubscribe from server -
-      // the server will clean up when it detects the disconnection)
+      try {
+        if (typeof this._clientDisconnectedSubscription.unsubscribe === "function") {
+          this._clientDisconnectedSubscription.unsubscribe();
+        }
+      } catch (e) {
+        console.debug(`Error unsubscribing client_disconnected: ${e}`);
+      }
       this.off("client_disconnected");
       this._clientDisconnectedSubscription = null;
     }
 
+    // Remove the global unhandled rejection handler
+    this._removeRejectionHandler();
+
     // Clean up background tasks
     try {
-      // Cancel all background tasks
       for (const task of this._background_tasks) {
         if (task && typeof task.cancel === "function") {
           try {
@@ -815,12 +896,15 @@ export class RPC extends MessageEmitter {
       console.debug(`Error cleaning up background tasks: ${e}`);
     }
 
+    // Clear session sweep interval
+    if (this._sessionSweepInterval) {
+      clearInterval(this._sessionSweepInterval);
+      this._sessionSweepInterval = null;
+    }
+
     // Clean up connection references to prevent circular references
     try {
-      // Clear connection reference to break circular references
       this._connection = null;
-
-      // Replace emit_message with a no-op to prevent further calls
       this._emit_message = function () {
         console.debug("RPC connection closed, ignoring message");
         return Promise.reject(new Error("Connection is closed"));
@@ -875,6 +959,29 @@ export class RPC extends MessageEmitter {
     }
   }
 
+  /**
+   * Clean up a single session entry: reject promise, clear timer, cancel heartbeat.
+   * Centralizes the cleanup logic used by multiple methods.
+   * @param {object} session - The session object from _object_store
+   * @param {string|null} rejectReason - If provided, reject the session's promise with this reason
+   */
+  _cleanupSessionEntry(session, rejectReason = null) {
+    if (!session || typeof session !== "object") return;
+    if (rejectReason && session.reject && typeof session.reject === "function") {
+      try {
+        session.reject(new Error(rejectReason));
+      } catch (e) {
+        console.debug(`Error rejecting session: ${e}`);
+      }
+    }
+    if (session.heartbeat_task) {
+      try { clearInterval(session.heartbeat_task); } catch (e) { /* ignore */ }
+    }
+    if (session.timer && typeof session.timer.clear === "function") {
+      try { session.timer.clear(); } catch (e) { /* ignore */ }
+    }
+  }
+
   _cleanupSessionsForClient(clientId) {
     let sessionsCleaned = 0;
 
@@ -882,55 +989,13 @@ export class RPC extends MessageEmitter {
     const sessionKeys = this._targetIdIndex[clientId];
     if (!sessionKeys) return 0;
 
+    const reason = `Client disconnected: ${clientId}`;
     for (const sessionKey of sessionKeys) {
       const session = this._object_store[sessionKey];
-      if (!session || typeof session !== "object") {
-        continue;
-      }
+      if (!session || typeof session !== "object") continue;
+      if (session.target_id !== clientId) continue;
 
-      // Verify the session still belongs to this client
-      if (session.target_id !== clientId) {
-        continue;
-      }
-
-      // Reject any pending promises in this session
-      if (session.reject && typeof session.reject === "function") {
-        console.debug(`Rejecting session ${sessionKey}`);
-        try {
-          session.reject(new Error(`Client disconnected: ${clientId}`));
-        } catch (e) {
-          console.warn(`Error rejecting session ${sessionKey}: ${e}`);
-        }
-      }
-
-      if (session.resolve && typeof session.resolve === "function") {
-        console.debug(`Resolving session ${sessionKey} with error`);
-        try {
-          session.resolve(new Error(`Client disconnected: ${clientId}`));
-        } catch (e) {
-          console.warn(`Error resolving session ${sessionKey}: ${e}`);
-        }
-      }
-
-      // Clear any timers
-      if (session.timer && typeof session.timer.clear === "function") {
-        try {
-          session.timer.clear();
-        } catch (e) {
-          console.warn(`Error clearing timer for ${sessionKey}: ${e}`);
-        }
-      }
-
-      // Clear heartbeat tasks
-      if (session.heartbeat_task) {
-        try {
-          clearInterval(session.heartbeat_task);
-        } catch (e) {
-          console.warn(`Error clearing heartbeat for ${sessionKey}: ${e}`);
-        }
-      }
-
-      // Remove the entire session
+      this._cleanupSessionEntry(session, reason);
       delete this._object_store[sessionKey];
       sessionsCleaned++;
       console.debug(`Cleaned up session: ${sessionKey}`);
@@ -940,53 +1005,49 @@ export class RPC extends MessageEmitter {
     return sessionsCleaned;
   }
 
+  _rejectPendingCalls(reason = "Connection lost") {
+    /**
+     * Reject all pending RPC calls when the connection is lost.
+     * Does NOT remove sessions (connection might be re-established).
+     */
+    try {
+      let rejectedCount = 0;
+      for (const key of Object.keys(this._object_store)) {
+        if (key === "services" || key === "message_cache") continue;
+        const value = this._object_store[key];
+        if (typeof value === "object" && value !== null) {
+          if (value.reject && typeof value.reject === "function") {
+            rejectedCount++;
+          }
+          this._cleanupSessionEntry(value, reason);
+        }
+      }
+      if (rejectedCount > 0) {
+        console.warn(
+          `Rejected ${rejectedCount} pending RPC call(s) due to: ${reason}`,
+        );
+      }
+    } catch (e) {
+      console.error(`Error rejecting pending calls: ${e}`);
+    }
+  }
+
   _cleanupOnDisconnect() {
     try {
       console.debug("Cleaning up all sessions due to local RPC disconnection");
 
-      // Get all keys to delete after cleanup
       const keysToDelete = [];
-
       for (const key of Object.keys(this._object_store)) {
-        if (key === "services") {
-          continue;
-        }
-
+        if (key === "services" || key === "message_cache") continue;
         const value = this._object_store[key];
-
-        if (typeof value === "object" && value !== null) {
-          // Reject any pending promises
-          if (value.reject && typeof value.reject === "function") {
-            try {
-              value.reject(new Error("RPC connection closed"));
-            } catch (e) {
-              console.debug(`Error rejecting promise during cleanup: ${e}`);
-            }
-          }
-
-          // Clean up timers and tasks
-          if (value.heartbeat_task) {
-            clearInterval(value.heartbeat_task);
-          }
-          if (value.timer && typeof value.timer.clear === "function") {
-            try {
-              value.timer.clear();
-            } catch (e) {
-              console.debug(`Error clearing timer: ${e}`);
-            }
-          }
-        }
-
-        // Mark ALL keys for deletion except services
+        this._cleanupSessionEntry(value, "RPC connection closed");
         keysToDelete.push(key);
       }
 
-      // Delete all marked sessions
       for (const key of keysToDelete) {
         delete this._object_store[key];
       }
 
-      // Clear the target_id index since all sessions are removed
       this._targetIdIndex = {};
     } catch (e) {
       console.error(`Error during cleanup on disconnect: ${e}`);
@@ -1008,44 +1069,14 @@ export class RPC extends MessageEmitter {
     }
   }
 
-  async _get_manager_with_retry(maxRetries = 20) {
+  async get_manager_service(config, maxRetries = 20) {
+    config = config || {};
     const baseDelay = 500;
     const maxDelay = 10000;
     let lastError = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        const svc = await this.get_remote_service(
-          `*/${this._connection.manager_id}:default`,
-          { timeout: 20, case_conversion: "camel" },
-        );
-        return svc;
-      } catch (e) {
-        lastError = e;
-        console.warn(
-          `Failed to get manager service (attempt ${attempt + 1}/${maxRetries}): ${e.message}`,
-        );
-        if (attempt < maxRetries - 1) {
-          // Exponential backoff with maximum delay
-          const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
-    }
-
-    // If we get here, all retries failed
-    throw lastError;
-  }
-
-  async get_manager_service(config) {
-    config = config || {};
-
-    // Add retry logic with exponential backoff
-    const maxRetries = 20;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      // Exponential backoff: 500ms, 1s, 2s, 4s, ... capped at 10s
-      const retryDelay = Math.min(500 * Math.pow(2, attempt), 10000);
+      const retryDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
 
       if (!this._connection.manager_id) {
         if (attempt < maxRetries - 1) {
@@ -1066,16 +1097,17 @@ export class RPC extends MessageEmitter {
         );
         return svc;
       } catch (e) {
+        lastError = e;
+        console.warn(
+          `Failed to get manager service (attempt ${attempt + 1}/${maxRetries}): ${e.message}`,
+        );
         if (attempt < maxRetries - 1) {
-          console.warn(
-            `Failed to get manager service, retrying in ${retryDelay}ms: ${e.message}`,
-          );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
-        } else {
-          throw e;
         }
       }
     }
+
+    throw lastError;
   }
 
   get_all_local_services() {
@@ -1764,6 +1796,37 @@ export class RPC extends MessageEmitter {
     console.debug(`Force cleaning up ${cleaned_count} sessions`);
   }
 
+  _sweepStaleSessions() {
+    const now = Date.now();
+    let swept = 0;
+    for (const key of Object.keys(this._object_store)) {
+      if (key === "services" || key === "message_cache") continue;
+      const session = this._object_store[key];
+      if (
+        session &&
+        typeof session === "object" &&
+        session._created_at &&
+        now - session._created_at > this._sessionMaxAge
+      ) {
+        // Only sweep sessions that have no timer (active timers mean they are in use)
+        // and no active promise callbacks (resolve/reject mean the session is awaiting a response)
+        if (!session.timer || !session.timer.started) {
+          if (typeof session.resolve === "function" || typeof session.reject === "function") {
+            // Session still has active promise callbacks, skip it
+            continue;
+          }
+          this._removeFromTargetIdIndex(key);
+          if (session.heartbeat_task) clearInterval(session.heartbeat_task);
+          delete this._object_store[key];
+          swept++;
+        }
+      }
+    }
+    if (swept > 0) {
+      console.debug(`Swept ${swept} stale session(s)`);
+    }
+  }
+
   // Clean helper to identify promise method calls by session type
   _is_promise_method_call(method_path) {
     const session_id = method_path.split(".")[0];
@@ -2045,8 +2108,8 @@ export class RPC extends MessageEmitter {
           // Methods can run indefinitely as long as heartbeat keeps resetting the timer
           // IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
           const timeoutCallback = function (error_msg) {
-            // First reject the promise
-            reject(error_msg);
+            // First reject the promise - wrap in Error for proper stack traces
+            reject(new Error(error_msg));
             // Then clean up the entire session to stop all callbacks
             if (self._object_store[local_session_id]) {
               // Clean up target_id index before deleting the session
@@ -2124,6 +2187,13 @@ export class RPC extends MessageEmitter {
                 // Start the timer after message is sent successfully
                 timer.start();
               }
+              if (!with_promise) {
+                // Fire-and-forget: resolve immediately after message is sent.
+                // Without this, the promise never resolves because no response
+                // is expected. This is critical for heartbeat callbacks which
+                // use _rpromise=false and are awaited in a loop.
+                resolve(null);
+              }
             })
             .catch(function (err) {
               const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
@@ -2145,6 +2215,10 @@ export class RPC extends MessageEmitter {
               if (timer) {
                 // Start the timer after message is sent successfully
                 timer.start();
+              }
+              if (!with_promise) {
+                // Fire-and-forget: resolve immediately after message is sent
+                resolve(null);
               }
             })
             .catch(function (err) {
@@ -2421,10 +2495,11 @@ export class RPC extends MessageEmitter {
           result
             .then((result) => {
               resolve(result);
-              clearInterval(heartbeat_task);
             })
             .catch((err) => {
               reject(err);
+            })
+            .finally(() => {
               clearInterval(heartbeat_task);
             });
         } else {
@@ -2438,11 +2513,9 @@ export class RPC extends MessageEmitter {
     } catch (err) {
       if (reject) {
         reject(err);
-        // console.debug("Error during calling method: ", err);
       } else {
         console.error("Error during calling method: ", err);
       }
-      // make sure we clear the heartbeat timer
       clearInterval(heartbeat_task);
     }
   }
@@ -2469,6 +2542,7 @@ export class RPC extends MessageEmitter {
       // Create the last level
       if (!store[levels[last_index]]) {
         store[levels[last_index]] = {};
+        store[levels[last_index]]._created_at = Date.now();
       }
       return store[levels[last_index]];
     } else {

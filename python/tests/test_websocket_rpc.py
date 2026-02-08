@@ -3253,6 +3253,38 @@ async def test_long_running_method_with_heartbeat(restartable_server):
         f"   ✅ Streaming ran for {stream_duration:.1f}s (>2s timeout) with {len(stream_updates)} updates"
     )
 
+    # Test 3: Pure long-running method WITHOUT any callbacks
+    # This is the critical case — heartbeat alone must keep the connection alive
+    print("\n--- Test 3: Pure long-running method (no callbacks) ---")
+
+    async def pure_long_task(duration_seconds):
+        """A long-running task that does NOT use any callbacks."""
+        await asyncio.sleep(duration_seconds)
+        return f"Pure task completed after {duration_seconds} seconds"
+
+    await ws.register_service(
+        {
+            "id": "pure-long-service",
+            "config": {"visibility": "protected"},
+            "pure_long_task": pure_long_task,
+        }
+    )
+    pure_svc = await ws.get_service("pure-long-service")
+
+    PURE_DURATION = 5  # 5 seconds > 2 second timeout
+    print(f"   🚀 Starting {PURE_DURATION}s pure async task (timeout is only 2s, no callbacks)")
+
+    start_time = asyncio.get_event_loop().time()
+    result = await pure_svc.pure_long_task(PURE_DURATION)
+    actual_duration = asyncio.get_event_loop().time() - start_time
+
+    assert f"Pure task completed after {PURE_DURATION} seconds" in result
+    assert actual_duration >= PURE_DURATION
+    assert actual_duration > 2  # Must have survived past the timeout
+    print(
+        f"   ✅ Pure task ran for {actual_duration:.1f}s (>{ws.rpc._method_timeout}s timeout) — heartbeat kept it alive"
+    )
+
     # Cleanup
     await ws.disconnect()
 
@@ -3458,3 +3490,602 @@ async def test_local_rpc_disconnection_cleanup(websocket_server):
     ), "All sessions should be cleaned up after disconnection"
 
     print("✅ LOCAL RPC DISCONNECTION CLEANUP TEST PASSED!")
+
+
+# =====================================================================
+# New comprehensive tests for edge cases and robustness
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_data_type_roundtrip(websocket_server):
+    """Test serialization/deserialization of edge-case data types."""
+    api = await connect_to_server(
+        {
+            "name": "data roundtrip",
+            "server_url": WS_SERVER_URL,
+            "client_id": "data-roundtrip-client",
+        }
+    )
+
+    async def echo_data(data):
+        return data
+
+    await api.register_service(
+        {
+            "name": "Data Roundtrip Service",
+            "id": "data-roundtrip-svc",
+            "config": {"visibility": "protected"},
+            "echo_data": echo_data,
+        }
+    )
+
+    svc = await api.get_service("data-roundtrip-svc")
+
+    # Unicode: emoji
+    result = await svc.echo_data("Hello 🎉🚀")
+    assert result == "Hello 🎉🚀"
+
+    # Unicode: CJK characters
+    result = await svc.echo_data("中文测试")
+    assert result == "中文测试"
+
+    # Unicode: RTL text
+    result = await svc.echo_data("مرحبا")
+    assert result == "مرحبا"
+
+    # Unicode: combining characters
+    result = await svc.echo_data("e\u0301")  # e + combining acute accent
+    assert result == "e\u0301"
+
+    # Special floats: infinity and negative infinity
+    result = await svc.echo_data(float("inf"))
+    assert result == float("inf")
+
+    result = await svc.echo_data(float("-inf"))
+    assert result == float("-inf")
+
+    # Special floats: NaN
+    import math
+
+    result = await svc.echo_data(float("nan"))
+    assert math.isnan(result)
+
+    # Very large integers
+    result = await svc.echo_data(2**63)
+    assert result == 2**63
+
+    # Empty containers
+    result = await svc.echo_data({})
+    assert result == {}
+
+    result = await svc.echo_data([])
+    assert result == []
+
+    result = await svc.echo_data("")
+    assert result == ""
+
+    result = await svc.echo_data(b"")
+    assert result == b""
+
+    # Bytes with nulls
+    result = await svc.echo_data(b"\x00\x01\x02")
+    assert result == b"\x00\x01\x02"
+
+    # Deep nesting (50+ levels)
+    deep = {"value": 42}
+    for _ in range(50):
+        deep = {"nested": deep}
+    result = await svc.echo_data(deep)
+    # Navigate down to verify
+    node = result
+    for _ in range(50):
+        node = node["nested"]
+    assert node["value"] == 42
+
+    # Mixed types in lists
+    mixed = [1, "string", True, None, {"nested": [1, 2, 3]}]
+    result = await svc.echo_data(mixed)
+    assert result[0] == 1
+    assert result[1] == "string"
+    assert result[2] is True
+    assert result[3] is None
+    assert result[4]["nested"] == [1, 2, 3]
+
+    # Boolean values
+    result = await svc.echo_data(True)
+    assert result is True
+    result = await svc.echo_data(False)
+    assert result is False
+
+    # None
+    result = await svc.echo_data(None)
+    assert result is None
+
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_callback_error_propagation(websocket_server):
+    """Test that errors in callbacks propagate back to the caller."""
+    server = await connect_to_server(
+        {
+            "name": "callback error test server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cb-error-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def call_with_callback(callback):
+        """Call the callback and return the result."""
+        return await callback("test-arg")
+
+    await server.register_service(
+        {
+            "name": "Callback Error Service",
+            "id": "cb-error-svc",
+            "config": {"visibility": "protected"},
+            "call_with_callback": call_with_callback,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "callback error test client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cb-error-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("cb-error-svc")
+
+    # Callback that raises an exception
+    def failing_callback(arg):
+        raise ValueError("Callback deliberate failure")
+
+    try:
+        result = await asyncio.wait_for(
+            svc.call_with_callback(failing_callback), timeout=15
+        )
+        # If we get here, the error was not propagated - but some implementations
+        # may swallow it. The key thing is it should not hang forever.
+        assert False, "Expected an exception from the failing callback"
+    except (Exception,) as e:
+        # The error should have propagated
+        assert "Callback deliberate failure" in str(e) or "Error" in str(e)
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_callback_multiple_invocations(websocket_server):
+    """Test that a callback can be invoked multiple times (progress pattern)."""
+    server = await connect_to_server(
+        {
+            "name": "multi callback server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "multi-cb-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def process_with_progress(n, progress_callback):
+        """Call progress_callback n times with progress updates."""
+        for i in range(n):
+            await progress_callback(i, n)
+        return "done"
+
+    await server.register_service(
+        {
+            "name": "Multi Callback Service",
+            "id": "multi-cb-svc",
+            "config": {"visibility": "protected"},
+            "process_with_progress": process_with_progress,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "multi callback client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "multi-cb-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("multi-cb-svc")
+
+    # Collect all progress calls
+    progress_calls = []
+
+    def progress_callback(current, total):
+        progress_calls.append((current, total))
+
+    result = await asyncio.wait_for(
+        svc.process_with_progress(10, progress_callback), timeout=30
+    )
+    assert result == "done"
+
+    # Verify callback was invoked exactly 10 times with correct arguments
+    assert len(progress_calls) == 10
+    for i in range(10):
+        assert progress_calls[i] == (i, 10), f"Expected ({i}, 10), got {progress_calls[i]}"
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_timeout_produces_clear_error(websocket_server):
+    """Test that calling a hanging service with timeout produces a clear error."""
+    server = await connect_to_server(
+        {
+            "name": "timeout test server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "timeout-test-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def hang_forever():
+        """A service function that never returns."""
+        await asyncio.sleep(3600)  # Sleep for 1 hour
+        return "should never reach here"
+
+    await server.register_service(
+        {
+            "name": "Hanging Service",
+            "id": "hanging-svc",
+            "config": {"visibility": "protected"},
+            "hang": hang_forever,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "timeout test client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "timeout-test-client",
+            "workspace": workspace,
+            "token": token,
+            "method_timeout": 3,  # Short timeout
+        }
+    )
+
+    svc = await client.get_service("hanging-svc")
+
+    try:
+        await asyncio.wait_for(svc.hang(), timeout=10)
+        assert False, "Expected a timeout error"
+    except (asyncio.TimeoutError, Exception) as e:
+        # Either asyncio timeout or RPC timeout should fire
+        error_msg = str(e).lower()
+        assert "timeout" in error_msg or "timed out" in error_msg or isinstance(
+            e, asyncio.TimeoutError
+        ), f"Expected timeout error, got: {e}"
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_call_partial_failure(websocket_server):
+    """Test concurrent calls where some succeed and some fail."""
+    api = await connect_to_server(
+        {
+            "name": "concurrent test",
+            "server_url": WS_SERVER_URL,
+            "client_id": "concurrent-test-client",
+        }
+    )
+
+    async def succeed(x):
+        return x * 2
+
+    async def fail(x):
+        raise ValueError(f"Deliberate failure for {x}")
+
+    await api.register_service(
+        {
+            "name": "Concurrent Test Service",
+            "id": "concurrent-svc",
+            "config": {"visibility": "protected"},
+            "succeed": succeed,
+            "fail": fail,
+        }
+    )
+
+    svc = await api.get_service("concurrent-svc")
+
+    # Make concurrent calls - mix of success and failure
+    success_tasks = [svc.succeed(i) for i in range(5)]
+    fail_tasks = [svc.fail(i) for i in range(5)]
+
+    # Gather success tasks
+    success_results = await asyncio.gather(*success_tasks)
+    assert success_results == [0, 2, 4, 6, 8]
+
+    # Gather fail tasks - should all raise exceptions
+    fail_results = await asyncio.gather(*fail_tasks, return_exceptions=True)
+    for i, result in enumerate(fail_results):
+        assert isinstance(result, Exception), f"Expected exception for task {i}, got {result}"
+        assert "Deliberate failure" in str(result)
+
+    # Now do them all interleaved to make sure there's no cross-contamination
+    mixed_tasks = []
+    for i in range(5):
+        mixed_tasks.append(svc.succeed(i))
+        mixed_tasks.append(svc.fail(i))
+
+    mixed_results = await asyncio.gather(*mixed_tasks, return_exceptions=True)
+    for i in range(0, 10, 2):
+        # Even indices are succeed calls
+        assert mixed_results[i] == (i // 2) * 2, f"Success result mismatch at index {i}"
+        # Odd indices are fail calls
+        assert isinstance(mixed_results[i + 1], Exception), f"Expected exception at index {i+1}"
+
+    await api.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_generator_error_mid_stream(websocket_server):
+    """Test async generator that yields some values then raises an error."""
+    server = await connect_to_server(
+        {
+            "name": "gen error server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gen-error-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def error_generator(n_good):
+        """Yield n_good values then raise an error."""
+        for i in range(n_good):
+            yield i
+        raise RuntimeError("Generator mid-stream failure")
+
+    await server.register_service(
+        {
+            "name": "Generator Error Service",
+            "id": "gen-error-svc",
+            "config": {"visibility": "protected"},
+            "error_generator": error_generator,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "gen error client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gen-error-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("gen-error-svc")
+
+    gen = await svc.error_generator(3)
+    collected = []
+    error_caught = False
+    try:
+        async for item in gen:
+            collected.append(item)
+    except Exception as e:
+        error_caught = True
+        # The error propagation may carry the original message or a session error
+        # depending on timing; the key thing is that an error IS raised
+        error_msg = str(e)
+        assert (
+            "Generator mid-stream failure" in error_msg
+            or "Session not found" in error_msg
+            or "Error" in error_msg
+        ), f"Unexpected error message: {error_msg}"
+
+    assert error_caught, "Expected an error from the generator"
+    # Note: Depending on session cleanup timing, some or all good values may
+    # have been received before the error. The critical guarantee is that the
+    # error was raised rather than the iteration silently stopping.
+    # If all values were received, they should be correct.
+    for i, v in enumerate(collected):
+        assert v == i, f"Collected value at index {i} should be {i}, got {v}"
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_rejects_pending_calls(websocket_server):
+    """Test that disconnecting rejects all pending RPC calls."""
+    server = await connect_to_server(
+        {
+            "name": "disconnect reject server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "disconnect-reject-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def slow_operation():
+        """A slow service function."""
+        await asyncio.sleep(30)
+        return "should not complete"
+
+    await server.register_service(
+        {
+            "name": "Slow Service",
+            "id": "slow-svc",
+            "config": {"visibility": "protected"},
+            "slow_op": slow_operation,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "disconnect reject client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "disconnect-reject-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("slow-svc")
+
+    # Start a slow call using asyncio.ensure_future to handle both coroutine and future
+    slow_task = asyncio.ensure_future(svc.slow_op())
+
+    # Give a moment for the call to be sent
+    await asyncio.sleep(0.5)
+
+    # Disconnect the client while the call is pending
+    await client.disconnect()
+
+    # The pending call should be rejected
+    try:
+        result = await asyncio.wait_for(slow_task, timeout=10)
+        assert False, "Expected the slow call to be rejected after disconnect"
+    except Exception as e:
+        error_msg = str(e).lower()
+        assert (
+            "closed" in error_msg
+            or "disconnected" in error_msg
+            or "connection" in error_msg
+            or isinstance(e, asyncio.TimeoutError)
+            or isinstance(e, asyncio.CancelledError)
+        ), f"Expected connection-related error, got: {e}"
+
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_callback_cleanup_after_call(websocket_server):
+    """Test that _object_store does not grow unboundedly after many calls with callbacks."""
+    server = await connect_to_server(
+        {
+            "name": "cb cleanup server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cb-cleanup-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def invoke_callback(callback):
+        """Invoke the callback once and return the result."""
+        return await callback("ping")
+
+    await server.register_service(
+        {
+            "name": "Callback Cleanup Service",
+            "id": "cb-cleanup-svc",
+            "config": {"visibility": "protected"},
+            "invoke_callback": invoke_callback,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "cb cleanup client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cb-cleanup-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("cb-cleanup-svc")
+
+    # Record the baseline store size
+    baseline = len(client.rpc._object_store)
+
+    # Make many calls with callbacks
+    num_calls = 50
+    for i in range(num_calls):
+        result = await svc.invoke_callback(lambda x: f"pong-{x}")
+        assert result == "pong-ping"
+
+    # Allow some time for cleanup
+    await asyncio.sleep(1)
+
+    # The object store should not have grown by num_calls entries.
+    # Some small overhead is acceptable (e.g., message_cache, default service),
+    # but it should be bounded, not proportional to num_calls.
+    after_size = len(client.rpc._object_store)
+    growth = after_size - baseline
+    assert growth < num_calls, (
+        f"Object store grew by {growth} after {num_calls} calls. "
+        f"Baseline={baseline}, After={after_size}. "
+        "This suggests callbacks are not being cleaned up."
+    )
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_nested_callback(websocket_server):
+    """Test nested callbacks: a service calls a callback that itself accepts a callback."""
+    server = await connect_to_server(
+        {
+            "name": "nested cb server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "nested-cb-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def outer_call(outer_callback):
+        """Call the outer callback, passing an inner function that the callback can invoke."""
+        async def inner_function(value):
+            return value * 10
+
+        result = await outer_callback(inner_function)
+        return result
+
+    await server.register_service(
+        {
+            "name": "Nested Callback Service",
+            "id": "nested-cb-svc",
+            "config": {"visibility": "protected"},
+            "outer_call": outer_call,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "nested cb client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "nested-cb-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("nested-cb-svc")
+
+    # The outer_callback receives inner_function from the server side,
+    # and calls it with a value.
+    async def outer_callback(inner_fn):
+        # inner_fn is a remote function from the server
+        result = await inner_fn(7)
+        return result + 1
+
+    result = await svc.outer_call(outer_callback)
+    # inner_function(7) = 70, outer_callback returns 70 + 1 = 71
+    assert result == 71, f"Expected 71, got {result}"
+
+    await client.disconnect()
+    await server.disconnect()

@@ -64,12 +64,20 @@ class WebsocketRPCConnection {
     this._refresh_token_task = null;
     this._reconnect_timeouts = new Set(); // Track reconnection timeouts
     this._additional_headers = additional_headers;
+    this._reconnecting = false; // Mutex to prevent overlapping reconnection attempts
+    this._disconnectedNotified = false;
   }
 
   /**
    * Centralized cleanup method to clear all timers and prevent resource leaks
    */
   _cleanup() {
+    // Clear token refresh delay timeout
+    if (this._refresh_token_delay) {
+      clearTimeout(this._refresh_token_delay);
+      this._refresh_token_delay = null;
+    }
+
     // Clear token refresh interval
     if (this._refresh_token_task) {
       clearInterval(this._refresh_token_task);
@@ -121,8 +129,8 @@ class WebsocketRPCConnection {
           this._attempt_connection_with_query_params(server_url)
             .then(resolve)
             .catch(reject);
-        } else if (this._handle_disconnected) {
-          this._handle_disconnected(event.reason);
+        } else {
+          this._notifyDisconnected(event.reason);
         }
       };
     });
@@ -239,7 +247,9 @@ class WebsocketRPCConnection {
         "Failed to receive the first message from the server",
       );
       if (this._token_refresh_interval > 0) {
-        setTimeout(() => {
+        this._refresh_token_delay = setTimeout(() => {
+          this._refresh_token_delay = null;
+          if (this._closed) return;
           this._send_refresh_token();
           this._refresh_token_task = setInterval(() => {
             this._send_refresh_token();
@@ -249,6 +259,7 @@ class WebsocketRPCConnection {
       // Listen to messages from the server
       this._enable_reconnect = true;
       this._closed = false;
+      this._disconnectedNotified = false;
       this._websocket.onmessage = (event) => {
         if (typeof event.data === "string") {
           const parsedData = JSON.parse(event.data);
@@ -296,6 +307,14 @@ class WebsocketRPCConnection {
     }
   }
 
+  _notifyDisconnected(reason) {
+    if (this._disconnectedNotified) return;
+    this._disconnectedNotified = true;
+    if (this._handle_disconnected) {
+      this._handle_disconnected(reason);
+    }
+  }
+
   _handle_close(event) {
     if (
       !this._closed &&
@@ -304,6 +323,8 @@ class WebsocketRPCConnection {
     ) {
       // Clean up timers when connection closes
       this._cleanup();
+      // Reset the guard so reconnection can re-notify on next disconnect
+      this._disconnectedNotified = false;
 
       // Even if it's a graceful closure (codes 1000, 1001), if it wasn't user-initiated,
       // we should attempt to reconnect (e.g., server restart, k8s upgrade)
@@ -320,6 +341,16 @@ class WebsocketRPCConnection {
           );
         }
 
+        // Notify the RPC layer immediately so it can reject pending calls
+        this._notifyDisconnected(event.reason);
+
+        // Prevent overlapping reconnection attempts
+        if (this._reconnecting) {
+          console.debug("Reconnection already in progress, skipping");
+          return;
+        }
+        this._reconnecting = true;
+
         let retry = 0;
         const baseDelay = 1000; // Start with 1 second
         const maxDelay = 60000; // Maximum delay of 60 seconds
@@ -329,6 +360,7 @@ class WebsocketRPCConnection {
           // Check if we were explicitly closed
           if (this._closed) {
             console.info("Connection was closed, stopping reconnection");
+            this._reconnecting = false;
             return;
           }
 
@@ -347,25 +379,21 @@ class WebsocketRPCConnection {
             console.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
-            // Note: Do NOT call _handle_connected here - it's already called inside open()
+            this._reconnecting = false;
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
               console.warn("Server refused to reconnect:", e);
-              // Mark as closed and notify the application
               this._closed = true;
-              if (this._handle_disconnected) {
-                this._handle_disconnected(`Server refused reconnection: ${e}`);
-              }
+              this._reconnecting = false;
+              this._notifyDisconnected(`Server refused reconnection: ${e}`);
               return;
             } else if (`${e}`.includes("NotImplementedError:")) {
               console.error(
                 `${e}\nIt appears that you are trying to connect to a hypha server that is older than 0.20.0, please upgrade the hypha server or use the websocket client in imjoy-rpc(https://www.npmjs.com/package/imjoy-rpc) instead`,
               );
-              // Mark as closed to prevent further reconnection attempts
               this._closed = true;
-              if (this._handle_disconnected) {
-                this._handle_disconnected(`Server too old: ${e}`);
-              }
+              this._reconnecting = false;
+              this._notifyDisconnected(`Server too old: ${e}`);
               return;
             }
 
@@ -405,12 +433,14 @@ class WebsocketRPCConnection {
                 this._websocket.readyState === WebSocket.OPEN
               ) {
                 console.info("Connection restored externally");
+                this._reconnecting = false;
                 return;
               }
 
               // Check if we were explicitly closed
               if (this._closed) {
                 console.info("Connection was closed, stopping reconnection");
+                this._reconnecting = false;
                 return;
               }
 
@@ -421,18 +451,9 @@ class WebsocketRPCConnection {
                 console.error(
                   `Failed to reconnect after ${MAX_RETRY} attempts, giving up.`,
                 );
-                // Mark as closed to prevent further reconnection attempts
                 this._closed = true;
-                // Notify about max retry exceeded
-                if (this._handle_disconnected) {
-                  this._handle_disconnected(
-                    "Max reconnection attempts exceeded",
-                  );
-                }
-                // Note: We intentionally do NOT call process.exit() here.
-                // Instead, we mark the connection as closed and let the
-                // application handle the failure through the disconnected
-                // handler or by checking connection state.
+                this._reconnecting = false;
+                this._notifyDisconnected("Max reconnection attempts exceeded");
               }
             }, finalDelay);
             this._reconnect_timeouts.add(timeoutId);
@@ -443,9 +464,7 @@ class WebsocketRPCConnection {
     } else {
       // Clean up timers in all cases
       this._cleanup();
-      if (this._handle_disconnected) {
-        this._handle_disconnected(event.reason);
-      }
+      this._notifyDisconnected(event.reason);
     }
   }
 
@@ -466,6 +485,7 @@ class WebsocketRPCConnection {
 
   disconnect(reason) {
     this._closed = true;
+    this._reconnecting = false;
     // Ensure websocket is closed if it exists and is not already closed or closing
     if (
       this._websocket &&
@@ -1041,34 +1061,31 @@ export class LocalWebSocket {
     };
 
     this.readyState = WebSocket.CONNECTING;
-    context.addEventListener(
-      "message",
-      (event) => {
-        const { type, data, to } = event.data;
-        if (to !== this.client_id) {
-          // console.debug("message not for me", to, this.client_id);
-          return;
-        }
-        switch (type) {
-          case "message":
-            if (this.readyState === WebSocket.OPEN && this.onmessage) {
-              this.onmessage({ data: data });
-            }
-            break;
-          case "connected":
-            this.readyState = WebSocket.OPEN;
-            this.onopen(event);
-            break;
-          case "closed":
-            this.readyState = WebSocket.CLOSED;
-            this.onclose(event);
-            break;
-          default:
-            break;
-        }
-      },
-      false,
-    );
+    this._context = context;
+    this._messageListener = (event) => {
+      const { type, data, to } = event.data;
+      if (to !== this.client_id) {
+        return;
+      }
+      switch (type) {
+        case "message":
+          if (this.readyState === WebSocket.OPEN && this.onmessage) {
+            this.onmessage({ data: data });
+          }
+          break;
+        case "connected":
+          this.readyState = WebSocket.OPEN;
+          this.onopen(event);
+          break;
+        case "closed":
+          this.readyState = WebSocket.CLOSED;
+          this.onclose(event);
+          break;
+        default:
+          break;
+      }
+    };
+    context.addEventListener("message", this._messageListener, false);
 
     if (!this.client_id) throw new Error("client_id is required");
     if (!this.workspace) throw new Error("workspace is required");
@@ -1098,6 +1115,10 @@ export class LocalWebSocket {
       from: this.client_id,
       workspace: this.workspace,
     });
+    if (this._context && this._messageListener) {
+      this._context.removeEventListener("message", this._messageListener, false);
+      this._messageListener = null;
+    }
     this.onclose();
   }
 

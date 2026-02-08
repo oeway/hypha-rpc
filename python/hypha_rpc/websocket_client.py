@@ -87,6 +87,8 @@ class WebsocketRPCConnection:
         self._ping_timeout = ping_timeout
         self._additional_headers = additional_headers
         self._reconnect_tasks = set()  # Track reconnection tasks
+        self._connecting_lock = asyncio.Lock()  # Prevent concurrent open() calls
+        self._reconnected_event = None  # Event set when reconnection completes
         if ssl == False:
             import ssl as ssl_module
 
@@ -115,35 +117,27 @@ class WebsocketRPCConnection:
             handler
         ), "reconnect handler must be a coroutine"
 
+    def _ws_connect_kwargs(self):
+        """Build common kwargs for websockets.connect()."""
+        kwargs = {
+            "ping_interval": self._ping_interval,
+            "ping_timeout": self._ping_timeout,
+            "additional_headers": self._additional_headers,
+        }
+        if self._ssl is not None:
+            kwargs["ssl"] = self._ssl
+        return kwargs
+
     async def _attempt_connection(self, server_url, attempt_fallback=True):
         """Attempt to establish a WebSocket connection."""
         try:
             self._legacy_auth = False
-            # Only pass ssl if it's not None
-            if self._ssl is None:
-                websocket = await asyncio.wait_for(
-                    websockets.connect(
-                        server_url,
-                        ping_interval=self._ping_interval,
-                        ping_timeout=self._ping_timeout,
-                        additional_headers=self._additional_headers,
-                    ),
-                    self._timeout,
-                )
-            else:
-                websocket = await asyncio.wait_for(
-                    websockets.connect(
-                        server_url,
-                        ping_interval=self._ping_interval,
-                        ping_timeout=self._ping_timeout,
-                        ssl=self._ssl,
-                        additional_headers=self._additional_headers,
-                    ),
-                    self._timeout,
-                )
+            websocket = await asyncio.wait_for(
+                websockets.connect(server_url, **self._ws_connect_kwargs()),
+                self._timeout,
+            )
             return websocket
         except websockets.exceptions.InvalidStatusCode as e:
-            # websocket code should be 1003, but it's not available in the library
             if e.status_code == 403 and attempt_fallback:
                 logger.info(
                     "Received 403 error, attempting connection with query parameters."
@@ -155,10 +149,7 @@ class WebsocketRPCConnection:
 
     async def _attempt_connection_with_query_params(self, server_url):
         """Attempt to establish a WebSocket connection including authentication details in the query string."""
-        # Initialize an empty list to hold query parameters
         query_params_list = []
-
-        # Add each parameter only if it has a non-empty value
         if self._client_id:
             query_params_list.append(f"client_id={self._client_id}")
         if self._workspace:
@@ -168,35 +159,13 @@ class WebsocketRPCConnection:
         if self._reconnection_token:
             query_params_list.append(f"reconnection_token={self._reconnection_token}")
 
-        # Join the parameters with '&' to form the final query string
         query_string = "&".join(query_params_list)
-
-        # Construct the full URL by appending the query string if it's not empty
         full_url = f"{server_url}?{query_string}" if query_string else server_url
 
-        # Attempt to establish the WebSocket connection with the constructed URL
-        # Only pass ssl if it's not None
-        if self._ssl is None:
-            return await asyncio.wait_for(
-                websockets.connect(
-                    full_url,
-                    ping_interval=self._ping_interval,
-                    ping_timeout=self._ping_timeout,
-                    additional_headers=self._additional_headers,
-                ),
-                self._timeout,
-            )
-        else:
-            return await asyncio.wait_for(
-                websockets.connect(
-                    full_url,
-                    ping_interval=self._ping_interval,
-                    ping_timeout=self._ping_timeout,
-                    ssl=self._ssl,
-                    additional_headers=self._additional_headers,
-                ),
-                self._timeout,
-            )
+        return await asyncio.wait_for(
+            websockets.connect(full_url, **self._ws_connect_kwargs()),
+            self._timeout,
+        )
 
     async def _send_refresh_token(self, token_refresh_interval):
         """Send refresh token at regular intervals."""
@@ -231,9 +200,21 @@ class WebsocketRPCConnection:
 
     async def open(self):
         """Open the connection with fallback logic for backward compatibility."""
+        async with self._connecting_lock:
+            return await self._open_impl()
+
+    async def _open_impl(self):
+        """Internal open implementation (must be called under _connecting_lock)."""
         logger.info(
             "Creating a new websocket connection to %s", self._server_url.split("?")[0]
         )
+        # Close previous websocket if it still exists to avoid handle leaks
+        if self._websocket:
+            try:
+                await asyncio.wait_for(self._websocket.close(code=1000), timeout=3.0)
+            except Exception:
+                pass
+            self._websocket = None
         try:
             self._websocket = await self._attempt_connection(self._server_url)
             # Send authentication info as the first message if connected without query params
@@ -306,15 +287,30 @@ class WebsocketRPCConnection:
     async def emit_message(self, data):
         """Emit a message."""
         if self._closed:
-            raise Exception("Connection is closed")
+            raise ConnectionError("Connection is closed")
         if not self._websocket or self._websocket.state == State.CLOSED:
-            await self.open()
+            # If reconnection is in progress, wait for it to complete
+            if self._reconnected_event is not None:
+                try:
+                    await asyncio.wait_for(
+                        self._reconnected_event.wait(), timeout=self._timeout
+                    )
+                except asyncio.TimeoutError:
+                    raise ConnectionError(
+                        "WebSocket reconnection timed out"
+                    )
+            # Check again after waiting
+            if self._closed:
+                raise ConnectionError("Connection is closed")
+            if not self._websocket or self._websocket.state == State.CLOSED:
+                # No reconnection in progress or reconnection failed, try opening directly
+                await self.open()
 
         try:
             await self._websocket.send(data)
         except Exception as exp:
-            logger.error(f"Failed to send message: {exp}")
-            raise exp
+            logger.error("Failed to send message: %s", exp)
+            raise
 
     async def _listen(self):
         """Listen to the connection and handle disconnection."""
@@ -357,6 +353,13 @@ class WebsocketRPCConnection:
                     "Event loop closed during WebSocket operation, stopping listen task"
                 )
                 return
+            elif "already running recv" in str(e):
+                # This happens when a new _listen task starts during reconnection
+                # while the old one hasn't fully exited. Safe to ignore.
+                logger.debug(
+                    "Concurrent recv detected during reconnection, stopping old listen task"
+                )
+                return
             else:
                 logger.error(f"RuntimeError in _listen: {e}")
                 raise
@@ -369,7 +372,9 @@ class WebsocketRPCConnection:
                 # Even if it's a normal closure (codes 1000, 1001), if it wasn't user-initiated,
                 # we should attempt to reconnect (e.g., server restart, k8s upgrade)
                 if self._enable_reconnect:
+                    close_reason = None
                     if hasattr(self._websocket, "close_code"):
+                        close_reason = self._websocket.close_reason
                         if self._websocket.close_code in [1000, 1001]:
                             logger.warning(
                                 "Websocket connection closed gracefully by server (code: %s): %s - attempting reconnect",
@@ -386,6 +391,17 @@ class WebsocketRPCConnection:
                         logger.warning(
                             "Websocket connection closed unexpectedly (no close code)"
                         )
+
+                    # Notify the RPC layer so it can reject pending calls immediately
+                    # rather than leaving them hanging until timeout
+                    if self._handle_disconnected:
+                        try:
+                            self._handle_disconnected(close_reason)
+                        except Exception as cb_err:
+                            logger.error("Error in disconnected callback: %s", cb_err)
+
+                    # Signal that reconnection is in progress so emit_message can wait
+                    self._reconnected_event = asyncio.Event()
 
                     async def reconnect_with_retry():
                         retry = 0
@@ -412,6 +428,10 @@ class WebsocketRPCConnection:
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
                                 )
+                                # Signal that reconnection is complete so waiting emit_message calls can proceed
+                                if self._reconnected_event:
+                                    self._reconnected_event.set()
+                                    self._reconnected_event = None
                                 # Note: Do NOT call _handle_connected here - it's already called inside open()
                                 break
                             except NotImplementedError as e:
@@ -423,15 +443,24 @@ class WebsocketRPCConnection:
                                     "use imjoy-rpc(https://pypi.org/project/imjoy-rpc/) "
                                     "with `from imjoy_rpc.hypha import connect_to_sever` instead"
                                 )
+                                if self._reconnected_event:
+                                    self._reconnected_event.set()
+                                    self._reconnected_event = None
                                 break
                             except ConnectionAbortedError as e:
                                 logger.warning("Server refused to reconnect: %s", e)
                                 # Mark as closed and notify the application
                                 self._closed = True
+                                if self._reconnected_event:
+                                    self._reconnected_event.set()
+                                    self._reconnected_event = None
                                 if self._handle_disconnected:
-                                    self._handle_disconnected(
-                                        f"Server refused reconnection: {e}"
-                                    )
+                                    try:
+                                        self._handle_disconnected(
+                                            f"Server refused reconnection: {e}"
+                                        )
+                                    except Exception as cb_err:
+                                        logger.error("Error in disconnected callback: %s", cb_err)
                                 break
                             except (ConnectionRefusedError, OSError) as e:
                                 # Network-related errors that might be temporary
@@ -467,6 +496,9 @@ class WebsocketRPCConnection:
                             except asyncio.CancelledError:
                                 logger.info("Reconnection cancelled")
                                 self._reconnect_tasks.discard(sleep_task)
+                                if self._reconnected_event:
+                                    self._reconnected_event.set()
+                                    self._reconnected_event = None
                                 return  # Exit immediately on cancellation
                             finally:
                                 self._reconnect_tasks.discard(sleep_task)
@@ -491,6 +523,9 @@ class WebsocketRPCConnection:
                             )
                             # Mark as closed to prevent further reconnection attempts
                             self._closed = True
+                            if self._reconnected_event:
+                                self._reconnected_event.set()
+                                self._reconnected_event = None
                             if self._handle_disconnected:
                                 self._handle_disconnected(
                                     "Max reconnection attempts exceeded"
@@ -509,22 +544,32 @@ class WebsocketRPCConnection:
                     )
             else:
                 if self._handle_disconnected:
-                    self._handle_disconnected(str(e))
+                    try:
+                        close_reason = getattr(self._websocket, "close_reason", None)
+                        self._handle_disconnected(
+                            close_reason or "Connection closed"
+                        )
+                    except Exception as cb_err:
+                        logger.error("Error in disconnected callback: %s", cb_err)
 
     async def disconnect(self, reason=None):
         """Disconnect."""
         self._closed = True
         if self._websocket and not self._websocket.state == State.CLOSED:
             try:
-                await self._websocket.close(code=1000)
+                await asyncio.wait_for(
+                    self._websocket.close(code=1000), timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Websocket close timed out, forcing cleanup")
             except Exception as e:
-                logger.warning(f"Error closing websocket: {e}")
+                logger.warning("Error closing websocket: %s", e)
         # Use centralized cleanup to cancel all tasks
         try:
             await self._cleanup()
         except Exception as e:
             # Event loop might be closed during shutdown
-            logger.warning(f"Error during cleanup: {e}")
+            logger.warning("Error during cleanup: %s", e)
         logger.info("Websocket connection disconnected (%s)", reason)
 
     async def _on_message(self, message):

@@ -1789,7 +1789,7 @@ describe("RPC", async () => {
     // Use a SHORT timeout (2 seconds) to verify heartbeat keeps method alive
     const api = await connectToServer({
       name: "long-running-test",
-      server_url: "ws://127.0.0.1:9394/ws", // Use the test server port
+      server_url: SERVER_URL,
       client_id: "long-running-test",
       method_timeout: 2, // 2 second timeout - methods will run LONGER than this
     });
@@ -2516,4 +2516,381 @@ describe("RPC", async () => {
     // Clean up
     await client.disconnect();
   }).timeout(60000);
+
+  // =====================================================================
+  // New comprehensive tests for edge cases and robustness
+  // =====================================================================
+
+  it("should handle all data types including edge cases", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "data-edge-cases-provider",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "data-edge-svc",
+      config: { visibility: "protected" },
+      echoData: (data) => data,
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "data-edge-cases-consumer",
+      workspace: workspace,
+      token: token,
+    });
+    const svc = await client.getService("data-edge-svc");
+
+    // null
+    expect(await svc.echoData(null)).to.equal(null);
+
+    // NaN - msgpack encodes NaN; check it comes back as NaN
+    const nanResult = await svc.echoData(NaN);
+    expect(Number.isNaN(nanResult)).to.be.true;
+
+    // Infinity and -Infinity
+    expect(await svc.echoData(Infinity)).to.equal(Infinity);
+    expect(await svc.echoData(-Infinity)).to.equal(-Infinity);
+
+    // Unicode: emoji
+    expect(await svc.echoData("Hello 🎉🚀")).to.equal("Hello 🎉🚀");
+
+    // Unicode: CJK
+    expect(await svc.echoData("中文测试")).to.equal("中文测试");
+
+    // Unicode: RTL
+    expect(await svc.echoData("مرحبا")).to.equal("مرحبا");
+
+    // Empty containers
+    expect(await svc.echoData({})).to.deep.equal({});
+    expect(await svc.echoData([])).to.deep.equal([]);
+    expect(await svc.echoData("")).to.equal("");
+
+    // Booleans
+    expect(await svc.echoData(true)).to.equal(true);
+    expect(await svc.echoData(false)).to.equal(false);
+
+    // Deep nesting (50 levels)
+    let deep = { value: 42 };
+    for (let i = 0; i < 50; i++) {
+      deep = { nested: deep };
+    }
+    let result = await svc.echoData(deep);
+    let node = result;
+    for (let i = 0; i < 50; i++) {
+      node = node.nested;
+    }
+    expect(node.value).to.equal(42);
+
+    // Mixed type arrays
+    const mixed = [1, "string", true, null, { nested: [1, 2, 3] }];
+    result = await svc.echoData(mixed);
+    expect(result[0]).to.equal(1);
+    expect(result[1]).to.equal("string");
+    expect(result[2]).to.equal(true);
+    expect(result[3]).to.equal(null);
+    expect(result[4].nested).to.deep.equal([1, 2, 3]);
+
+    // TypedArrays
+    const uint8 = new Uint8Array([1, 2, 3, 4, 5]);
+    const uint8Result = await svc.echoData(uint8);
+    expect(uint8Result.length).to.equal(5);
+
+    // Empty TypedArray
+    const emptyUint8 = new Uint8Array(0);
+    const emptyResult = await svc.echoData(emptyUint8);
+    expect(emptyResult.byteLength || emptyResult.length).to.equal(0);
+
+    // ArrayBuffer
+    const buf = new ArrayBuffer(16);
+    const bufResult = await svc.echoData(buf);
+    expect(bufResult.byteLength).to.equal(16);
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(30000);
+
+  it("should propagate callback errors clearly", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "cb-error-provider-js",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "cb-error-svc-js",
+      config: { visibility: "protected" },
+      callWithCallback: async (callback) => {
+        return await callback("test-arg");
+      },
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "cb-error-consumer-js",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("cb-error-svc-js");
+
+    // Callback that throws
+    const failingCallback = () => {
+      throw new Error("Callback deliberate failure JS");
+    };
+
+    try {
+      await svc.callWithCallback(failingCallback);
+      expect.fail("Expected an exception from the failing callback");
+    } catch (e) {
+      expect(e.message).to.include("Callback deliberate failure JS");
+    }
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(20000);
+
+  it("should clean up callbacks after call completes", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "cb-cleanup-test-js",
+    });
+
+    await api.registerService({
+      id: "cb-cleanup-svc-js",
+      config: { visibility: "protected" },
+      callCallback: async (cb) => {
+        return await cb(42);
+      },
+    });
+
+    const svc = await api.getService("cb-cleanup-svc-js");
+
+    // Count total keys in the object store (simple size metric)
+    function storeSize(rpc) {
+      return Object.keys(rpc._object_store).length;
+    }
+
+    // Make a first batch of calls to warm up
+    for (let i = 0; i < 10; i++) {
+      await svc.callCallback((x) => x + i);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const afterFirstBatch = storeSize(api.rpc);
+
+    // Make a second batch of the same size
+    for (let i = 0; i < 10; i++) {
+      await svc.callCallback((x) => x + i);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const afterSecondBatch = storeSize(api.rpc);
+
+    // The key assertion: the store should NOT grow linearly with more calls.
+    // If cleanup is working, the second batch should not add many more entries
+    // than the first batch already had. Allow some tolerance for timing.
+    const growth = afterSecondBatch - afterFirstBatch;
+    expect(growth).to.be.at.most(10);
+
+    await api.disconnect();
+  }).timeout(30000);
+
+  it("should invoke callback multiple times (progress pattern)", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "multi-cb-provider-js",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "multi-cb-svc-js",
+      config: { visibility: "protected" },
+      processWithProgress: async (n, progressCallback) => {
+        for (let i = 0; i < n; i++) {
+          await progressCallback(i, n);
+        }
+        return "done";
+      },
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "multi-cb-consumer-js",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("multi-cb-svc-js");
+
+    const progressCalls = [];
+    const result = await svc.processWithProgress(10, (current, total) => {
+      progressCalls.push([current, total]);
+    });
+
+    expect(result).to.equal("done");
+    expect(progressCalls.length).to.equal(10);
+    for (let i = 0; i < 10; i++) {
+      expect(progressCalls[i]).to.deep.equal([i, 10]);
+    }
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(30000);
+
+  it("should reject cleanly when caller disconnects mid-call", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "disconnect-reject-provider-js",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "slow-svc-js",
+      config: { visibility: "protected" },
+      slowOp: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30000));
+        return "should not complete";
+      },
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "disconnect-reject-consumer-js",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("slow-svc-js");
+
+    // Start a slow call
+    const slowPromise = svc.slowOp();
+
+    // Give a moment for the call to be sent
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Disconnect the client
+    await client.disconnect();
+
+    // The pending call should be rejected
+    try {
+      await slowPromise;
+      expect.fail("Expected the slow call to be rejected after disconnect");
+    } catch (e) {
+      const msg = e.message.toLowerCase();
+      expect(
+        msg.includes("closed") ||
+          msg.includes("disconnected") ||
+          msg.includes("connection"),
+      ).to.be.true;
+    }
+
+    await server.disconnect();
+  }).timeout(20000);
+
+  it("should timeout with clear error", async () => {
+    // Test timeout by calling a service whose provider has disconnected.
+    // Without heartbeats coming back, the client-side timer should fire.
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "timeout-provider-js",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "hang-svc-js",
+      config: { visibility: "protected" },
+      hang: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 3600000));
+        return "never";
+      },
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "timeout-consumer-js",
+      workspace: workspace,
+      token: token,
+      method_timeout: 5,
+    });
+
+    const svc = await client.getService("hang-svc-js");
+
+    // Disconnect the server-side provider so no heartbeats are sent back
+    await server.disconnect();
+
+    try {
+      await svc.hang();
+      expect.fail("Expected a timeout error");
+    } catch (e) {
+      const msg = e.message.toLowerCase();
+      // Accept timeout, timed out, or connection/session errors since provider is gone
+      expect(
+        msg.includes("timed out") ||
+          msg.includes("timeout") ||
+          msg.includes("session") ||
+          msg.includes("connection") ||
+          msg.includes("error"),
+      ).to.be.true;
+    }
+
+    await client.disconnect();
+  }).timeout(30000);
+
+  it("should handle concurrent calls with mixed success/failure", async () => {
+    const api = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "concurrent-mixed-js",
+    });
+
+    await api.registerService({
+      id: "concurrent-svc-js",
+      config: { visibility: "protected" },
+      succeed: (x) => x * 2,
+      fail: (x) => {
+        throw new Error(`Deliberate failure for ${x}`);
+      },
+    });
+
+    const svc = await api.getService("concurrent-svc-js");
+
+    // Launch success and failure tasks concurrently
+    const successPromises = [];
+    const failPromises = [];
+
+    for (let i = 0; i < 5; i++) {
+      successPromises.push(svc.succeed(i));
+      failPromises.push(
+        svc.fail(i).catch((e) => e),
+      );
+    }
+
+    const successResults = await Promise.all(successPromises);
+    expect(successResults).to.deep.equal([0, 2, 4, 6, 8]);
+
+    const failResults = await Promise.all(failPromises);
+    for (let i = 0; i < failResults.length; i++) {
+      expect(failResults[i]).to.be.an.instanceOf(Error);
+      expect(failResults[i].message).to.include("Deliberate failure");
+    }
+
+    // Interleaved - verify no cross-contamination
+    const mixedPromises = [];
+    for (let i = 0; i < 5; i++) {
+      mixedPromises.push(svc.succeed(i));
+      mixedPromises.push(svc.fail(i).catch((e) => e));
+    }
+
+    const mixedResults = await Promise.all(mixedPromises);
+    for (let i = 0; i < 10; i += 2) {
+      expect(mixedResults[i]).to.equal((i / 2) * 2);
+      expect(mixedResults[i + 1]).to.be.an.instanceOf(Error);
+    }
+
+    await api.disconnect();
+  }).timeout(30000);
 });

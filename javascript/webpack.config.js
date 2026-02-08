@@ -29,6 +29,14 @@ const config = {
       },
     ],
   },
+  // Disable code-splitting so every build is a single self-contained file.
+  // Without this, webpack can create dynamic chunks (e.g. for @msgpack/msgpack)
+  // that break when consumer apps re-bundle hypha-rpc with their own bundler
+  // (the inner webpack runtime resolves chunk URLs relative to the page, not
+  // relative to node_modules/hypha-rpc/dist/).
+  optimization: {
+    splitChunks: false,
+  },
   ignoreWarnings: [
     {
       module: /node_modules/,
