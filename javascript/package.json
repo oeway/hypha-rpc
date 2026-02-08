@@ -19,7 +19,8 @@
     "check-format": "prettier --check \"{src,tests}/**/**\"",
     "start-hypha-server": "rm -rf /tmp/minio_data && python -m hypha.server --port 9394 --workspace-bucket test-workspaces --start-minio-server --minio-workdir /tmp/minio_data --minio-port 9007 --minio-root-user myuser --minio-root-password mypassword --s3-cleanup-period 3",
     "test": "concurrently --kill-others --success first \"npm run start-hypha-server\" \"node wait-for-server.js && karma start --single-run --browsers ChromeHeadless,FirefoxHeadless karma.conf.js\"",
-    "test-watch": "concurrently --kill-others \"npm run start-hypha-server\" \"node wait-for-server.js && karma start --auto-watch --browsers ChromeDebugging karma.conf.js --debug\""
+    "test-watch": "concurrently --kill-others \"npm run start-hypha-server\" \"node wait-for-server.js && karma start --auto-watch --browsers ChromeDebugging karma.conf.js --debug\"",
+    "test:coverage": "concurrently --kill-others --success first \"npm run start-hypha-server\" \"node wait-for-server.js && karma start --single-run --browsers ChromeHeadless karma.conf.js --coverage\""
   },
   "repository": {
     "type": "git",
@@ -55,6 +56,7 @@
     "eslint-loader": "^4.0.2",
     "karma": "^6.4.3",
     "karma-chrome-launcher": "^3.2.0",
+    "karma-coverage": "^2.2.1",
     "karma-firefox-launcher": "^2.1.3",
     "karma-mocha": "^2.0.1",
     "karma-sourcemap-loader": "^0.4.0",

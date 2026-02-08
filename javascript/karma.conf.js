@@ -41,7 +41,7 @@ module.exports = function (config) {
         preprocessors: {
             // add webpack as preprocessor
             'tests/*_test.js': ['webpack', 'sourcemap'],
-            'src/*.js': ['webpack', 'sourcemap' ]
+            'src/*.js': ['webpack', 'sourcemap', 'coverage' ]
         },
 
         webpack: webpackConfig,
@@ -56,7 +56,7 @@ module.exports = function (config) {
         // test results reporter to use
         // possible values: 'dots', 'progress'
         // available reporters: https://npmjs.org/browse/keyword/karma-reporter
-        reporters: ["spec"],
+        reporters: ["spec", "coverage"],
         specReporter: {
             maxLogLines: 5, // limit number of lines logged per test
             suppressErrorSummary: true, // do not print error summary
@@ -64,6 +64,24 @@ module.exports = function (config) {
             suppressPassed: false, // do not print information about passed tests
             suppressSkipped: true, // do not print information about skipped tests
             showSpecTiming: false // print the time elapsed for each spec
+        },
+
+        // coverage reporter configuration
+        coverageReporter: {
+            dir: 'coverage/',
+            reporters: [
+                { type: 'html', subdir: 'html' },
+                { type: 'text-summary' },
+                { type: 'lcovonly', subdir: '.', file: 'lcov.info' }
+            ],
+            check: {
+                global: {
+                    statements: 10,  // Start with low baseline, will increase
+                    branches: 10,
+                    functions: 10,
+                    lines: 10
+                }
+            }
         },
 
 

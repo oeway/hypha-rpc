@@ -22,6 +22,24 @@ Clients within the same workspace can freely discover and use each other's servi
 
 ## Architecture
 
+### Message Protocol
+
+Hypha RPC uses a **two-segment msgpack protocol** for efficient message transmission. Messages are encoded as two concatenated msgpack objects:
+
+```
+[msgpack(main_message)][msgpack(extra_data)]
+```
+
+- **Segment 1**: Routing and control information (type, from, to, method, id)
+- **Segment 2**: Payload data (args, kwargs, promise data) - optional
+
+**Why two segments?**
+- Separation of concerns: routing separate from payload
+- Efficiency: route without deserializing full payload
+- Backward compatibility: segment 2 is optional
+
+**Important**: JSON transport does NOT support the extra segment (the server must merge both msgpack objects before JSON encoding).
+
 ### Connection Flow
 
 1. **WebSocket Connection**: Clients establish a WebSocket connection to the Hypha server
@@ -313,6 +331,27 @@ The library provides comprehensive error handling:
 - Error logging and reporting
 - Debug mode for detailed logging
 - Performance profiling support
+
+## Recent Improvements
+
+### Memory Leak Fixes (2026-02)
+
+Comprehensive resource cleanup improvements to prevent memory leaks:
+
+**JavaScript**:
+- Event listener cleanup on disconnect
+- AbortController proper cleanup
+- Timer cleanup validation
+- 237-line test suite added for regression protection
+
+**Python**:
+- 17+ cleanup operations in `RPC.close()`
+- Fire-and-forget task tracking in `MessageEmitter`
+- Connection handler cleanup (prevents circular references)
+- Event loop exception handler cleanup
+- All data structures properly cleared on shutdown
+
+**Test Coverage**: Added 750+ lines of test coverage for memory leak regression protection.
 
 ## Future Enhancements
 
