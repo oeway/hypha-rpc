@@ -1,6 +1,6 @@
 {
   "name": "hypha-rpc",
-  "version": "0.21.1",
+  "version": "0.21.2",
   "description": "Hypha RPC client for connecting to Hypha server for data management and AI model serving.",
   "main": "index.js",
   "module": "dist/hypha-rpc-websocket.mjs",

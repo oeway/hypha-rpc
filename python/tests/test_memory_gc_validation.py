@@ -85,6 +85,9 @@ def assert_collected(weak_refs, timeout=2.0):
     Raises:
         AssertionError: If any object is still alive after GC
     """
+    import asyncio
+    import time
+
     if not isinstance(weak_refs, list):
         weak_refs = [weak_refs]
 
@@ -92,6 +95,15 @@ def assert_collected(weak_refs, timeout=2.0):
     for attempt in range(10):
         gc.collect()
         gc.collect()  # Double collect to handle cycles
+
+        # Force event loop to process any pending callbacks
+        # This helps release asyncio Task references
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed() and not loop.is_running():
+                loop.run_until_complete(asyncio.sleep(0))
+        except (RuntimeError, AttributeError):
+            pass  # No event loop, loop closed, or method not available
 
         # Check if all refs are dead WITHOUT creating strong references
         # Using all() with generator avoids holding refs in a list
@@ -101,7 +113,6 @@ def assert_collected(weak_refs, timeout=2.0):
 
         if attempt < 9:
             # Wait a bit before retrying (objects may have finalizers)
-            import time
             time.sleep(timeout / 10)
 
     # Failed - some objects still alive
