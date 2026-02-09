@@ -170,16 +170,18 @@ describe("Memory Leak Prevention", function () {
 
   describe("Session Cleanup on Remote Disconnect", function () {
     it("should clean up sessions when remote client disconnects", async function () {
-      // Create two clients - let them use their default workspaces
-      // Service is public, so cross-workspace access will work
+      // Create first client and get its workspace
       const client1 = await connectToServer({
         server_url: SERVER_URL,
         client_id: "test-session-cleanup-client1",
       });
 
+      // Connect second client to the same workspace so it can access the service
+      const workspace = client1.config.workspace;
       const client2 = await connectToServer({
         server_url: SERVER_URL,
         client_id: "test-session-cleanup-client2",
+        workspace: workspace,
       });
 
       // Client 1 registers a service with a long-running method
