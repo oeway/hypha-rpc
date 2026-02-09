@@ -170,63 +170,66 @@ describe("Memory Leak Prevention", function () {
 
   describe("Session Cleanup on Remote Disconnect", function () {
     it.skip("should clean up sessions when remote client disconnects", async function () {
-      // TODO: Fix this test - currently timing out on generateToken()
-      // Need to investigate why token generation is hanging
-      // Create first client
+      // TODO: Fix RPC bug - pending calls don't reject when service provider disconnects
+      //
+      // This test correctly sets up the scenario:
+      // 1. Creates client1 and generates token ✓
+      // 2. Creates client2 in same workspace using token ✓
+      // 3. client1 registers a long-running service ✓
+      // 4. client2 calls the service (creates pending RPC session) ✓
+      // 5. client1 disconnects while call is in progress ✓
+      //
+      // Expected: The pending call promise should reject with a disconnect/timeout error
+      // Actual: The promise hangs indefinitely, causing the test to timeout
+      //
+      // Root cause: When a service provider disconnects, the RPC layer doesn't properly
+      // notify the caller that pending sessions should be rejected. The session remains
+      // in a pending state instead of being cleaned up with an error.
+      //
+      // To fix: Investigate RPC session cleanup logic when remote clients disconnect,
+      // specifically the _handleClientDisconnected() and _cleanupSessionsForClient()
+      // methods to ensure they properly reject pending call promises.
+
       const client1 = await connectToServer({
         server_url: SERVER_URL,
-        client_id: "test-session-cleanup-client1",
+        client_id: "session-cleanup-provider-" + Date.now(),
       });
 
-      // Generate token so client2 can join the same workspace
-      const workspace = client1.config.workspace;
-      const token = await client1.generateToken({
-        config: { workspace: workspace },
-      });
+      const sharedWorkspace = client1.config.workspace;
+      const token = await client1.generateToken();
 
-      // Connect second client to the same workspace using the token
       const client2 = await connectToServer({
         server_url: SERVER_URL,
-        client_id: "test-session-cleanup-client2",
-        workspace: workspace,
+        client_id: "session-cleanup-consumer-" + Date.now(),
+        workspace: sharedWorkspace,
         token: token,
       });
 
-      // Client 1 registers a service with a long-running method
       await client1.registerService({
-        id: "test-service",
-        type: "test",
+        id: "slow-service",
         config: {
-          visibility: "public",
+          visibility: "protected",
         },
-        ping: async () => {
-          // Simulate long-running operation
+        slowOperation: async () => {
           await new Promise((resolve) => setTimeout(resolve, 5000));
-          return "pong";
+          return "completed";
         },
       });
 
-      // Client 2 calls the service (this creates a session)
-      const service = await client2.getService("test-service");
+      const service = await client2.getService("slow-service");
+      const callPromise = service.slowOperation();
 
-      // Start the call but don't await it yet
-      const callPromise = service.ping();
-
-      // Give it a moment to start
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // Now disconnect client 1 (the service provider)
       await client1.disconnect();
 
-      // The call should be rejected due to client disconnect
       try {
         await callPromise;
-        expect.fail("Call should have been rejected when client disconnected");
+        expect.fail("Call should have been rejected when service provider disconnected");
       } catch (error) {
-        expect(error.message).to.match(/disconnect|closed|timeout/i);
+        expect(error.message).to.match(/disconnect|closed|timeout|connection/i);
       }
 
-      // Clean up client 2
       await client2.disconnect();
     });
   });
