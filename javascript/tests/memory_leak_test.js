@@ -169,27 +169,10 @@ describe("Memory Leak Prevention", function () {
   });
 
   describe("Session Cleanup on Remote Disconnect", function () {
-    it.skip("should clean up sessions when remote client disconnects", async function () {
-      // TODO: Fix RPC bug - pending calls don't reject when service provider disconnects
-      //
-      // This test correctly sets up the scenario:
-      // 1. Creates client1 and generates token ✓
-      // 2. Creates client2 in same workspace using token ✓
-      // 3. client1 registers a long-running service ✓
-      // 4. client2 calls the service (creates pending RPC session) ✓
-      // 5. client1 disconnects while call is in progress ✓
-      //
-      // Expected: The pending call promise should reject with a disconnect/timeout error
-      // Actual: The promise hangs indefinitely, causing the test to timeout
-      //
-      // Root cause: When a service provider disconnects, the RPC layer doesn't properly
-      // notify the caller that pending sessions should be rejected. The session remains
-      // in a pending state instead of being cleaned up with an error.
-      //
-      // To fix: Investigate RPC session cleanup logic when remote clients disconnect,
-      // specifically the _handleClientDisconnected() and _cleanupSessionsForClient()
-      // methods to ensure they properly reject pending call promises.
-
+    it("should clean up sessions when remote client disconnects", async function () {
+      // Client1 registers a slow service, client2 calls it, then client1 disconnects.
+      // The pending call promise on client2 should be rejected via the
+      // server's client_disconnected event triggering session cleanup.
       const client1 = await connectToServer({
         server_url: SERVER_URL,
         client_id: "session-cleanup-provider-" + Date.now(),
@@ -211,18 +194,22 @@ describe("Memory Leak Prevention", function () {
           visibility: "protected",
         },
         slowOperation: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+          await new Promise((resolve) => setTimeout(resolve, 10000));
           return "completed";
         },
       });
 
       const service = await client2.getService("slow-service");
-      const callPromise = service.slowOperation();
 
+      // Start a long-running call
+      const callPromise = service.slowOperation();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
+      // Disconnect client1 (the service provider)
       await client1.disconnect();
 
+      // The pending call should be rejected because the server broadcasts
+      // a client_disconnected event, which triggers session cleanup on client2
       try {
         await callPromise;
         expect.fail("Call should have been rejected when service provider disconnected");
