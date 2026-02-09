@@ -383,7 +383,9 @@ class MessageEmitter:
         """Set up instance."""
         self._event_handlers = {}
         self._logger = logger
-        self._fire_and_forget_tasks = set()  # Track fire-and-forget tasks to prevent memory leaks
+        self._fire_and_forget_tasks = (
+            set()
+        )  # Track fire-and-forget tasks to prevent memory leaks
 
     def on(self, event, handler):
         """Register an event handler."""

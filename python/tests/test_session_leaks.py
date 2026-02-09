@@ -56,11 +56,7 @@ def create_rpc():
 
 def _count_sessions(rpc):
     """Count non-system top-level keys in _object_store."""
-    return sum(
-        1
-        for k in rpc._object_store
-        if k not in ("services", "message_cache")
-    )
+    return sum(1 for k in rpc._object_store if k not in ("services", "message_cache"))
 
 
 def _count_index_entries(rpc):
@@ -403,6 +399,7 @@ class TestEncodeFastPath:
     def test_flat_dict_roundtrip(self):
         """Fast path should produce identical results for flat primitive dicts."""
         import msgpack
+
         rpc = create_rpc()
 
         payload = {"a": 1, "b": "hello", "c": True, "d": None, "e": 3.14}
@@ -420,6 +417,7 @@ class TestEncodeFastPath:
     def test_nested_primitive_dict_roundtrip(self):
         """Fast path should work with nested dicts of primitives."""
         import msgpack
+
         rpc = create_rpc()
 
         payload = {
@@ -450,11 +448,11 @@ class TestEncodeFastPath:
     def test_list_of_primitive_dicts_roundtrip(self):
         """Tabular data (list of dicts) should roundtrip correctly."""
         import msgpack
+
         rpc = create_rpc()
 
         payload = [
-            {"id": i, "name": f"item_{i}", "active": i % 2 == 0}
-            for i in range(10)
+            {"id": i, "name": f"item_{i}", "active": i % 2 == 0} for i in range(10)
         ]
         encoded = rpc._encode(payload, session_id="test-session")
         packed = msgpack.packb(encoded)
@@ -468,6 +466,7 @@ class TestEncodeFastPath:
     def test_numpy_array_not_fast_pathed(self):
         """Numpy arrays should NOT use the fast path."""
         import numpy as np
+
         rpc = create_rpc()
 
         payload = {"data": np.array([1.0, 2.0, 3.0], dtype=np.float32)}

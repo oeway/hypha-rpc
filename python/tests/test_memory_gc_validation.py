@@ -44,13 +44,13 @@ class DummyConnection(MessageEmitter):
 
     async def open(self):
         self._connected = True
-        if hasattr(self, '_on_connected_handler') and self._on_connected_handler:
+        if hasattr(self, "_on_connected_handler") and self._on_connected_handler:
             # Properly await the async handler to avoid creating orphaned coroutines
             await self._on_connected_handler({"manager_id": None})
 
     async def disconnect(self, reason=None):
         self._connected = False
-        if hasattr(self, '_on_disconnected_handler') and self._on_disconnected_handler:
+        if hasattr(self, "_on_disconnected_handler") and self._on_disconnected_handler:
             # Properly handle async/sync handlers
             if inspect.iscoroutinefunction(self._on_disconnected_handler):
                 await self._on_disconnected_handler()
@@ -88,13 +88,21 @@ def assert_rpc_cleaned_up(rpc):
         AssertionError: If cleanup is incomplete
     """
     # Verify all dictionaries/sets are cleared
-    assert len(rpc._object_store) == 0, f"Object store not empty: {len(rpc._object_store)} items"
+    assert (
+        len(rpc._object_store) == 0
+    ), f"Object store not empty: {len(rpc._object_store)} items"
     assert len(rpc._services) == 0, f"Services not cleared: {len(rpc._services)} items"
-    assert len(rpc._target_id_index) == 0, f"Target ID index not cleared: {len(rpc._target_id_index)} items"
-    assert len(rpc._background_tasks) == 0, f"Background tasks not cleared: {len(rpc._background_tasks)} items"
+    assert (
+        len(rpc._target_id_index) == 0
+    ), f"Target ID index not cleared: {len(rpc._target_id_index)} items"
+    assert (
+        len(rpc._background_tasks) == 0
+    ), f"Background tasks not cleared: {len(rpc._background_tasks)} items"
 
     # Verify event handlers cleared
-    assert len(rpc._event_handlers) == 0, f"Event handlers not cleared: {len(rpc._event_handlers)} items"
+    assert (
+        len(rpc._event_handlers) == 0
+    ), f"Event handlers not cleared: {len(rpc._event_handlers)} items"
 
     # For bonus points, try GC but don't fail if it doesn't collect
     # (async contexts may have event loop references we can't control)
@@ -193,11 +201,10 @@ class TestRPCInstanceGC:
         rpc, conn = create_rpc()
 
         # Register a service without notifying manager (no connection)
-        await rpc.register_service({
-            "id": "test-service",
-            "name": "Test Service",
-            "echo": lambda x: x
-        }, notify=False)
+        await rpc.register_service(
+            {"id": "test-service", "name": "Test Service", "echo": lambda x: x},
+            notify=False,
+        )
 
         # Verify service registered
         assert "test-service" in rpc._services
@@ -234,7 +241,7 @@ class TestConnectionGC:
             client_id="test",
             name="test",
             workspace="test",
-            server_base_url="http://localhost"
+            server_base_url="http://localhost",
         )
 
         # Disconnect and verify RPC cleanup
@@ -319,10 +326,7 @@ class TestCallbackGC:
 
         # Register service with callback using full ID format
         service_id = f"{rpc._local_workspace}/{rpc._client_id}:test-service"
-        rpc._object_store[service_id] = {
-            "id": "test-service",
-            "callback": callback
-        }
+        rpc._object_store[service_id] = {"id": "test-service", "callback": callback}
 
         # Verify service stored
         assert service_id in rpc._object_store
@@ -382,7 +386,7 @@ class TestServiceGC:
         service_impl = {
             "id": "test-service",
             "echo": lambda x: x,
-            "data": {"important": "stuff"}
+            "data": {"important": "stuff"},
         }
 
         # Register without notifying manager (no connection)
@@ -412,10 +416,12 @@ class TestIntegrationGC:
     @pytest.mark.asyncio
     async def test_client_collected_after_disconnect(self, websocket_server):
         """Full client should be cleaned up after disconnect."""
-        client = await connect_to_server({
-            "server_url": WS_SERVER_URL,
-            "client_id": "gc-test-client",
-        })
+        client = await connect_to_server(
+            {
+                "server_url": WS_SERVER_URL,
+                "client_id": "gc-test-client",
+            }
+        )
 
         # Verify client is connected
         assert client.rpc is not None
@@ -429,10 +435,12 @@ class TestIntegrationGC:
     @pytest.mark.asyncio
     async def test_service_with_callbacks_collected(self, websocket_server):
         """Service with callbacks should be cleaned up after disconnect."""
-        client = await connect_to_server({
-            "server_url": WS_SERVER_URL,
-            "client_id": "callback-gc-test",
-        })
+        client = await connect_to_server(
+            {
+                "server_url": WS_SERVER_URL,
+                "client_id": "callback-gc-test",
+            }
+        )
 
         # Create service with callbacks
         callback_data = {"count": 0}
@@ -441,10 +449,9 @@ class TestIntegrationGC:
             callback_data["count"] += 1
             return callback_data["count"]
 
-        await client.register_service({
-            "id": "callback-service",
-            "increment": increment
-        })
+        await client.register_service(
+            {"id": "callback-service", "increment": increment}
+        )
 
         # Verify service registered (use correct format)
         service_id = "callback-service"
@@ -468,10 +475,12 @@ class TestMemoryGrowth:
         """Repeated connect/disconnect should clean up properly each time."""
         # Perform many connect/disconnect cycles
         for i in range(10):
-            client = await connect_to_server({
-                "server_url": WS_SERVER_URL,
-                "client_id": f"mem-growth-test-{i}",
-            })
+            client = await connect_to_server(
+                {
+                    "server_url": WS_SERVER_URL,
+                    "client_id": f"mem-growth-test-{i}",
+                }
+            )
 
             # Verify client connected
             assert client.rpc is not None
@@ -541,6 +550,7 @@ def test_assert_rpc_cleaned_up_helper():
 
 def test_assert_collected_still_works():
     """Test that assert_collected helper still works for simple cases."""
+
     # Use a class instance (dicts can't have weak refs)
     class TestObj:
         def __init__(self):

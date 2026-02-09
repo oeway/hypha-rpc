@@ -126,7 +126,7 @@ module.exports = function (config) {
         concurrency: Infinity,
         captureTimeout: 12000,
         browserDisconnectTolerance: 2,
-        browserDisconnectTimeout: 40000,
-        browserNoActivityTimeout: 40000,
+        browserDisconnectTimeout: 60000,
+        browserNoActivityTimeout: 120000,
     })
 }

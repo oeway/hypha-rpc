@@ -1,6 +1,6 @@
 {
   "name": "hypha-rpc",
-  "version": "0.21.4",
+  "version": "0.21.5",
   "description": "Hypha RPC client for connecting to Hypha server for data management and AI model serving.",
   "main": "index.js",
   "module": "dist/hypha-rpc-websocket.mjs",
@@ -64,6 +64,7 @@
     "karma-webpack": "^5.0.1",
     "mocha": "^10.6.0",
     "prettier": "^3.3.3",
+    "puppeteer": "^24.37.2",
     "webpack": "^5.93.0",
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^5.0.4"

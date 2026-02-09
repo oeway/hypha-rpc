@@ -23,7 +23,6 @@ from hypha_rpc.websocket_client import connect_to_server, WebsocketRPCConnection
 from hypha_rpc.rpc import RPC, RemoteException
 from . import WS_SERVER_URL, WS_PORT
 
-
 # =============================================================================
 # Test 1: CPU-bound tasks blocking event loop during reconnection
 # =============================================================================

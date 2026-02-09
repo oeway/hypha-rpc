@@ -2864,9 +2864,7 @@ describe("RPC", async () => {
 
     for (let i = 0; i < 5; i++) {
       successPromises.push(svc.succeed(i));
-      failPromises.push(
-        svc.fail(i).catch((e) => e),
-      );
+      failPromises.push(svc.fail(i).catch((e) => e));
     }
 
     const successResults = await Promise.all(successPromises);
@@ -2937,7 +2935,7 @@ describe("RPC", async () => {
     // This is the failing test that demonstrates the memory leak
     expect(Object.keys(api.rpc._event_handlers).length).to.equal(
       0,
-      "All event handlers should be cleared after disconnect to prevent memory leaks"
+      "All event handlers should be cleared after disconnect to prevent memory leaks",
     );
 
     // Additional verification: handlers should not fire after disconnect

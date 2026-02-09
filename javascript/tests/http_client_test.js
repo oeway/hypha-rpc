@@ -115,7 +115,7 @@ describe("HTTP Streaming RPC Client", () => {
         server_url: "https://127.0.0.1:9394", // Wrong protocol
         client_id: "https-fail-test",
         method_timeout: 5,
-        });
+      });
 
       // If we get here, the test failed (should have thrown)
       expect.fail("Should have thrown an error for HTTPS on HTTP server");

@@ -186,9 +186,9 @@ async def test_dotdict_return_values(websocket_server):
         nested = await svc.get_nested()
         assert isinstance(nested, ObjectProxy)
         assert nested.id == "xyz"
-        assert isinstance(nested.config, ObjectProxy), (
-            f"Nested dict should be ObjectProxy, got {type(nested.config)}"
-        )
+        assert isinstance(
+            nested.config, ObjectProxy
+        ), f"Nested dict should be ObjectProxy, got {type(nested.config)}"
         assert nested.config.timeout == 30
         assert nested.config.retry is True
 
@@ -3272,7 +3272,9 @@ async def test_long_running_method_with_heartbeat(restartable_server):
     pure_svc = await ws.get_service("pure-long-service")
 
     PURE_DURATION = 5  # 5 seconds > 2 second timeout
-    print(f"   🚀 Starting {PURE_DURATION}s pure async task (timeout is only 2s, no callbacks)")
+    print(
+        f"   🚀 Starting {PURE_DURATION}s pure async task (timeout is only 2s, no callbacks)"
+    )
 
     start_time = asyncio.get_event_loop().time()
     result = await pure_svc.pure_long_task(PURE_DURATION)
@@ -3716,7 +3718,10 @@ async def test_callback_multiple_invocations(websocket_server):
     # Verify callback was invoked exactly 10 times with correct arguments
     assert len(progress_calls) == 10
     for i in range(10):
-        assert progress_calls[i] == (i, 10), f"Expected ({i}, 10), got {progress_calls[i]}"
+        assert progress_calls[i] == (
+            i,
+            10,
+        ), f"Expected ({i}, 10), got {progress_calls[i]}"
 
     await client.disconnect()
     await server.disconnect()
@@ -3768,8 +3773,10 @@ async def test_timeout_produces_clear_error(websocket_server):
     except (asyncio.TimeoutError, Exception) as e:
         # Either asyncio timeout or RPC timeout should fire
         error_msg = str(e).lower()
-        assert "timeout" in error_msg or "timed out" in error_msg or isinstance(
-            e, asyncio.TimeoutError
+        assert (
+            "timeout" in error_msg
+            or "timed out" in error_msg
+            or isinstance(e, asyncio.TimeoutError)
         ), f"Expected timeout error, got: {e}"
 
     await client.disconnect()
@@ -3816,7 +3823,9 @@ async def test_concurrent_call_partial_failure(websocket_server):
     # Gather fail tasks - should all raise exceptions
     fail_results = await asyncio.gather(*fail_tasks, return_exceptions=True)
     for i, result in enumerate(fail_results):
-        assert isinstance(result, Exception), f"Expected exception for task {i}, got {result}"
+        assert isinstance(
+            result, Exception
+        ), f"Expected exception for task {i}, got {result}"
         assert "Deliberate failure" in str(result)
 
     # Now do them all interleaved to make sure there's no cross-contamination
@@ -3830,7 +3839,9 @@ async def test_concurrent_call_partial_failure(websocket_server):
         # Even indices are succeed calls
         assert mixed_results[i] == (i // 2) * 2, f"Success result mismatch at index {i}"
         # Odd indices are fail calls
-        assert isinstance(mixed_results[i + 1], Exception), f"Expected exception at index {i+1}"
+        assert isinstance(
+            mixed_results[i + 1], Exception
+        ), f"Expected exception at index {i+1}"
 
     await api.disconnect()
 
@@ -4049,6 +4060,7 @@ async def test_nested_callback(websocket_server):
 
     async def outer_call(outer_callback):
         """Call the outer callback, passing an inner function that the callback can invoke."""
+
         async def inner_function(value):
             return value * 10
 

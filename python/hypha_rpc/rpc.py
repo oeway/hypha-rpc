@@ -491,9 +491,7 @@ class RemoteFunction:
                 session = self._rpc._object_store.get(local_session_id)
                 if isinstance(session, dict):
                     heartbeat = session.get("heartbeat_task")
-                    if heartbeat and not getattr(
-                        heartbeat, "done", lambda: True
-                    )():
+                    if heartbeat and not getattr(heartbeat, "done", lambda: True)():
                         heartbeat.cancel()
                     t = session.get("timer")
                     if t and getattr(t, "started", False):
@@ -503,7 +501,9 @@ class RemoteFunction:
                             pass
                     self._rpc._remove_from_target_id_index(local_session_id)
                     del self._rpc._object_store[local_session_id]
-                    logger.debug("Cleaned up session %s after timeout", local_session_id)
+                    logger.debug(
+                        "Cleaned up session %s after timeout", local_session_id
+                    )
                 elif local_session_id in self._rpc._object_store:
                     self._rpc._remove_from_target_id_index(local_session_id)
                     del self._rpc._object_store[local_session_id]
@@ -603,9 +603,7 @@ class RemoteFunction:
                                 if not k.startswith("_") and k != "target_id"
                             )
                             if not has_live_entries:
-                                self._rpc._remove_from_target_id_index(
-                                    local_session_id
-                                )
+                                self._rpc._remove_from_target_id_index(local_session_id)
                                 del self._rpc._object_store[local_session_id]
 
         emit_task.add_done_callback(handle_result)
@@ -859,7 +857,9 @@ class RPC(MessageEmitter):
 
                 # Start session GC task if not already running
                 if self._session_gc_task is None or self._session_gc_task.done():
-                    self._session_gc_task = asyncio.ensure_future(self._session_gc_loop())
+                    self._session_gc_task = asyncio.ensure_future(
+                        self._session_gc_loop()
+                    )
 
             connection.on_connected(on_connected)
 
@@ -1097,9 +1097,10 @@ class RPC(MessageEmitter):
             if isinstance(value, dict):
                 try:
                     heartbeat_task = value.get("heartbeat_task")
-                    if heartbeat_task and not getattr(
-                        heartbeat_task, "done", lambda: True
-                    )():
+                    if (
+                        heartbeat_task
+                        and not getattr(heartbeat_task, "done", lambda: True)()
+                    ):
                         heartbeat_task.cancel()
                 except Exception as e:
                     logger.debug("Error cancelling heartbeat task: %s", e)
@@ -1257,7 +1258,9 @@ class RPC(MessageEmitter):
                 self._client_disconnected_subscription = None
 
         #  Store background tasks before close() for proper cleanup
-        tasks_to_cleanup = list(self._background_tasks) if hasattr(self, "_background_tasks") else []
+        tasks_to_cleanup = (
+            list(self._background_tasks) if hasattr(self, "_background_tasks") else []
+        )
 
         # Also store fire-and-forget tasks from MessageEmitter._fire()
         if hasattr(self, "_fire_and_forget_tasks"):
@@ -1439,7 +1442,9 @@ class RPC(MessageEmitter):
                     if "reject" in session and callable(session["reject"]):
                         try:
                             session["reject"](
-                                TimeoutError(f"Session expired (TTL={self._session_ttl}s): {key}")
+                                TimeoutError(
+                                    f"Session expired (TTL={self._session_ttl}s): {key}"
+                                )
                             )
                         except Exception:
                             pass
@@ -1450,7 +1455,9 @@ class RPC(MessageEmitter):
                     except KeyError:
                         pass
                 if keys_to_gc:
-                    logger.debug("Session GC: cleaned up %d expired sessions", len(keys_to_gc))
+                    logger.debug(
+                        "Session GC: cleaned up %d expired sessions", len(keys_to_gc)
+                    )
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -1480,7 +1487,7 @@ class RPC(MessageEmitter):
                     e,
                 )
                 if attempt < max_retries - 1:
-                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    delay = min(base_delay * (2**attempt), max_delay)
                     await asyncio.sleep(delay)
 
         raise last_error
@@ -2037,7 +2044,11 @@ class RPC(MessageEmitter):
 
         # Also cancel any other async tasks stored with _task suffix
         for key, value in list(session_dict.items()):
-            if key.endswith("_task") and key != "heartbeat_task" and hasattr(value, "cancel"):
+            if (
+                key.endswith("_task")
+                and key != "heartbeat_task"
+                and hasattr(value, "cancel")
+            ):
                 try:
                     if not value.done():
                         value.cancel()

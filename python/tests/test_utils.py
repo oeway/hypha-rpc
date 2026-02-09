@@ -1,6 +1,7 @@
 """Tests for the utils module."""
 
 import os
+import sys
 from functools import partial
 from hypha_rpc.utils import callable_sig, callable_doc, parse_service_url
 import asyncio
@@ -14,8 +15,6 @@ from openai import AsyncOpenAI
 from . import WS_SERVER_URL
 
 from hypha_rpc.utils.launch import launch_external_services
-
-import pytest
 
 
 def test_parse_service_url():
@@ -482,7 +481,8 @@ async def test_launch_external_services(websocket_server):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     proc = await launch_external_services(
         server,
-        "python "
+        sys.executable
+        + " "
         + current_dir
         + "/example_service_script.py --server-url={server_url} --service-id=external-test-service --workspace={workspace} --token={token}",
         name="example_service_script",
@@ -499,7 +499,7 @@ async def test_launch_external_services(websocket_server):
         assert "not found" in str(e)
     proc = await launch_external_services(
         server,
-        "python -m http.server 9391",
+        sys.executable + " -m http.server 9391",
         name="example_service_script",
         check_url="http://127.0.0.1:9391",
     )

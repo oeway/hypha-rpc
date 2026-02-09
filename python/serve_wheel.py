@@ -4,6 +4,7 @@
 
 Use instead of `python3 -m http.server` when you need CORS.
 """
+
 import os
 
 os.system("python3 setup.py bdist_wheel")

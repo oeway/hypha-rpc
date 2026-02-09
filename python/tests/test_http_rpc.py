@@ -10,7 +10,6 @@ import asyncio
 from hypha_rpc import connect_to_server
 from . import WS_SERVER_URL
 
-
 # Local server URL (started by websocket_server fixture)
 SERVER_URL = WS_SERVER_URL
 
@@ -578,7 +577,9 @@ class TestHTTPManagerService:
             # Verify via manager (service IDs include workspace prefix)
             services_after = await server.list_services()
             service_ids = [s.get("id") for s in services_after]
-            full_service_id = f"{workspace}/{server.config['client_id']}:cross-ws-service"
+            full_service_id = (
+                f"{workspace}/{server.config['client_id']}:cross-ws-service"
+            )
             assert full_service_id in service_ids
 
             print(f"✓ Cross-workspace manager access from {workspace}")
@@ -792,9 +793,9 @@ class TestHTTPReconnection:
             ):
                 await asyncio.sleep(0.5)
 
-            assert len(reconnection_events) > 0, (
-                f"Should have received reconnection event within {max_wait}s"
-            )
+            assert (
+                len(reconnection_events) > 0
+            ), f"Should have received reconnection event within {max_wait}s"
 
             # Give time for services to be re-registered
             await asyncio.sleep(2)
@@ -808,7 +809,9 @@ class TestHTTPReconnection:
                     )
                     result = await asyncio.wait_for(svc.ping(), timeout=5.0)
                     if result == "pong":
-                        print(f"Service working after reconnection (attempt {attempt + 1})")
+                        print(
+                            f"Service working after reconnection (attempt {attempt + 1})"
+                        )
                         success = True
                         break
                 except Exception as e:
@@ -853,9 +856,9 @@ class TestHTTPReconnection:
 
             # Workspace should be the same after reconnection
             new_workspace = conn._workspace
-            assert new_workspace == original_workspace, (
-                f"Workspace changed: {original_workspace} -> {new_workspace}"
-            )
+            assert (
+                new_workspace == original_workspace
+            ), f"Workspace changed: {original_workspace} -> {new_workspace}"
 
             # manager_id should be updated (new session on server)
             # but workspace should remain the same

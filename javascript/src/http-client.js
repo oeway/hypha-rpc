@@ -56,7 +56,10 @@
 import { RPC } from "./rpc.js";
 import { assert, randId, waitFor, parseServiceUrl } from "./utils/index.js";
 import { schemaFunction } from "./utils/schema.js";
-import { decode as msgpackDecode, encode as msgpackEncode } from "@msgpack/msgpack";
+import {
+  decode as msgpackDecode,
+  encode as msgpackEncode,
+} from "@msgpack/msgpack";
 
 const MAX_RETRY = 1000000;
 
@@ -193,8 +196,7 @@ export class HTTPStreamingRPCConnection {
 
     // Adjust token refresh interval based on server's token lifetime
     if (this.connection_info.reconnection_token_life_time) {
-      const token_life_time =
-        this.connection_info.reconnection_token_life_time;
+      const token_life_time = this.connection_info.reconnection_token_life_time;
       if (this._token_refresh_interval > token_life_time / 1.5) {
         console.warn(
           `Token refresh interval (${this._token_refresh_interval}s) is too long, ` +
@@ -409,7 +411,10 @@ export class HTTPStreamingRPCConnection {
       while (bufferLen - offset >= 4) {
         // Read 4-byte length prefix (big-endian)
         const length =
-          (buffer[offset] << 24) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3];
+          (buffer[offset] << 24) |
+          (buffer[offset + 1] << 16) |
+          (buffer[offset + 2] << 8) |
+          buffer[offset + 3];
 
         if (bufferLen - offset < 4 + length) {
           // Incomplete frame, wait for more data
@@ -544,9 +549,7 @@ export class HTTPStreamingRPCConnection {
             console.warn(
               `POST failed (attempt ${attempt + 1}/${maxRetries}): ${error_text}, retrying...`,
             );
-            await new Promise((r) =>
-              setTimeout(r, 500 * (attempt + 1)),
-            );
+            await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
             continue;
           }
           throw new Error(
@@ -560,9 +563,7 @@ export class HTTPStreamingRPCConnection {
           console.warn(
             `Failed to send message (attempt ${attempt + 1}/${maxRetries}): ${error.message}, retrying...`,
           );
-          await new Promise((r) =>
-            setTimeout(r, 500 * (attempt + 1)),
-          );
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
         } else {
           console.error(`Failed to send message: ${error.message}`);
           throw error;

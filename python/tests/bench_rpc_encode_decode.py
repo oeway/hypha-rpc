@@ -70,6 +70,7 @@ def create_rpc():
 
 # ─── Payload generators ───────────────────────────────────────────────
 
+
 def make_flat_primitives(n=100):
     """Flat dict with n string/int/float/bool keys."""
     d = {}
@@ -85,10 +86,7 @@ def make_nested(depth=5, breadth=4):
     """Nested dict structure."""
     if depth == 0:
         return {"value": 42, "name": "leaf", "active": True}
-    return {
-        f"child_{i}": make_nested(depth - 1, breadth)
-        for i in range(breadth)
-    }
+    return {f"child_{i}": make_nested(depth - 1, breadth) for i in range(breadth)}
 
 
 def make_numpy_payload(n_arrays=10, array_size=1000):
@@ -129,6 +127,7 @@ def make_mixed_payload():
 
 
 # ─── Benchmark runner ─────────────────────────────────────────────────
+
 
 def bench_encode_decode(rpc, payload, label, iterations=200):
     """Benchmark encode, packb, unpackb, decode for a payload."""
@@ -176,7 +175,9 @@ def bench_encode_decode(rpc, payload, label, iterations=200):
     print(f"  {label}")
     print(f"  Payload size: {payload_size:,} bytes | Iterations: {iterations}")
     print(f"{'=' * 65}")
-    print(f"  {'Step':<20} {'Mean (us)':>10} {'Median (us)':>12} {'Stdev (us)':>12} {'% of total':>10}")
+    print(
+        f"  {'Step':<20} {'Mean (us)':>10} {'Median (us)':>12} {'Stdev (us)':>12} {'% of total':>10}"
+    )
     print(f"  {'-' * 64}")
 
     total_mean = statistics.mean(total_times)
@@ -245,7 +246,9 @@ def bench_session_cleanup(n_sessions=1000, iterations=50):
     mean = statistics.mean(times)
     median = statistics.median(times)
     stdev = statistics.stdev(times) if len(times) > 1 else 0
-    print(f"  Mean: {mean * 1e6:.1f} us | Median: {median * 1e6:.1f} us | Stdev: {stdev * 1e6:.1f} us")
+    print(
+        f"  Mean: {mean * 1e6:.1f} us | Median: {median * 1e6:.1f} us | Stdev: {stdev * 1e6:.1f} us"
+    )
 
     return {"cleanup_mean_us": mean * 1e6, "n_sessions": n_sessions}
 
@@ -254,7 +257,12 @@ def bench_on_message(rpc, payload, label, iterations=200):
     """Benchmark the full _on_message path (unpack + decode)."""
     # Pre-encode and pack the payload to simulate an incoming message
     encoded = rpc._encode(payload, session_id="bench-session")
-    main_message = {"type": "method", "from": "remote-client", "to": "bench-client", "method": "test"}
+    main_message = {
+        "type": "method",
+        "from": "remote-client",
+        "to": "bench-client",
+        "method": "test",
+    }
     extra_data = {"args": encoded}
     packed = msgpack.packb(main_message) + msgpack.packb(extra_data)
 
@@ -286,7 +294,9 @@ def bench_on_message(rpc, payload, label, iterations=200):
     mean = statistics.mean(times)
     median = statistics.median(times)
     stdev = statistics.stdev(times) if len(times) > 1 else 0
-    print(f"  Mean: {mean * 1e6:.1f} us | Median: {median * 1e6:.1f} us | Stdev: {stdev * 1e6:.1f} us")
+    print(
+        f"  Mean: {mean * 1e6:.1f} us | Median: {median * 1e6:.1f} us | Stdev: {stdev * 1e6:.1f} us"
+    )
 
     return {"on_message_mean_us": mean * 1e6, "message_size": len(packed)}
 
@@ -302,6 +312,7 @@ def main():
     # Check if msgpack C extension is active
     try:
         from msgpack._cmsgpack import Packer as CPacker
+
         print("  msgpack backend: C extension")
     except ImportError:
         print("  msgpack backend: pure Python (SLOW)")
@@ -315,11 +326,15 @@ def main():
 
     # 2. Nested dicts
     payload = make_nested(depth=4, breadth=4)
-    results.append(bench_encode_decode(rpc, payload, "2. Nested dicts (depth=4, breadth=4)"))
+    results.append(
+        bench_encode_decode(rpc, payload, "2. Nested dicts (depth=4, breadth=4)")
+    )
 
     # 3. Numpy arrays
     payload = make_numpy_payload(10, 1000)
-    results.append(bench_encode_decode(rpc, payload, "3. Numpy arrays (10x 1000 floats)"))
+    results.append(
+        bench_encode_decode(rpc, payload, "3. Numpy arrays (10x 1000 floats)")
+    )
 
     # 4. Tabular data
     payload = make_tabular(500)
@@ -340,7 +355,9 @@ def main():
     print(f"\n{'=' * 65}")
     print("  SUMMARY: Time breakdown (mean, microseconds)")
     print(f"{'=' * 65}")
-    print(f"  {'Payload':<30} {'encode':>8} {'packb':>8} {'unpackb':>8} {'decode':>8} {'TOTAL':>8}")
+    print(
+        f"  {'Payload':<30} {'encode':>8} {'packb':>8} {'unpackb':>8} {'decode':>8} {'TOTAL':>8}"
+    )
     print(f"  {'-' * 70}")
     for r in results:
         print(

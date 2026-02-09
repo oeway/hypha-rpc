@@ -420,7 +420,9 @@ class PyodideWebsocketRPCConnection:
                                 self._reconnected_event = None
                             return
                         except ConnectionAbortedError as e:
-                            logger.warning("Failed to reconnect, connection aborted: %s", e)
+                            logger.warning(
+                                "Failed to reconnect, connection aborted: %s", e
+                            )
                             self._closed = True
                             if self._reconnected_event:
                                 self._reconnected_event.set()
@@ -452,6 +454,7 @@ class PyodideWebsocketRPCConnection:
                             retry += 1
                             # Exponential backoff with jitter
                             import random
+
                             delay = min(base_delay * (2 ** (retry - 1)), max_delay)
                             jitter = random.uniform(-max_jitter, max_jitter) * delay
                             final_delay = max(0.1, delay + jitter)

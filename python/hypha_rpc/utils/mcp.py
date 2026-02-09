@@ -8,6 +8,7 @@ from starlette.types import Receive, Scope, Send
 from starlette.middleware import Middleware
 from hypha_rpc.utils.serve import register_asgi_service
 from fastmcp import FastMCP
+from fastmcp.resources import FunctionResource
 from mcp.types import ToolAnnotations
 import inspect
 from fastmcp.prompts.prompt import (
@@ -16,7 +17,6 @@ from fastmcp.prompts.prompt import (
     compress_schema,
 )
 from pydantic import validate_call
-
 
 logger = logging.getLogger("hypha_rpc.utils.mcp")
 
@@ -169,14 +169,14 @@ async def create_mcp_from_service(service: dict) -> FastMCP:
                 try:
                     assert "read" in resource_data and callable(resource_data["read"])
                     # Create and add a resource directly
-                    mcp.add_resource_fn(
-                        fn=create_fn(resource_data["read"]),
+                    resource = FunctionResource(
                         uri=resource_data["uri"],
                         name=resource_data.get("name"),
                         description=resource_data.get("description"),
                         mime_type=resource_data.get("mime_type"),
-                        tags=resource_data.get("tags", set()),
+                        fn=create_fn(resource_data["read"]),
                     )
+                    mcp.add_resource(resource)
                     resource_name = resource_data.get("name", resource_data["uri"])
                     logger.debug(f"Added resource {resource_name} to service {name}")
                 except Exception as e:
@@ -188,7 +188,7 @@ async def create_mcp_from_service(service: dict) -> FastMCP:
             for prompt_data in prompts:
                 try:
                     assert "read" in prompt_data and callable(prompt_data["read"])
-                    mcp._prompt_manager.add_prompt(create_prompt(prompt_data))
+                    mcp.add_prompt(create_prompt(prompt_data))
                     prompt_name = prompt_data.get("name", "unnamed")
                     logger.debug(f"Added prompt {prompt_name} to service {name}")
                 except Exception as e:

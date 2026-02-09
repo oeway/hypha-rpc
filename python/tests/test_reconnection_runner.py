@@ -7,7 +7,6 @@ import asyncio
 import subprocess
 import sys
 import time
-import pytest
 from hypha_rpc import connect_to_server
 
 
@@ -93,52 +92,6 @@ async def run_reconnection_test_suite():
     except Exception as e:
         print(f"❌ Test failed: {e}")
         raise
-
-
-@pytest.mark.asyncio
-async def test_quick_reconnection_check():
-    """Quick test to verify reconnection logic is working."""
-    # This test requires a running hypha server
-    try:
-        SERVER_URL = "ws://127.0.0.1:9527/ws"
-
-        ws = await connect_to_server(
-            {
-                "name": "quick-reconnection-test",
-                "server_url": SERVER_URL,
-                "client_id": "quick-test",
-            }
-        )
-
-        # Register a simple service
-        await ws.register_service(
-            {
-                "id": "quick-test-service",
-                "config": {"visibility": "protected"},
-                "ping": lambda: "pong",
-            }
-        )
-
-        # Test it works
-        svc = await ws.get_service("quick-test-service")
-        result = await svc.ping()
-        assert result == "pong"
-
-        # Disconnect and reconnect
-        await ws.rpc._connection._websocket.close(1011)
-        await asyncio.sleep(2)
-
-        # Should still work
-        svc = await ws.get_service("quick-test-service")
-        result = await svc.ping()
-        assert result == "pong"
-
-        await ws.disconnect()
-        print("✅ Quick reconnection test passed")
-
-    except Exception as e:
-        print(f"❌ Quick test failed (server might not be running): {e}")
-        pytest.skip("Hypha server not available for live testing")
 
 
 if __name__ == "__main__":

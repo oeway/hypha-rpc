@@ -442,10 +442,17 @@ export class RPC extends MessageEmitter {
 
     if (RPC._rejectionHandlerCount === 1) {
       if (typeof window !== "undefined") {
-        window.addEventListener("unhandledrejection", this._unhandledRejectionHandler);
+        window.addEventListener(
+          "unhandledrejection",
+          this._unhandledRejectionHandler,
+        );
       } else if (typeof process !== "undefined") {
         this._unhandledRejectionNodeHandler = (reason, promise) => {
-          this._unhandledRejectionHandler({ reason, promise, preventDefault: () => {} });
+          this._unhandledRejectionHandler({
+            reason,
+            promise,
+            preventDefault: () => {},
+          });
         };
         process.on("unhandledRejection", this._unhandledRejectionNodeHandler);
       }
@@ -489,7 +496,10 @@ export class RPC extends MessageEmitter {
           console.debug("Connection established, reporting services...");
           try {
             // Retry getting manager service with exponential backoff
-            const manager = await this.get_manager_service({ timeout: 20, case_conversion: "camel" });
+            const manager = await this.get_manager_service({
+              timeout: 20,
+              case_conversion: "camel",
+            });
             const services = Object.values(this._services);
             const servicesCount = services.length;
             let registeredCount = 0;
@@ -703,7 +713,11 @@ export class RPC extends MessageEmitter {
       const now = Date.now();
       for (const k of cacheKeys) {
         const entry = cache[k];
-        if (entry && entry._cache_created_at && now - entry._cache_created_at > MAX_CACHE_AGE) {
+        if (
+          entry &&
+          entry._cache_created_at &&
+          now - entry._cache_created_at > MAX_CACHE_AGE
+        ) {
           delete cache[k];
         }
       }
@@ -711,7 +725,11 @@ export class RPC extends MessageEmitter {
       const remaining = Object.keys(cache);
       if (remaining.length >= MAX_CACHE_SIZE) {
         remaining
-          .sort((a, b) => (cache[a]._cache_created_at || 0) - (cache[b]._cache_created_at || 0))
+          .sort(
+            (a, b) =>
+              (cache[a]._cache_created_at || 0) -
+              (cache[b]._cache_created_at || 0),
+          )
           .slice(0, remaining.length - MAX_CACHE_SIZE + 1)
           .forEach((k) => delete cache[k]);
       }
@@ -840,9 +858,18 @@ export class RPC extends MessageEmitter {
       RPC._rejectionHandlerCount--;
       if (RPC._rejectionHandlerCount === 0) {
         if (typeof window !== "undefined" && this._unhandledRejectionHandler) {
-          window.removeEventListener("unhandledrejection", this._unhandledRejectionHandler);
-        } else if (typeof process !== "undefined" && this._unhandledRejectionNodeHandler) {
-          process.removeListener("unhandledRejection", this._unhandledRejectionNodeHandler);
+          window.removeEventListener(
+            "unhandledrejection",
+            this._unhandledRejectionHandler,
+          );
+        } else if (
+          typeof process !== "undefined" &&
+          this._unhandledRejectionNodeHandler
+        ) {
+          process.removeListener(
+            "unhandledRejection",
+            this._unhandledRejectionNodeHandler,
+          );
         }
       }
     }
@@ -867,7 +894,9 @@ export class RPC extends MessageEmitter {
     // Clean up client_disconnected subscription
     if (this._clientDisconnectedSubscription) {
       try {
-        if (typeof this._clientDisconnectedSubscription.unsubscribe === "function") {
+        if (
+          typeof this._clientDisconnectedSubscription.unsubscribe === "function"
+        ) {
           this._clientDisconnectedSubscription.unsubscribe();
         }
       } catch (e) {
@@ -971,7 +1000,11 @@ export class RPC extends MessageEmitter {
    */
   _cleanupSessionEntry(session, rejectReason = null) {
     if (!session || typeof session !== "object") return;
-    if (rejectReason && session.reject && typeof session.reject === "function") {
+    if (
+      rejectReason &&
+      session.reject &&
+      typeof session.reject === "function"
+    ) {
       try {
         session.reject(new Error(rejectReason));
       } catch (e) {
@@ -979,10 +1012,22 @@ export class RPC extends MessageEmitter {
       }
     }
     if (session.heartbeat_task) {
-      try { clearInterval(session.heartbeat_task); } catch (e) { /* ignore */ }
+      try {
+        clearInterval(session.heartbeat_task);
+      } catch (e) {
+        /* ignore */
+      }
     }
-    if (session.timer && session.timer.started && typeof session.timer.clear === "function") {
-      try { session.timer.clear(); } catch (e) { /* ignore */ }
+    if (
+      session.timer &&
+      session.timer.started &&
+      typeof session.timer.clear === "function"
+    ) {
+      try {
+        session.timer.clear();
+      } catch (e) {
+        /* ignore */
+      }
     }
   }
 
@@ -1607,7 +1652,11 @@ export class RPC extends MessageEmitter {
       }
 
       // Clean up resources before removing session
-      if (store.timer && store.timer.started && typeof store.timer.clear === "function") {
+      if (
+        store.timer &&
+        store.timer.started &&
+        typeof store.timer.clear === "function"
+      ) {
         try {
           store.timer.clear();
         } catch (error) {
@@ -1815,7 +1864,10 @@ export class RPC extends MessageEmitter {
         // Only sweep sessions that have no timer (active timers mean they are in use)
         // and no active promise callbacks (resolve/reject mean the session is awaiting a response)
         if (!session.timer || !session.timer.started) {
-          if (typeof session.resolve === "function" || typeof session.reject === "function") {
+          if (
+            typeof session.resolve === "function" ||
+            typeof session.reject === "function"
+          ) {
             // Session still has active promise callbacks, skip it
             continue;
           }
@@ -2035,209 +2087,213 @@ export class RPC extends MessageEmitter {
     function remote_method() {
       return new Promise(async (resolve, reject) => {
         try {
-        let local_session_id = randId();
-        if (local_parent) {
-          // Store the children session under the parent
-          local_session_id = local_parent + "." + local_session_id;
-        }
-        let store = self._get_session_store(local_session_id, true);
-        if (!store) {
-          reject(
-            new Error(
-              `Runtime Error: Failed to get session store ${local_session_id} (context: ${description})`,
-            ),
-          );
-          return;
-        }
-        store["target_id"] = target_id;
-        // Update target_id index for fast session cleanup
-        const topKey = local_session_id.split(".")[0];
-        if (!(target_id in self._targetIdIndex)) {
-          self._targetIdIndex[target_id] = new Set();
-        }
-        self._targetIdIndex[target_id].add(topKey);
-        const args = await self._encode(
-          Array.prototype.slice.call(arguments),
-          local_session_id,
-          local_workspace,
-        );
-        const argLength = args.length;
-        // if the last argument is an object, mark it as kwargs
-        const withKwargs =
-          argLength > 0 &&
-          typeof args[argLength - 1] === "object" &&
-          args[argLength - 1] !== null &&
-          args[argLength - 1]._rkwargs;
-        if (withKwargs) delete args[argLength - 1]._rkwargs;
-
-        let from_client;
-        if (!self._local_workspace) {
-          from_client = self._client_id;
-        } else {
-          from_client = self._local_workspace + "/" + self._client_id;
-        }
-
-        let main_message = {
-          type: "method",
-          from: from_client,
-          to: target_id,
-          method: method_id,
-        };
-        let extra_data = {};
-        if (args) {
-          extra_data["args"] = args;
-        }
-        if (withKwargs) {
-          extra_data["with_kwargs"] = withKwargs;
-        }
-
-        // console.log(
-        //   `Calling remote method ${target_id}:${method_id}, session: ${local_session_id}`
-        // );
-        if (remote_parent) {
-          // Set the parent session
-          // Note: It's a session id for the remote, not the current client
-          main_message["parent"] = remote_parent;
-        }
-
-        let timer = null;
-        if (with_promise) {
-          // Only pass the current session id to the remote
-          // if we want to received the result
-          // I.e. the session id won't be passed for promises themselves
-          main_message["session"] = local_session_id;
-          let method_name = `${target_id}:${method_id}`;
-
-          // Create a timer that gets reset by heartbeat
-          // Methods can run indefinitely as long as heartbeat keeps resetting the timer
-          // IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
-          const timeoutCallback = function (error_msg) {
-            // First reject the promise - wrap in Error for proper stack traces
-            reject(new Error(error_msg));
-            // Then clean up the entire session to stop all callbacks
-            if (self._object_store[local_session_id]) {
-              // Clean up target_id index before deleting the session
-              self._removeFromTargetIdIndex(local_session_id);
-              delete self._object_store[local_session_id];
-              console.debug(
-                `Cleaned up session ${local_session_id} after timeout`,
-              );
-            }
-          };
-
-          timer = new Timer(
-            self._method_timeout,
-            timeoutCallback,
-            [`Method call timed out: ${method_name}, context: ${description}`],
-            method_name,
-          );
-          // By default, hypha will clear the session after the method is called
-          // However, if the args contains _rintf === true, we will not clear the session
-
-          // Helper function to recursively check for _rintf objects
-          function hasInterfaceObject(obj) {
-            if (!obj || typeof obj !== "object") return false;
-            if (obj._rintf === true) return true;
-            if (Array.isArray(obj)) {
-              return obj.some((item) => hasInterfaceObject(item));
-            }
-            if (obj.constructor === Object) {
-              return Object.values(obj).some((value) =>
-                hasInterfaceObject(value),
-              );
-            }
-            return false;
+          let local_session_id = randId();
+          if (local_parent) {
+            // Store the children session under the parent
+            local_session_id = local_parent + "." + local_session_id;
           }
-
-          let clear_after_called = !hasInterfaceObject(args);
-
-          const promiseData = await self._encode_promise(
-            resolve,
-            reject,
+          let store = self._get_session_store(local_session_id, true);
+          if (!store) {
+            reject(
+              new Error(
+                `Runtime Error: Failed to get session store ${local_session_id} (context: ${description})`,
+              ),
+            );
+            return;
+          }
+          store["target_id"] = target_id;
+          // Update target_id index for fast session cleanup
+          const topKey = local_session_id.split(".")[0];
+          if (!(target_id in self._targetIdIndex)) {
+            self._targetIdIndex[target_id] = new Set();
+          }
+          self._targetIdIndex[target_id].add(topKey);
+          const args = await self._encode(
+            Array.prototype.slice.call(arguments),
             local_session_id,
-            clear_after_called,
-            timer,
             local_workspace,
-            description,
           );
+          const argLength = args.length;
+          // if the last argument is an object, mark it as kwargs
+          const withKwargs =
+            argLength > 0 &&
+            typeof args[argLength - 1] === "object" &&
+            args[argLength - 1] !== null &&
+            args[argLength - 1]._rkwargs;
+          if (withKwargs) delete args[argLength - 1]._rkwargs;
 
-          if (with_promise === true) {
-            extra_data["promise"] = promiseData;
-          } else if (with_promise === "*") {
-            extra_data["promise"] = "*";
-            extra_data["t"] = self._method_timeout / 2;
+          let from_client;
+          if (!self._local_workspace) {
+            from_client = self._client_id;
           } else {
-            throw new Error(`Unsupported promise type: ${with_promise}`);
+            from_client = self._local_workspace + "/" + self._client_id;
           }
-        }
-        // The message consists of two segments, the main message and extra data
-        let message_package = msgpack_packb(main_message);
-        if (extra_data) {
-          const extra = msgpack_packb(extra_data);
-          const combined = new Uint8Array(message_package.length + extra.length);
-          combined.set(message_package);
-          combined.set(extra, message_package.length);
-          message_package = combined;
-        }
-        const total_size = message_package.length;
-        if (
-          total_size <= self._long_message_chunk_size + 1024 ||
-          remote_method.__no_chunk__
-        ) {
-          self
-            ._emit_message(message_package)
-            .then(function () {
-              if (timer) {
-                // Start the timer after message is sent successfully
-                timer.start();
+
+          let main_message = {
+            type: "method",
+            from: from_client,
+            to: target_id,
+            method: method_id,
+          };
+          let extra_data = {};
+          if (args) {
+            extra_data["args"] = args;
+          }
+          if (withKwargs) {
+            extra_data["with_kwargs"] = withKwargs;
+          }
+
+          // console.log(
+          //   `Calling remote method ${target_id}:${method_id}, session: ${local_session_id}`
+          // );
+          if (remote_parent) {
+            // Set the parent session
+            // Note: It's a session id for the remote, not the current client
+            main_message["parent"] = remote_parent;
+          }
+
+          let timer = null;
+          if (with_promise) {
+            // Only pass the current session id to the remote
+            // if we want to received the result
+            // I.e. the session id won't be passed for promises themselves
+            main_message["session"] = local_session_id;
+            let method_name = `${target_id}:${method_id}`;
+
+            // Create a timer that gets reset by heartbeat
+            // Methods can run indefinitely as long as heartbeat keeps resetting the timer
+            // IMPORTANT: When timeout occurs, we must clean up the session to prevent memory leaks
+            const timeoutCallback = function (error_msg) {
+              // First reject the promise - wrap in Error for proper stack traces
+              reject(new Error(error_msg));
+              // Then clean up the entire session to stop all callbacks
+              if (self._object_store[local_session_id]) {
+                // Clean up target_id index before deleting the session
+                self._removeFromTargetIdIndex(local_session_id);
+                delete self._object_store[local_session_id];
+                console.debug(
+                  `Cleaned up session ${local_session_id} after timeout`,
+                );
               }
-              if (!with_promise) {
-                // Fire-and-forget: resolve immediately after message is sent.
-                // Without this, the promise never resolves because no response
-                // is expected. This is critical for heartbeat callbacks which
-                // use _rpromise=false and are awaited in a loop.
-                resolve(null);
+            };
+
+            timer = new Timer(
+              self._method_timeout,
+              timeoutCallback,
+              [
+                `Method call timed out: ${method_name}, context: ${description}`,
+              ],
+              method_name,
+            );
+            // By default, hypha will clear the session after the method is called
+            // However, if the args contains _rintf === true, we will not clear the session
+
+            // Helper function to recursively check for _rintf objects
+            function hasInterfaceObject(obj) {
+              if (!obj || typeof obj !== "object") return false;
+              if (obj._rintf === true) return true;
+              if (Array.isArray(obj)) {
+                return obj.some((item) => hasInterfaceObject(item));
               }
-            })
-            .catch(function (err) {
-              const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
-              if (reject) {
-                reject(new Error(error_msg));
-              } else {
-                // No reject callback available, log the error to prevent unhandled promise rejections
-                console.warn("Unhandled RPC method call error:", error_msg);
+              if (obj.constructor === Object) {
+                return Object.values(obj).some((value) =>
+                  hasInterfaceObject(value),
+                );
               }
-              if (timer && timer.started) {
-                timer.clear();
-              }
-            });
-        } else {
-          // send chunk by chunk
-          self
-            ._send_chunks(message_package, target_id, remote_parent)
-            .then(function () {
-              if (timer) {
-                // Start the timer after message is sent successfully
-                timer.start();
-              }
-              if (!with_promise) {
-                // Fire-and-forget: resolve immediately after message is sent
-                resolve(null);
-              }
-            })
-            .catch(function (err) {
-              const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
-              if (reject) {
-                reject(new Error(error_msg));
-              } else {
-                // No reject callback available, log the error to prevent unhandled promise rejections
-                console.warn("Unhandled RPC method call error:", error_msg);
-              }
-              if (timer && timer.started) {
-                timer.clear();
-              }
-            });
-        }
+              return false;
+            }
+
+            let clear_after_called = !hasInterfaceObject(args);
+
+            const promiseData = await self._encode_promise(
+              resolve,
+              reject,
+              local_session_id,
+              clear_after_called,
+              timer,
+              local_workspace,
+              description,
+            );
+
+            if (with_promise === true) {
+              extra_data["promise"] = promiseData;
+            } else if (with_promise === "*") {
+              extra_data["promise"] = "*";
+              extra_data["t"] = self._method_timeout / 2;
+            } else {
+              throw new Error(`Unsupported promise type: ${with_promise}`);
+            }
+          }
+          // The message consists of two segments, the main message and extra data
+          let message_package = msgpack_packb(main_message);
+          if (extra_data) {
+            const extra = msgpack_packb(extra_data);
+            const combined = new Uint8Array(
+              message_package.length + extra.length,
+            );
+            combined.set(message_package);
+            combined.set(extra, message_package.length);
+            message_package = combined;
+          }
+          const total_size = message_package.length;
+          if (
+            total_size <= self._long_message_chunk_size + 1024 ||
+            remote_method.__no_chunk__
+          ) {
+            self
+              ._emit_message(message_package)
+              .then(function () {
+                if (timer) {
+                  // Start the timer after message is sent successfully
+                  timer.start();
+                }
+                if (!with_promise) {
+                  // Fire-and-forget: resolve immediately after message is sent.
+                  // Without this, the promise never resolves because no response
+                  // is expected. This is critical for heartbeat callbacks which
+                  // use _rpromise=false and are awaited in a loop.
+                  resolve(null);
+                }
+              })
+              .catch(function (err) {
+                const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
+                if (reject) {
+                  reject(new Error(error_msg));
+                } else {
+                  // No reject callback available, log the error to prevent unhandled promise rejections
+                  console.warn("Unhandled RPC method call error:", error_msg);
+                }
+                if (timer && timer.started) {
+                  timer.clear();
+                }
+              });
+          } else {
+            // send chunk by chunk
+            self
+              ._send_chunks(message_package, target_id, remote_parent)
+              .then(function () {
+                if (timer) {
+                  // Start the timer after message is sent successfully
+                  timer.start();
+                }
+                if (!with_promise) {
+                  // Fire-and-forget: resolve immediately after message is sent
+                  resolve(null);
+                }
+              })
+              .catch(function (err) {
+                const error_msg = `Failed to send the request when calling method (${target_id}:${method_id}), error: ${err}`;
+                if (reject) {
+                  reject(new Error(error_msg));
+                } else {
+                  // No reject callback available, log the error to prevent unhandled promise rejections
+                  console.warn("Unhandled RPC method call error:", error_msg);
+                }
+                if (timer && timer.started) {
+                  timer.clear();
+                }
+              });
+          }
         } catch (err) {
           reject(err);
         }
@@ -2857,7 +2913,10 @@ export class RPC extends MessageEmitter {
       // Fast path: if all values are primitives, return as-is
       if (isarray) {
         if (_allPrimitivesArray(aObject)) return aObject;
-      } else if (!("_rtype" in aObject) && !(aObject instanceof RemoteService)) {
+      } else if (
+        !("_rtype" in aObject) &&
+        !(aObject instanceof RemoteService)
+      ) {
         if (_allPrimitivesObject(aObject)) return aObject;
       }
       bObject = isarray ? [] : {};

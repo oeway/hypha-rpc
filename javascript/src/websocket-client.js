@@ -965,14 +965,11 @@ export async function connectToServer(config) {
     const description = _wm.getService.__schema__.description;
     // TODO: Fix the schema for adding options for webrtc
     const parameters = _wm.getService.__schema__.parameters;
-    wm.getService = schemaFunction(
-      webrtcGetService.bind(null, _wm),
-      {
-        name: "getService",
-        description,
-        parameters,
-      },
-    );
+    wm.getService = schemaFunction(webrtcGetService.bind(null, _wm), {
+      name: "getService",
+      description,
+      parameters,
+    });
 
     wm.getRTCService = schemaFunction(getRTCService.bind(null, wm), {
       name: "getRTCService",
@@ -1116,7 +1113,11 @@ export class LocalWebSocket {
       workspace: this.workspace,
     });
     if (this._context && this._messageListener) {
-      this._context.removeEventListener("message", this._messageListener, false);
+      this._context.removeEventListener(
+        "message",
+        this._messageListener,
+        false,
+      );
       this._messageListener = null;
     }
     this.onclose();

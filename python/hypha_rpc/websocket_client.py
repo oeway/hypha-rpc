@@ -296,9 +296,7 @@ class WebsocketRPCConnection:
                         self._reconnected_event.wait(), timeout=self._timeout
                     )
                 except asyncio.TimeoutError:
-                    raise ConnectionError(
-                        "WebSocket reconnection timed out"
-                    )
+                    raise ConnectionError("WebSocket reconnection timed out")
             # Check again after waiting
             if self._closed:
                 raise ConnectionError("Connection is closed")
@@ -460,7 +458,9 @@ class WebsocketRPCConnection:
                                             f"Server refused reconnection: {e}"
                                         )
                                     except Exception as cb_err:
-                                        logger.error("Error in disconnected callback: %s", cb_err)
+                                        logger.error(
+                                            "Error in disconnected callback: %s", cb_err
+                                        )
                                 break
                             except (ConnectionRefusedError, OSError) as e:
                                 # Network-related errors that might be temporary
@@ -546,9 +546,7 @@ class WebsocketRPCConnection:
                 if self._handle_disconnected:
                     try:
                         close_reason = getattr(self._websocket, "close_reason", None)
-                        self._handle_disconnected(
-                            close_reason or "Connection closed"
-                        )
+                        self._handle_disconnected(close_reason or "Connection closed")
                     except Exception as cb_err:
                         logger.error("Error in disconnected callback: %s", cb_err)
 
@@ -557,9 +555,7 @@ class WebsocketRPCConnection:
         self._closed = True
         if self._websocket and not self._websocket.state == State.CLOSED:
             try:
-                await asyncio.wait_for(
-                    self._websocket.close(code=1000), timeout=5.0
-                )
+                await asyncio.wait_for(self._websocket.close(code=1000), timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning("Websocket close timed out, forcing cleanup")
             except Exception as e:

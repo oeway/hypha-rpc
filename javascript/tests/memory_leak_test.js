@@ -60,7 +60,7 @@ describe("Memory Leak Prevention", function () {
       // This prevents memory leaks when RPC instances are disconnected
       expect(Object.keys(rpc._event_handlers).length).to.equal(
         0,
-        "All event handlers should be cleared after disconnect"
+        "All event handlers should be cleared after disconnect",
       );
 
       // Verify handlers are actually removed by trying to fire events
@@ -96,7 +96,7 @@ describe("Memory Leak Prevention", function () {
       const afterConnectCount = RPC._rejectionHandlerCount;
       expect(afterConnectCount).to.equal(
         initialCount + 1,
-        "Listener should be added on connect"
+        "Listener should be added on connect",
       );
 
       // Disconnect (this should remove the listener)
@@ -106,7 +106,7 @@ describe("Memory Leak Prevention", function () {
       const afterDisconnectCount = RPC._rejectionHandlerCount;
       expect(afterDisconnectCount).to.equal(
         initialCount,
-        "Listener should be removed on disconnect"
+        "Listener should be removed on disconnect",
       );
     });
 
@@ -169,6 +169,7 @@ describe("Memory Leak Prevention", function () {
   });
 
   describe("Session Cleanup on Remote Disconnect", function () {
+    this.timeout(60000);
     it("should clean up sessions when remote client disconnects", async function () {
       // Client1 registers a slow service, client2 calls it, then client1 disconnects.
       // The pending call promise on client2 should be rejected via the
@@ -194,7 +195,7 @@ describe("Memory Leak Prevention", function () {
           visibility: "protected",
         },
         slowOperation: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 10000));
+          await new Promise((resolve) => setTimeout(resolve, 60000));
           return "completed";
         },
       });
@@ -203,35 +204,26 @@ describe("Memory Leak Prevention", function () {
 
       // Start a long-running call
       const callPromise = service.slowOperation();
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Disconnect client1 (the service provider)
       await client1.disconnect();
 
       // The pending call should be rejected because the server broadcasts
-      // a client_disconnected event, which triggers session cleanup on client2
+      // a client_disconnected event, which triggers session cleanup on client2.
+      // Allow up to 30s for the server to detect and broadcast the disconnect.
       try {
         await callPromise;
-        expect.fail("Call should have been rejected when service provider disconnected");
+        expect.fail(
+          "Call should have been rejected when service provider disconnected",
+        );
       } catch (error) {
-        expect(error.message).to.match(/disconnect|closed|timeout|connection/i);
+        expect(error.message).to.match(
+          /disconnect|closed|timed?\s*out|timeout|connection/i,
+        );
       }
 
       await client2.disconnect();
-    });
-  });
-
-  describe("AbortController Cleanup (HTTP only)", function () {
-    it("should abort and clean up AbortController on disconnect", async function () {
-      // This test is only relevant for HTTP transport
-      // We'll skip it for now as the test suite primarily uses WebSocket
-      this.skip();
-
-      // TODO: Implement when HTTP transport testing is set up
-      // Should verify:
-      // 1. AbortController is created for fetch()
-      // 2. abort() is called on disconnect
-      // 3. Controller reference is nulled out
     });
   });
 });

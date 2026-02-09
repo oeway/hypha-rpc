@@ -327,7 +327,9 @@ class HTTPStreamingRPCConnection:
             if not self._closed and self._enable_reconnect:
                 retry += 1
                 delay = min(1.0 * (2 ** min(retry, 6)), 60.0)  # Max 60s
-                logger.warning(f"Stream disconnected, reconnecting in {delay:.1f}s (attempt {retry})")
+                logger.warning(
+                    f"Stream disconnected, reconnecting in {delay:.1f}s (attempt {retry})"
+                )
                 await asyncio.sleep(delay)
             else:
                 break
@@ -373,9 +375,7 @@ class HTTPStreamingRPCConnection:
                             # processing incoming RPC responses (the reconnection
                             # handler sends RPC calls that need stream responses).
                             if self._is_reconnection:
-                                asyncio.create_task(
-                                    self._handle_reconnection(message)
-                                )
+                                asyncio.create_task(self._handle_reconnection(message))
                             continue
                         elif msg_type == "ping":
                             continue
@@ -456,7 +456,9 @@ class HTTPStreamingRPCConnection:
 
                 if response.status_code != 200:
                     error = (
-                        response.json() if response.content else {"detail": "Unknown error"}
+                        response.json()
+                        if response.content
+                        else {"detail": "Unknown error"}
                     )
                     detail = error.get("detail", str(error))
                     # Retry on 400 errors that indicate the server doesn't recognize
