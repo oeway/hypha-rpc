@@ -177,12 +177,16 @@ describe("Memory Leak Prevention", function () {
       });
 
       // Generate token so client2 can join the same workspace
-      const token = await client1.generateToken();
+      const workspace = client1.config.workspace;
+      const token = await client1.generateToken({
+        config: { workspace: workspace },
+      });
 
       // Connect second client to the same workspace using the token
       const client2 = await connectToServer({
         server_url: SERVER_URL,
         client_id: "test-session-cleanup-client2",
+        workspace: workspace,
         token: token,
       });
 
