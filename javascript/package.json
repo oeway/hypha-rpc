@@ -1,11 +1,19 @@
 {
   "name": "hypha-rpc",
-  "version": "0.21.8",
+  "version": "0.21.9",
   "description": "Hypha RPC client for connecting to Hypha server for data management and AI model serving.",
   "main": "index.js",
-  "module": "dist/hypha-rpc-websocket.mjs",
+  "module": "index.mjs",
   "browser": "dist/hypha-rpc-websocket.min.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.js",
+      "default": "./index.js"
+    },
+    "./dist/*": "./dist/*"
+  },
   "scripts": {
     "build": "rm -rf dist && npm run build-umd && BUILD_ESM=true  npm run build-umd",
     "build-umd": "webpack --config webpack.config.js --mode development && NODE_ENV=production webpack --config webpack.config.js --mode production",

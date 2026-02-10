@@ -186,101 +186,98 @@ interface WorkspaceManager {
   getRTCService?(config: any): Promise<any>;
 }
 
+/**
+ * The hyphaWebsocketClient namespace containing all Hypha RPC exports.
+ */
+interface HyphaWebsocketClient {
+  RPC: hRPC;
+  API_VERSION: string;
+
+  /**
+   * Annotate a function with JSON Schema for RPC.
+   */
+  schemaFunction: (func: Function, annotation: FunctionAnnotation) => Function;
+
+  /**
+   * Load JavaScript requirements dynamically.
+   */
+  loadRequirements: (config: any) => Promise<any>;
+
+  /**
+   * Login to Hypha server via OAuth.
+   */
+  login: (config: LoginConfig) => Promise<any>;
+
+  /**
+   * Logout from Hypha server.
+   */
+  logout: (config: LogoutConfig) => Promise<any>;
+
+  /**
+   * Connect to a Hypha server with unified transport support.
+   * Supports both WebSocket (default) and HTTP streaming transports.
+   *
+   * @example
+   * // WebSocket transport (default)
+   * const server = await connectToServer({ server_url: "https://hypha.aicell.io" });
+   *
+   * // HTTP streaming transport
+   * const server = await connectToServer({
+   *   server_url: "https://hypha.aicell.io",
+   *   transport: "http"
+   * });
+   */
+  connectToServer: (config: ServerConfig) => Promise<WorkspaceManager>;
+
+  /**
+   * Connect using HTTP streaming transport explicitly.
+   */
+  connectToServerHTTP: (config: ServerConfig) => Promise<WorkspaceManager>;
+
+  /**
+   * Get a remote service by URI.
+   */
+  getRemoteService: (serviceUri: string, config?: ServerConfig) => Promise<any>;
+
+  /**
+   * Get a remote service using HTTP streaming transport explicitly.
+   */
+  getRemoteServiceHTTP: (serviceUri: string, config?: ServerConfig) => Promise<any>;
+
+  /**
+   * Register a WebRTC service for peer-to-peer communication.
+   */
+  registerRTCService: (server: WorkspaceManager, service_id: string, config?: any) => Promise<any>;
+
+  /**
+   * Get a WebRTC service for peer-to-peer communication.
+   */
+  getRTCService: (server: WorkspaceManager, service_id: string, config?: any) => Promise<any>;
+
+  /**
+   * Setup local client for iframe/web worker communication.
+   */
+  setupLocalClient: (config: {
+    enable_execution?: boolean;
+    on_ready?: Function;
+  }) => Promise<WorkspaceManager>;
+
+  /**
+   * LocalWebSocket class for iframe/web worker communication.
+   */
+  LocalWebSocket: any;
+
+  /**
+   * HTTP Streaming RPC Connection class.
+   */
+  HTTPStreamingRPCConnection: HTTPStreamingRPCConnection;
+
+  /**
+   * Normalize server URL for HTTP transport.
+   */
+  normalizeServerUrlHTTP: (server_url: string) => string;
+}
+
 declare module "hypha-rpc" {
-  const hyphaRPCModule: {
-    /**
-     * Main Hypha RPC client with unified transport support.
-     * Supports both WebSocket (default) and HTTP streaming transports.
-     */
-    hyphaWebsocketClient: {
-      RPC: hRPC;
-      API_VERSION: string;
-
-      /**
-       * Annotate a function with JSON Schema for RPC.
-       */
-      schemaFunction: (func: Function, annotation: FunctionAnnotation) => Function;
-
-      /**
-       * Load JavaScript requirements dynamically.
-       */
-      loadRequirements: (config: any) => Promise<any>;
-
-      /**
-       * Login to Hypha server via OAuth.
-       */
-      login: (config: LoginConfig) => Promise<any>;
-
-      /**
-       * Logout from Hypha server.
-       */
-      logout: (config: LogoutConfig) => Promise<any>;
-
-      /**
-       * Connect to a Hypha server with unified transport support.
-       * Supports both WebSocket (default) and HTTP streaming transports.
-       *
-       * @example
-       * // WebSocket transport (default)
-       * const server = await connectToServer({ server_url: "https://hypha.aicell.io" });
-       *
-       * // HTTP streaming transport
-       * const server = await connectToServer({
-       *   server_url: "https://hypha.aicell.io",
-       *   transport: "http"
-       * });
-       */
-      connectToServer: (config: ServerConfig) => Promise<WorkspaceManager>;
-
-      /**
-       * Connect using HTTP streaming transport explicitly.
-       */
-      connectToServerHTTP: (config: ServerConfig) => Promise<WorkspaceManager>;
-
-      /**
-       * Get a remote service by URI.
-       */
-      getRemoteService: (serviceUri: string, config?: ServerConfig) => Promise<any>;
-
-      /**
-       * Get a remote service using HTTP streaming transport explicitly.
-       */
-      getRemoteServiceHTTP: (serviceUri: string, config?: ServerConfig) => Promise<any>;
-
-      /**
-       * Register a WebRTC service for peer-to-peer communication.
-       */
-      registerRTCService: (server: WorkspaceManager, service_id: string, config?: any) => Promise<any>;
-
-      /**
-       * Get a WebRTC service for peer-to-peer communication.
-       */
-      getRTCService: (server: WorkspaceManager, service_id: string, config?: any) => Promise<any>;
-
-      /**
-       * Setup local client for iframe/web worker communication.
-       */
-      setupLocalClient: (config: {
-        enable_execution?: boolean;
-        on_ready?: Function;
-      }) => Promise<WorkspaceManager>;
-
-      /**
-       * LocalWebSocket class for iframe/web worker communication.
-       */
-      LocalWebSocket: any;
-
-      /**
-       * HTTP Streaming RPC Connection class.
-       */
-      HTTPStreamingRPCConnection: HTTPStreamingRPCConnection;
-
-      /**
-       * Normalize server URL for HTTP transport.
-       */
-      normalizeServerUrlHTTP: (server_url: string) => string;
-    };
-  };
-
-  export = hyphaRPCModule;
+  export const hyphaWebsocketClient: HyphaWebsocketClient;
 }
