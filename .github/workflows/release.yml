@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 2
 
       - name: Set up Python
-        uses: actions/setup-python@v4.5.0
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: "3.11"
 
@@ -137,7 +137,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
       - name: Set up Python 3.11
-        uses: actions/setup-python@v4.5.0
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: "3.11"
       - run: pip install "psutil" "redis==5.2.0" "hypha>=0.21.26" "aioboto3==13.1.1" "dulwich>=0.21.7"
