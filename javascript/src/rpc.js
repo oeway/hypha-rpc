@@ -14,6 +14,8 @@ import {
   Semaphore,
   isAsyncGenerator,
   isGenerator,
+  isAsyncIterator,
+  isSyncIterator,
 } from "./utils/index.js";
 import { schemaFunction } from "./utils/schema.js";
 
@@ -403,9 +405,9 @@ export class RPC extends MessageEmitter {
     // Track background tasks for proper cleanup
     this._background_tasks = new Set();
 
-    // Periodic session sweep for interface-object sessions (clear_after_called=false)
-    // that have no activity for a long time. Max age = 10 * method_timeout.
-    this._sessionMaxAge = (this._method_timeout || 30) * 10 * 1000;
+    // Periodic session sweep for stale sessions with no activity.
+    // Default: 10 minutes (matching Python).
+    this._sessionMaxAge = 10 * 60 * 1000;
     this._sessionSweepInterval = setInterval(() => {
       this._sweepStaleSessions();
     }, this._sessionMaxAge / 2);
@@ -1497,6 +1499,10 @@ export class RPC extends MessageEmitter {
     if (!this._services[service_id]) {
       throw new Error(`Service not found: ${service_id}`);
     }
+    // Auto-detect _rintf services (local-only, never registered with server)
+    if (service_id.startsWith("_rintf_")) {
+      notify = false;
+    }
     if (notify) {
       const manager = await this.get_manager_service({
         timeout: 10,
@@ -1558,12 +1564,10 @@ export class RPC extends MessageEmitter {
 
         // Clean up the entire session when resolve/reject is called
         if (clear_after_called && self._object_store[session_id]) {
-          // For promise callbacks (resolve/reject), clean up the entire session
           if (name === "resolve" || name === "reject") {
             self._removeFromTargetIdIndex(session_id);
             delete self._object_store[session_id];
           } else {
-            // For other callbacks, just clean up this specific callback
             self._cleanup_session_if_needed(session_id, name);
           }
         }
@@ -1855,11 +1859,14 @@ export class RPC extends MessageEmitter {
     for (const key of Object.keys(this._object_store)) {
       if (key === "services" || key === "message_cache") continue;
       const session = this._object_store[key];
+      // Use last-activity time if available, fall back to creation time
+      const lastActivity =
+        session && (session._last_activity_at || session._created_at);
       if (
         session &&
         typeof session === "object" &&
-        session._created_at &&
-        now - session._created_at > this._sessionMaxAge
+        lastActivity &&
+        now - lastActivity > this._sessionMaxAge
       ) {
         // Only sweep sessions that have no timer (active timers mean they are in use)
         // and no active promise callbacks (resolve/reject mean the session is awaiting a response)
@@ -2185,25 +2192,7 @@ export class RPC extends MessageEmitter {
               ],
               method_name,
             );
-            // By default, hypha will clear the session after the method is called
-            // However, if the args contains _rintf === true, we will not clear the session
-
-            // Helper function to recursively check for _rintf objects
-            function hasInterfaceObject(obj) {
-              if (!obj || typeof obj !== "object") return false;
-              if (obj._rintf === true) return true;
-              if (Array.isArray(obj)) {
-                return obj.some((item) => hasInterfaceObject(item));
-              }
-              if (obj.constructor === Object) {
-                return Object.values(obj).some((value) =>
-                  hasInterfaceObject(value),
-                );
-              }
-              return false;
-            }
-
-            let clear_after_called = !hasInterfaceObject(args);
+            let clear_after_called = true;
 
             const promiseData = await self._encode_promise(
               resolve,
@@ -2396,6 +2385,18 @@ export class RPC extends MessageEmitter {
 
       try {
         method = indexObject(this._object_store, data["method"]);
+        // Update last-activity time for session GC
+        const methodParts = data["method"].split(".");
+        if (methodParts.length > 1) {
+          const topKey = methodParts[0];
+          if (topKey !== "services" && topKey !== "message_cache") {
+            // Skip system stores — they are not GC-managed sessions
+            const topSession = this._object_store[topKey];
+            if (topSession && typeof topSession === "object") {
+              topSession._last_activity_at = Date.now();
+            }
+          }
+        }
       } catch (e) {
         // Clean promise method detection - TYPE-BASED, not string-based
         if (this._is_promise_method_call(data["method"])) {
@@ -2512,7 +2513,9 @@ export class RPC extends MessageEmitter {
       }
 
       // Make sure the parent session is still open
-      if (local_parent) {
+      // Skip for service methods — services are persistent and don't
+      // depend on the originating session being alive.
+      if (local_parent && !data.method.startsWith("services.")) {
         // The parent session should be a session that generate the current method call
         assert(
           this._get_session_store(local_parent, true) !== null,
@@ -2602,7 +2605,9 @@ export class RPC extends MessageEmitter {
       // Create the last level
       if (!store[levels[last_index]]) {
         store[levels[last_index]] = {};
-        store[levels[last_index]]._created_at = Date.now();
+        const now = Date.now();
+        store[levels[last_index]]._created_at = now;
+        store[levels[last_index]]._last_activity_at = now;
       }
       return store[levels[last_index]];
     } else {
@@ -2667,13 +2672,19 @@ export class RPC extends MessageEmitter {
       return bObject;
     }
 
-    if (isGenerator(aObject) || isAsyncGenerator(aObject)) {
-      // Handle generator functions and generator objects
+    if (
+      isGenerator(aObject) ||
+      isAsyncGenerator(aObject) ||
+      isAsyncIterator(aObject) ||
+      isSyncIterator(aObject)
+    ) {
+      // Handle generator/iterator objects
       assert(
         session_id && typeof session_id === "string",
         "Session ID is required for generator encoding",
       );
       const object_id = randId();
+      const close_id = object_id + ":close";
 
       // Get the session store
       const store = this._get_session_store(session_id, true);
@@ -2682,32 +2693,52 @@ export class RPC extends MessageEmitter {
         `Failed to create session store ${session_id} due to invalid parent`,
       );
 
-      // Check if it's an async generator
-      const isAsync = isAsyncGenerator(aObject);
+      // Check if it's an async generator/iterator
+      const isAsync = isAsyncGenerator(aObject) || isAsyncIterator(aObject);
 
-      // Define method to get next item from the generator
+      // Define method to get next item from the generator/iterator
       const nextItemMethod = async () => {
         if (isAsync) {
-          const iterator = aObject;
-          const result = await iterator.next();
+          const result = await aObject.next();
           if (result.done) {
             delete store[object_id];
+            delete store[close_id];
             return { _rtype: "stop_iteration" };
           }
           return result.value;
         } else {
-          const iterator = aObject;
-          const result = iterator.next();
+          const result = aObject.next();
           if (result.done) {
             delete store[object_id];
+            delete store[close_id];
             return { _rtype: "stop_iteration" };
           }
           return result.value;
         }
       };
 
-      // Store the next_item method in the session
+      // Define method to close/cleanup the generator/iterator early
+      const closeGeneratorMethod = async () => {
+        try {
+          if (typeof aObject.return === "function") {
+            if (isAsync) {
+              await aObject.return();
+            } else {
+              aObject.return();
+            }
+          }
+        } catch (e) {
+          // ignore close errors
+        } finally {
+          delete store[object_id];
+          delete store[close_id];
+        }
+        return true;
+      };
+
+      // Store both methods in the session
       store[object_id] = nextItemMethod;
+      store[close_id] = closeGeneratorMethod;
 
       // Create a method that will be used to fetch the next item from the generator
       bObject = {
@@ -2715,6 +2746,7 @@ export class RPC extends MessageEmitter {
         _rserver: this._server_base_url,
         _rtarget: this._client_id,
         _rmethod: `${session_id}.${object_id}`,
+        _rclose_method: `${session_id}.${close_id}`,
         _rpromise: "*",
         _rdoc: "Remote generator",
       };
@@ -2910,6 +2942,38 @@ export class RPC extends MessageEmitter {
       Array.isArray(aObject) ||
       aObject instanceof RemoteService
     ) {
+      // Auto-register _rintf objects as local services
+      if (
+        !isarray &&
+        aObject._rintf === true &&
+        Object.keys(aObject).some(
+          (k) => !k.startsWith("_") && typeof aObject[k] === "function",
+        )
+      ) {
+        const serviceId = `_rintf_${randId()}`;
+        const serviceApi = { id: serviceId };
+        for (const k of Object.keys(aObject)) {
+          if (!k.startsWith("_") && typeof aObject[k] === "function") {
+            serviceApi[k] = aObject[k];
+          }
+        }
+        this.add_service(serviceApi, true);
+        // Store service_id back on the original object so the caller
+        // can later call rpc.unregister_service(serviceId) to clean up.
+        aObject._rintf_service_id = serviceId;
+        // Encode all values — callables are now annotated as service methods
+        bObject = {};
+        for (const key of Object.keys(aObject)) {
+          bObject[key] = await this._encode(
+            aObject[key],
+            session_id,
+            local_workspace,
+          );
+        }
+        bObject._rintf_service_id = serviceId;
+        return bObject;
+      }
+
       // Fast path: if all values are primitives, return as-is
       if (isarray) {
         if (_allPrimitivesArray(aObject)) return aObject;
@@ -2990,19 +3054,49 @@ export class RPC extends MessageEmitter {
           local_workspace,
         );
 
-        // Create an async generator proxy
+        // Create close method if available
+        let close_method = null;
+        if (aObject._rclose_method) {
+          const closeObj = {
+            _rtype: "method",
+            _rserver: aObject._rserver,
+            _rtarget: aObject._rtarget,
+            _rmethod: aObject._rclose_method,
+            _rpromise: "*",
+          };
+          close_method = this._generate_remote_method(
+            closeObj,
+            remote_parent,
+            local_parent,
+            remote_workspace,
+            local_workspace,
+          );
+        }
+
+        // Create an async generator proxy with cleanup support
         async function* asyncGeneratorProxy() {
-          while (true) {
-            try {
+          let completedNormally = false;
+          try {
+            while (true) {
               const next_item = await gen_method();
               // Check for StopIteration signal
               if (next_item && next_item._rtype === "stop_iteration") {
+                completedNormally = true;
                 break;
               }
               yield next_item;
-            } catch (error) {
-              console.error("Error in generator:", error);
-              throw error;
+            }
+          } catch (error) {
+            console.error("Error in generator:", error);
+            throw error;
+          } finally {
+            // If not completed normally, send close signal to clean up remote generator
+            if (!completedNormally && close_method) {
+              try {
+                await close_method();
+              } catch (e) {
+                // ignore close errors
+              }
             }
           }
         }

@@ -515,18 +515,7 @@ class RemoteFunction:
                 label=method_name,
             )
 
-            def has_interface_object(obj):
-                if not obj or not isinstance(obj, (dict, list, tuple)):
-                    return False
-                if isinstance(obj, dict):
-                    if obj.get("_rintf") == True:
-                        return True
-                    return any(has_interface_object(value) for value in obj.values())
-                elif isinstance(obj, (list, tuple)):
-                    return any(has_interface_object(item) for item in obj)
-                return False
-
-            clear_after_called = not has_interface_object(args)
+            clear_after_called = True
 
             promise_data = self._rpc._encode_promise(
                 resolve=resolve,
@@ -1224,38 +1213,14 @@ class RPC(MessageEmitter):
 
     async def disconnect(self):
         """Disconnect."""
-        # Store connection reference before closing for unsubscribe
         connection = getattr(self, "_connection", None)
-        manager_id = connection.manager_id if connection else None
 
-        # Unsubscribe from client_disconnected events before closing
-        if (
-            hasattr(self, "_client_disconnected_subscription")
-            and self._client_disconnected_subscription
-        ):
-            try:
-                if connection and manager_id:
-                    manager = await asyncio.wait_for(
-                        self.get_remote_service(f"*/{manager_id}"), timeout=5.0
-                    )
-                    if hasattr(manager, "unsubscribe") and callable(
-                        manager.unsubscribe
-                    ):
-                        if asyncio.iscoroutinefunction(manager.unsubscribe):
-                            await asyncio.wait_for(
-                                manager.unsubscribe("client_disconnected"), timeout=5.0
-                            )
-                        else:
-                            manager.unsubscribe("client_disconnected")
-                    logger.debug(
-                        "Successfully unsubscribed from client_disconnected events"
-                    )
-            except asyncio.TimeoutError:
-                logger.debug("Timeout unsubscribing from client_disconnected events")
-            except Exception as e:
-                logger.debug(f"Error unsubscribing from client_disconnected: {e}")
-            finally:
-                self._client_disconnected_subscription = None
+        # Clear the subscription flag — the server automatically cleans up
+        # subscriptions when the websocket closes, no need to explicitly
+        # unsubscribe (which would require contacting the manager and
+        # produces a noisy warning if the manager is already gone).
+        if hasattr(self, "_client_disconnected_subscription"):
+            self._client_disconnected_subscription = None
 
         #  Store background tasks before close() for proper cleanup
         tasks_to_cleanup = (
@@ -1417,7 +1382,7 @@ class RPC(MessageEmitter):
             logger.error("Error during cleanup on disconnect: %s", e)
 
     async def _session_gc_loop(self):
-        """Periodically sweep sessions older than _session_ttl."""
+        """Periodically sweep sessions with no activity for longer than _session_ttl."""
         try:
             while True:
                 await asyncio.sleep(self._session_ttl / 2)
@@ -1429,10 +1394,22 @@ class RPC(MessageEmitter):
                     session = self._object_store.get(key)
                     if not isinstance(session, dict):
                         continue
-                    created_at = session.get("_created_at")
-                    if created_at is None:
+                    # Use last-activity time if available, fall back to creation time
+                    last_activity = session.get(
+                        "_last_activity_at", session.get("_created_at")
+                    )
+                    if last_activity is None:
                         continue
-                    if now - created_at > self._session_ttl:
+                    if now - last_activity > self._session_ttl:
+                        # Skip sessions with active timers (in use via heartbeat)
+                        timer = session.get("timer")
+                        if timer and hasattr(timer, "started") and timer.started:
+                            continue
+                        # Skip sessions with unsettled promises
+                        if callable(session.get("resolve")) or callable(
+                            session.get("reject")
+                        ):
+                            continue
                         keys_to_gc.append(key)
                 for key in keys_to_gc:
                     session = self._object_store.get(key)
@@ -1556,6 +1533,10 @@ class RPC(MessageEmitter):
                 }
             )
             svc = await asyncio.wait_for(method(service_id), timeout=timeout)
+            if not isinstance(svc, (dict, ObjectProxy)):
+                raise TypeError(
+                    f"Expected service dict from server, got {type(svc).__name__}: {svc!r}"
+                )
             svc["id"] = service_uri
             if isinstance(svc, ObjectProxy):
                 svc = svc.toDict()
@@ -1806,7 +1787,7 @@ class RPC(MessageEmitter):
                     self._remove_service_annotations(val)
 
     async def unregister_service(self, service: Union[dict, str], notify: bool = True):
-        """Register a service."""
+        """Unregister a service."""
         if isinstance(service, dict):
             service_id = service["id"]
         else:
@@ -1818,6 +1799,9 @@ class RPC(MessageEmitter):
             service_id = service_id.split("@")[0]
         if service_id not in self._services:
             raise Exception(f"Service not found: {service_id}")
+        # Auto-detect _rintf services (local-only, never registered with server)
+        if service_id.startswith("_rintf_"):
+            notify = False
         if notify:
             manager = await self.get_manager_service(
                 {"timeout": 20, "case_conversion": "snake"}
@@ -1868,11 +1852,10 @@ class RPC(MessageEmitter):
                 )
             finally:
                 if timer and timer.started:
-                    timer.clear()  # Clear the timer first before deleting the session
+                    timer.clear()
                 if clear_after_called and self._get_session_store(
                     session_id, create=False
                 ):
-                    # Clean delegation - no complex logic here
                     self._cleanup_session_if_needed(session_id, name)
 
         return encoded, wrapped_callback
@@ -2503,6 +2486,15 @@ class RPC(MessageEmitter):
 
             try:
                 method = index_object(self._object_store, data["method"])
+                # Update last-activity time for session GC
+                method_parts = data["method"].split(".")
+                if len(method_parts) > 1:
+                    top_key = method_parts[0]
+                    if top_key not in ("services", "message_cache"):
+                        # Skip system stores — they are not GC-managed sessions
+                        top_session = self._object_store.get(top_key)
+                        if isinstance(top_session, dict):
+                            top_session["_last_activity_at"] = time.time()
             except Exception:
                 # Clean promise method detection - NO STRING MATCHING!
                 if self._is_promise_method_call(data["method"]):
@@ -2605,7 +2597,9 @@ class RPC(MessageEmitter):
                     )
 
             # Make sure the parent session is still open
-            if local_parent:
+            # Skip for service methods — services are persistent and don't
+            # depend on the originating session being alive.
+            if local_parent and not data["method"].startswith("services."):
                 # The parent session should be a session
                 # that generate the current method call.
                 assert (
@@ -2682,9 +2676,11 @@ class RPC(MessageEmitter):
             # Create the last level
             if levels[-1] not in store:
                 store[levels[-1]] = {}
-                # Track creation time for session GC
+                # Track creation and last-activity time for session GC
                 if len(levels) == 1:
-                    store[levels[-1]]["_created_at"] = time.time()
+                    now = time.time()
+                    store[levels[-1]]["_created_at"] = now
+                    store[levels[-1]]["_last_activity_at"] = now
 
             return store[levels[-1]]
         else:
@@ -2716,6 +2712,25 @@ class RPC(MessageEmitter):
             # dicts and anything else disqualify the fast path
             return False
         return True
+
+    @staticmethod
+    def _is_custom_async_iterator(obj):
+        """Check if obj is a custom async iterator (has __aiter__ and __anext__) but not an async generator."""
+        return (
+            hasattr(obj, "__aiter__")
+            and hasattr(obj, "__anext__")
+            and not inspect.isasyncgen(obj)
+        )
+
+    @staticmethod
+    def _is_custom_sync_iterator(obj):
+        """Check if obj is a custom sync iterator (has __iter__ and __next__) but not a generator or built-in type."""
+        return (
+            hasattr(obj, "__iter__")
+            and hasattr(obj, "__next__")
+            and not inspect.isgenerator(obj)
+            and not isinstance(obj, (list, tuple, dict, set, str, bytes, range))
+        )
 
     @staticmethod
     def _all_primitives_list(lst):
@@ -2770,7 +2785,9 @@ class RPC(MessageEmitter):
         if isinstance(a_object, tuple):
             a_object = list(a_object)
 
+        _original_dict = None
         if isinstance(a_object, dict):
+            _original_dict = a_object
             a_object = dict(a_object)
 
         if isinstance(a_object, ObjectProxy):
@@ -2923,37 +2940,66 @@ class RPC(MessageEmitter):
                     local_workspace=local_workspace,
                 ),
             }
-        elif inspect.isgenerator(a_object) or inspect.isasyncgen(a_object):
-            # Handle generator objects by storing them in the session and returning a generator method
+        elif (
+            inspect.isgenerator(a_object)
+            or inspect.isasyncgen(a_object)
+            or self._is_custom_async_iterator(a_object)
+            or self._is_custom_sync_iterator(a_object)
+        ):
+            # Handle generator/iterator objects by storing them in the session
             assert isinstance(
                 session_id, str
             ), "Session ID is required for generator encoding"
             object_id = shortuuid.uuid()
+            close_id = object_id + ":close"
 
             # Store the generator in the session
             store = self._get_session_store(session_id, create=True)
 
-            # Check if it's an async generator
-            is_async = inspect.isasyncgen(a_object)
+            # Check if it's an async generator/iterator
+            is_async = inspect.isasyncgen(a_object) or self._is_custom_async_iterator(
+                a_object
+            )
 
-            # Define method to get next item from the generator
+            # Define method to get next item from the generator/iterator
             async def next_item_method():
                 if is_async:
                     try:
                         return await a_object.__anext__()
                     except StopAsyncIteration:
                         # Remove it from the session
-                        del store[object_id]
+                        store.pop(object_id, None)
+                        store.pop(close_id, None)
                         return {"_rtype": "stop_iteration"}
                 else:
                     try:
                         return next(a_object)
                     except StopIteration:
-                        del store[object_id]
+                        store.pop(object_id, None)
+                        store.pop(close_id, None)
                         return {"_rtype": "stop_iteration"}
 
-            # Register the next_item method in the session
+            # Define method to close/cleanup the generator/iterator early
+            async def close_generator_method():
+                try:
+                    if inspect.isasyncgen(a_object):
+                        await a_object.aclose()
+                    elif inspect.isgenerator(a_object):
+                        a_object.close()
+                    elif hasattr(a_object, "aclose"):
+                        await a_object.aclose()
+                    elif hasattr(a_object, "close"):
+                        a_object.close()
+                except Exception:
+                    pass
+                finally:
+                    store.pop(object_id, None)
+                    store.pop(close_id, None)
+                return True
+
+            # Register both methods in the session
             store[object_id] = next_item_method
+            store[close_id] = close_generator_method
 
             # Create a method that will be used to fetch the next item from the generator
             b_object = {
@@ -2965,10 +3011,42 @@ class RPC(MessageEmitter):
                     else self._client_id
                 ),
                 "_rmethod": f"{session_id}.{object_id}",
+                "_rclose_method": f"{session_id}.{close_id}",
                 "_rpromise": "*",
                 "_rdoc": "Remote generator",
             }
         elif isinstance(a_object, (list, dict)):
+            # Auto-register _rintf objects as local services
+            if (
+                isinstance(a_object, dict)
+                and a_object.get("_rintf") is True
+                and any(
+                    callable(v)
+                    for k, v in a_object.items()
+                    if not k.startswith("_")
+                )
+            ):
+                service_id = f"_rintf_{shortuuid.uuid()}"
+                service_api = {"id": service_id}
+                for k, v in a_object.items():
+                    if not k.startswith("_") and callable(v):
+                        service_api[k] = v
+                self.add_service(service_api, overwrite=True)
+                # Store service_id on the original dict (before copy) so the
+                # caller can later call rpc.unregister_service(service_id).
+                if _original_dict is not None:
+                    _original_dict["_rintf_service_id"] = service_id
+                # Encode all values — callables are now annotated as service methods
+                b_object = {}
+                for key in a_object.keys():
+                    b_object[key] = self._encode(
+                        a_object[key],
+                        session_id=session_id,
+                        local_workspace=local_workspace,
+                    )
+                b_object["_rintf_service_id"] = service_id
+                return b_object
+
             # Fast path: if all values are primitives, return as-is
             # Only for plain list/dict, not subclasses like ObjectProxy
             if type(a_object) is list:
@@ -3139,26 +3217,51 @@ class RPC(MessageEmitter):
                     local_workspace=local_workspace,
                 )
 
-                # Create an async generator proxy
-                async def async_generator_proxy():
-                    while True:
-                        try:
+                # Create close method if available
+                close_method = None
+                if "_rclose_method" in a_object:
+                    close_obj = {
+                        "_rtype": "method",
+                        "_rserver": a_object.get("_rserver"),
+                        "_rtarget": a_object.get("_rtarget"),
+                        "_rmethod": a_object["_rclose_method"],
+                        "_rpromise": "*",
+                    }
+                    close_method = self._generate_remote_method(
+                        close_obj,
+                        remote_parent=remote_parent,
+                        local_parent=local_parent,
+                        remote_workspace=remote_workspace,
+                        local_workspace=local_workspace,
+                    )
+
+                # Create an async generator proxy with cleanup support
+                async def async_generator_proxy(_close=close_method):
+                    completed_normally = False
+                    try:
+                        while True:
                             next_item = await gen_method()
                             # Check for StopIteration signal
                             if (
                                 isinstance(next_item, dict)
                                 and next_item.get("_rtype") == "stop_iteration"
                             ):
+                                completed_normally = True
                                 break
                             yield next_item
-                        except StopAsyncIteration:
-                            break
-                        except StopIteration:
-                            break
-                        except Exception as e:
-                            # Properly propagate exceptions
-                            logger.error(f"Error in generator: {e}")
-                            raise
+                    except (StopAsyncIteration, StopIteration):
+                        completed_normally = True
+                    except Exception as e:
+                        # Properly propagate exceptions
+                        logger.error(f"Error in generator: {e}")
+                        raise
+                    finally:
+                        # If not completed normally, send close signal to clean up remote generator
+                        if not completed_normally and _close:
+                            try:
+                                await _close()
+                            except Exception:
+                                pass
 
                 b_object = async_generator_proxy()
             else:

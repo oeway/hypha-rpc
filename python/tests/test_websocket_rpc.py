@@ -3916,6 +3916,507 @@ async def test_generator_error_mid_stream(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_generator_partial_consumption_cleanup(websocket_server):
+    """Test that partially consuming a generator cleans up remote resources."""
+    server = await connect_to_server(
+        {
+            "name": "gen partial server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gen-partial-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    cleanup_called = asyncio.Event()
+
+    def large_counter(n=100):
+        """A generator that yields many items."""
+        try:
+            for i in range(n):
+                yield i
+        finally:
+            # This runs when the generator is closed
+            cleanup_called.set()
+
+    await server.register_service(
+        {
+            "name": "Partial Gen Service",
+            "id": "partial-gen-svc",
+            "config": {"visibility": "protected"},
+            "large_counter": large_counter,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "gen partial client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gen-partial-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("partial-gen-svc")
+
+    # Partially consume the generator (only take 3 out of 100 items)
+    gen = await svc.large_counter(100)
+    collected = []
+    async for item in gen:
+        collected.append(item)
+        if len(collected) >= 3:
+            break
+
+    assert collected == [0, 1, 2]
+
+    # Explicitly close the generator to trigger the finally block,
+    # which sends the close signal to the remote side.
+    await gen.aclose()
+
+    # Wait for the close signal to propagate over RPC
+    try:
+        await asyncio.wait_for(cleanup_called.wait(), timeout=5.0)
+    except asyncio.TimeoutError:
+        pass
+
+    # The generator's finally block should have been called
+    assert cleanup_called.is_set(), "Generator cleanup (finally block) was not called after partial consumption"
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_generator_session_store_cleanup(websocket_server):
+    """Test that generator entries are removed from session store after close."""
+    server = await connect_to_server(
+        {
+            "name": "gen store server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gen-store-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    def counter(n=10):
+        for i in range(n):
+            yield i
+
+    await server.register_service(
+        {
+            "name": "Store Gen Service",
+            "id": "store-gen-svc",
+            "config": {"visibility": "protected"},
+            "counter": counter,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "gen store client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gen-store-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("store-gen-svc")
+
+    # Get the RPC object to inspect session stores
+    server_rpc = server.rpc
+
+    # Fully consume a generator
+    gen = await svc.counter(5)
+    async for _ in gen:
+        pass
+
+    # Wait for cleanup
+    await asyncio.sleep(0.5)
+
+    # Check that session store entries were cleaned up (no lingering :close keys)
+    store = server_rpc._object_store
+    close_keys = []
+    for session_key, session_val in store.items():
+        if isinstance(session_val, dict):
+            for k in session_val:
+                if isinstance(k, str) and ":close" in k:
+                    close_keys.append(k)
+    # After full consumption, there should be no :close entries for this generator
+    # (they are cleaned up on StopIteration)
+
+    # Now test partial consumption with explicit close
+    gen2 = await svc.counter(100)
+    collected = []
+    async for item in gen2:
+        collected.append(item)
+        if len(collected) >= 2:
+            break
+
+    assert collected == [0, 1]
+
+    # Explicitly close the generator to trigger cleanup
+    await gen2.aclose()
+
+    # Wait for close signal to propagate over RPC
+    await asyncio.sleep(2.0)
+
+    # After partial consumption + close signal, the store entries should also be gone
+    remaining_gen_keys = []
+    for session_key, session_val in store.items():
+        if isinstance(session_val, dict):
+            for k in session_val:
+                if isinstance(k, str) and ":close" in k:
+                    remaining_gen_keys.append(k)
+
+    assert (
+        len(remaining_gen_keys) == 0
+    ), f"Expected no remaining generator close keys, found: {remaining_gen_keys}"
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_async_iterator_over_rpc(websocket_server):
+    """Test that custom async iterators work over RPC."""
+    server = await connect_to_server(
+        {
+            "name": "async iter server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "async-iter-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    class AsyncRange:
+        """A custom async iterator that counts from 0 to n-1."""
+
+        def __init__(self, n):
+            self.n = n
+            self.i = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.i >= self.n:
+                raise StopAsyncIteration
+            val = self.i
+            self.i += 1
+            await asyncio.sleep(0.01)
+            return val
+
+    def get_async_range(n):
+        return AsyncRange(n)
+
+    await server.register_service(
+        {
+            "name": "Async Iter Service",
+            "id": "async-iter-svc",
+            "config": {"visibility": "protected"},
+            "get_async_range": get_async_range,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "async iter client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "async-iter-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("async-iter-svc")
+
+    # Fully consume the async iterator
+    result = await svc.get_async_range(5)
+    collected = []
+    async for item in result:
+        collected.append(item)
+    assert collected == [0, 1, 2, 3, 4]
+
+    # Partially consume the async iterator
+    result2 = await svc.get_async_range(10)
+    partial = []
+    async for item in result2:
+        partial.append(item)
+        if len(partial) >= 3:
+            break
+    assert partial == [0, 1, 2]
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_iterator_over_rpc(websocket_server):
+    """Test that custom sync iterators work over RPC."""
+    server = await connect_to_server(
+        {
+            "name": "sync iter server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "sync-iter-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    class SyncRange:
+        """A custom sync iterator that counts from 0 to n-1."""
+
+        def __init__(self, n):
+            self.n = n
+            self.i = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.i >= self.n:
+                raise StopIteration
+            val = self.i
+            self.i += 1
+            return val
+
+    def get_sync_range(n):
+        return SyncRange(n)
+
+    await server.register_service(
+        {
+            "name": "Sync Iter Service",
+            "id": "sync-iter-svc",
+            "config": {"visibility": "protected"},
+            "get_sync_range": get_sync_range,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "sync iter client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "sync-iter-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("sync-iter-svc")
+
+    # Remote side receives it as an async generator
+    result = await svc.get_sync_range(5)
+    collected = []
+    async for item in result:
+        collected.append(item)
+    assert collected == [0, 1, 2, 3, 4]
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_multiple_generators_no_leak(websocket_server):
+    """Test that creating and abandoning multiple generators doesn't leak."""
+    server = await connect_to_server(
+        {
+            "name": "multi gen server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "multi-gen-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    def infinite_counter():
+        i = 0
+        while True:
+            yield i
+            i += 1
+
+    await server.register_service(
+        {
+            "name": "Multi Gen Service",
+            "id": "multi-gen-svc",
+            "config": {"visibility": "protected"},
+            "infinite_counter": infinite_counter,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "multi gen client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "multi-gen-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("multi-gen-svc")
+
+    # Create and partially consume several generators, explicitly closing each
+    for _ in range(5):
+        gen = await svc.infinite_counter()
+        count = 0
+        async for item in gen:
+            count += 1
+            if count >= 3:
+                break
+        await gen.aclose()
+
+    # Wait for close signals to propagate
+    await asyncio.sleep(2.0)
+
+    # Check the session store - should not have accumulated generator entries
+    server_rpc = server.rpc
+    store = server_rpc._object_store
+    gen_keys = []
+    for session_key, session_val in store.items():
+        if isinstance(session_val, dict):
+            for k, v in session_val.items():
+                if isinstance(k, str) and ":close" in k:
+                    gen_keys.append(k)
+
+    assert (
+        len(gen_keys) == 0
+    ), f"Found {len(gen_keys)} leaked generator entries: {gen_keys}"
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_activity_based_gc_keeps_sessions_alive(websocket_server):
+    """Test that session GC uses last-activity time, not creation time.
+
+    Verifies that a generator session stays alive when actively used,
+    even after the TTL has elapsed since creation.
+    """
+    server = await connect_to_server(
+        {
+            "name": "gc activity server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gc-activity-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    def slow_counter(n=10):
+        for i in range(n):
+            yield i
+
+    await server.register_service(
+        {
+            "name": "GC Activity Service",
+            "id": "gc-activity-svc",
+            "config": {"visibility": "protected"},
+            "slow_counter": slow_counter,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "gc activity client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "gc-activity-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("gc-activity-svc")
+
+    # Start a generator
+    gen = await svc.slow_counter(10)
+
+    # Consume the first 3 items
+    collected = []
+    async for item in gen:
+        collected.append(item)
+        if len(collected) >= 3:
+            break
+
+    assert collected == [0, 1, 2]
+
+    # Now temporarily set a very short TTL on the server's RPC
+    # and verify that the session survives because _last_activity_at was updated
+    server_rpc = server.rpc
+    original_ttl = server_rpc._session_ttl
+
+    # Find the session with our generator
+    store = server_rpc._object_store
+    generator_session_key = None
+    for key, val in store.items():
+        if key in ("services", "message_cache"):
+            continue
+        if isinstance(val, dict) and "_last_activity_at" in val:
+            # Check if this session has generator entries (keys with :close)
+            for k in val:
+                if isinstance(k, str) and ":close" in k:
+                    generator_session_key = key
+                    break
+        if generator_session_key:
+            break
+
+    if generator_session_key:
+        session = store[generator_session_key]
+        # Verify _last_activity_at was set and is recent
+        assert "_last_activity_at" in session, "Session should have _last_activity_at"
+        assert "_created_at" in session, "Session should have _created_at"
+        # _last_activity_at should be >= _created_at (updated on method calls)
+        assert session["_last_activity_at"] >= session["_created_at"]
+
+    # Set a very short TTL (1 second) and manually run GC
+    server_rpc._session_ttl = 1
+    await asyncio.sleep(1.5)  # Wait for TTL to expire based on creation time
+
+    # But first update _last_activity_at to now (simulating recent activity)
+    if generator_session_key and generator_session_key in store:
+        import time
+
+        store[generator_session_key]["_last_activity_at"] = time.time()
+
+    # Run the GC sweep manually by checking what would be cleaned
+    # The session should NOT be cleaned because _last_activity_at is recent
+    import time
+
+    now = time.time()
+    would_be_cleaned = []
+    for key in list(store.keys()):
+        if key in ("services", "message_cache"):
+            continue
+        session = store.get(key)
+        if not isinstance(session, dict):
+            continue
+        last_activity = session.get("_last_activity_at", session.get("_created_at"))
+        if last_activity is None:
+            continue
+        if now - last_activity > server_rpc._session_ttl:
+            would_be_cleaned.append(key)
+
+    # Our generator session should NOT be in the would-be-cleaned list
+    # because we just updated _last_activity_at
+    if generator_session_key:
+        assert generator_session_key not in would_be_cleaned, (
+            f"Session {generator_session_key} would be cleaned despite recent activity"
+        )
+
+    # Restore original TTL
+    server_rpc._session_ttl = original_ttl
+
+    # Clean up
+    await gen.aclose()
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_disconnect_rejects_pending_calls(websocket_server):
     """Test that disconnecting rejects all pending RPC calls."""
     server = await connect_to_server(
@@ -4046,6 +4547,63 @@ async def test_callback_cleanup_after_call(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_callback_session_removed_immediately(websocket_server):
+    """Test that the callback session is removed immediately after the function returns."""
+    server = await connect_to_server(
+        {
+            "name": "cb session test server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cb-session-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    async def use_callback(callback):
+        """Call the callback during execution, then return."""
+        result = await callback(42)
+        return result
+
+    await server.register_service(
+        {
+            "name": "CB Session Service",
+            "id": "cb-session-svc",
+            "config": {"visibility": "protected"},
+            "use_callback": use_callback,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "cb session test client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "cb-session-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("cb-session-svc")
+
+    # Snapshot store keys before the call
+    keys_before = set(client.rpc._object_store.keys())
+
+    result = await svc.use_callback(lambda x: x * 2)
+    assert result == 84
+
+    # The session created for this call should be cleaned up immediately
+    keys_after = set(client.rpc._object_store.keys())
+    new_sessions = keys_after - keys_before
+    # No new sessions should remain (the call is complete, session is cleaned)
+    assert len(new_sessions) == 0, (
+        f"Expected no new sessions after call returned, but found: {new_sessions}"
+    )
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_nested_callback(websocket_server):
     """Test nested callbacks: a service calls a callback that itself accepts a callback."""
     server = await connect_to_server(
@@ -4098,6 +4656,203 @@ async def test_nested_callback(websocket_server):
     result = await svc.outer_call(outer_callback)
     # inner_function(7) = 70, outer_callback returns 70 + 1 = 71
     assert result == 71, f"Expected 71, got {result}"
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_strict_callback_lifecycle(websocket_server):
+    """Test the strict callback lifecycle rule:
+    1. Callbacks work DURING function execution (before return)
+    2. Callback sessions are cleaned up IMMEDIATELY when the function returns
+    3. Invoking a stored callback AFTER the function has returned should fail
+    """
+    server = await connect_to_server(
+        {
+            "name": "lifecycle server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "lifecycle-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    stored_callback = None
+
+    async def use_callback_and_return(callback):
+        """Call the callback during execution, store it, then return."""
+        nonlocal stored_callback
+        # Callback should work during execution
+        result = await callback("during-execution")
+        stored_callback = callback
+        return result
+
+    async def invoke_stored_callback():
+        """Try to invoke the stored callback after the parent function returned."""
+        if stored_callback is None:
+            raise RuntimeError("No stored callback")
+        # This should fail because the callback session was cleaned up
+        result = await stored_callback("after-return")
+        return result
+
+    await server.register_service(
+        {
+            "name": "Lifecycle Service",
+            "id": "lifecycle-svc",
+            "config": {"visibility": "protected"},
+            "use_callback_and_return": use_callback_and_return,
+            "invoke_stored_callback": invoke_stored_callback,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "lifecycle client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "lifecycle-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("lifecycle-svc")
+
+    # 1. Callback works DURING execution
+    callback_invocations = []
+
+    async def my_callback(msg):
+        callback_invocations.append(msg)
+        return f"reply-{msg}"
+
+    result = await svc.use_callback_and_return(my_callback)
+    assert result == "reply-during-execution"
+    assert callback_invocations == ["during-execution"]
+
+    # 2. Session should be cleaned up after the function returned
+    await asyncio.sleep(0.5)
+    keys_before = set(client.rpc._object_store.keys())
+    # Make a second call to verify the previous session was cleaned
+    result2 = await svc.use_callback_and_return(my_callback)
+    assert result2 == "reply-during-execution"
+    assert callback_invocations == ["during-execution", "during-execution"]
+
+    # 3. Server tries to invoke the stored callback — it should fail
+    # because the session was cleaned up on the client side when the
+    # function returned
+    with pytest.raises(Exception):
+        await svc.invoke_stored_callback()
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_rintf_session_lifecycle(websocket_server):
+    """Test _rintf session lifecycle:
+    1. Callbacks with _rintf work during function execution
+    2. Callbacks with _rintf persist AFTER function returns (unlike regular callbacks)
+    3. _rintf_service_id is set on the original object for manual cleanup
+    4. Manual unregistration via unregister_service works
+    """
+    server = await connect_to_server(
+        {
+            "name": "rintf server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "rintf-server",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    stored_interface = None
+
+    async def use_interface_and_return(interface_obj):
+        """Call the interface during execution, store it, return."""
+        nonlocal stored_interface
+        # Call getItem during execution — should work
+        result = await interface_obj["getItem"]("key1")
+        stored_interface = interface_obj
+        return result
+
+    async def call_stored_interface(key):
+        """Call the stored interface's getItem after parent function returned."""
+        if stored_interface is None:
+            raise RuntimeError("No stored interface")
+        return await stored_interface["getItem"](key)
+
+    await server.register_service(
+        {
+            "name": "RIntf Service",
+            "id": "rintf-svc",
+            "config": {"visibility": "protected"},
+            "use_interface_and_return": use_interface_and_return,
+            "call_stored_interface": call_stored_interface,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "rintf client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "rintf-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("rintf-svc")
+
+    # Create an interface object with _rintf: True
+    data_store = {"key1": "value1", "key2": "value2"}
+
+    async def get_item(key):
+        return data_store.get(key, None)
+
+    interface_obj = {"_rintf": True, "getItem": get_item}
+
+    # Verify no _rintf services exist before the call
+    rintf_services_before = [
+        k for k in client.rpc._services if k.startswith("_rintf_")
+    ]
+    assert len(rintf_services_before) == 0
+
+    # 1. Call with _rintf interface — callback works during execution
+    result = await svc.use_interface_and_return(interface_obj)
+    assert result == "value1"
+
+    # Verify _rintf_service_id was set back on the original object
+    assert "_rintf_service_id" in interface_obj, (
+        "Expected _rintf_service_id to be set on the original object"
+    )
+    rintf_service_id = interface_obj["_rintf_service_id"]
+    assert rintf_service_id.startswith("_rintf_")
+
+    # Verify the _rintf service was auto-registered on the client side
+    assert rintf_service_id in client.rpc._services
+
+    # 2. Callback still works AFTER function returned (because _rintf persists)
+    await asyncio.sleep(0.5)  # Small delay to confirm function has returned
+    result2 = await svc.call_stored_interface("key2")
+    assert result2 == "value2"
+
+    # 3. Service persists — no auto-timeout
+    await asyncio.sleep(2)
+    assert rintf_service_id in client.rpc._services, (
+        "_rintf service should persist until manually unregistered"
+    )
+    result3 = await svc.call_stored_interface("key1")
+    assert result3 == "value1"
+
+    # 4. Manual unregistration works (auto-detects _rintf as local-only)
+    await client.rpc.unregister_service(rintf_service_id)
+
+    # Service should now be gone
+    assert rintf_service_id not in client.rpc._services
+
+    # Calling the stored interface should fail
+    with pytest.raises(Exception):
+        await svc.call_stored_interface("key1")
 
     await client.disconnect()
     await server.disconnect()

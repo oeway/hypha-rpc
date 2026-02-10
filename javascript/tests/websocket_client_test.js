@@ -963,6 +963,289 @@ describe("RPC", async () => {
     await server.disconnect();
   }).timeout(40000);
 
+  it("should cleanup generators on partial consumption", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "gen-partial-provider",
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    let cleanupCalled = false;
+
+    // Define a generator that tracks cleanup
+    function* largeCounter(n) {
+      try {
+        for (let i = 0; i < n; i++) {
+          yield i;
+        }
+      } finally {
+        cleanupCalled = true;
+      }
+    }
+
+    await server.registerService({
+      id: "gen-partial-svc",
+      config: { visibility: "public" },
+      getLargeCounter: largeCounter,
+    });
+
+    const client = await connectToServer({
+      client_id: "gen-partial-consumer",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("gen-partial-svc");
+
+    // Partially consume the generator (only take 3 out of 100 items)
+    const gen = await svc.getLargeCounter(100);
+    const results = [];
+    for await (const item of gen) {
+      results.push(item);
+      if (results.length >= 3) {
+        break;
+      }
+    }
+
+    expect(results).to.deep.equal([0, 1, 2]);
+
+    // Wait for the close signal to propagate
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // The generator's finally block should have been called
+    expect(cleanupCalled).to.be.true;
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(40000);
+
+  it("should support async iterators", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "async-iter-provider",
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Define a custom async iterator
+    function getAsyncRange(n) {
+      let i = 0;
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        async next() {
+          if (i >= n) {
+            return { value: undefined, done: true };
+          }
+          const value = i++;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { value, done: false };
+        },
+      };
+    }
+
+    await server.registerService({
+      id: "async-iter-svc",
+      config: { visibility: "public" },
+      getAsyncRange: getAsyncRange,
+    });
+
+    const client = await connectToServer({
+      client_id: "async-iter-consumer",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("async-iter-svc");
+
+    // Fully consume the async iterator
+    const gen = await svc.getAsyncRange(5);
+    const results = [];
+    for await (const item of gen) {
+      results.push(item);
+    }
+    expect(results).to.deep.equal([0, 1, 2, 3, 4]);
+
+    // Partially consume the async iterator
+    const gen2 = await svc.getAsyncRange(10);
+    const partial = [];
+    for await (const item of gen2) {
+      partial.push(item);
+      if (partial.length >= 3) {
+        break;
+      }
+    }
+    expect(partial).to.deep.equal([0, 1, 2]);
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(40000);
+
+  it("should support sync iterators", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "sync-iter-provider",
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Define a custom sync iterator
+    function getSyncRange(n) {
+      let i = 0;
+      return {
+        [Symbol.iterator]() {
+          return this;
+        },
+        next() {
+          if (i >= n) {
+            return { value: undefined, done: true };
+          }
+          return { value: i++, done: false };
+        },
+      };
+    }
+
+    await server.registerService({
+      id: "sync-iter-svc",
+      config: { visibility: "public" },
+      getSyncRange: getSyncRange,
+    });
+
+    const client = await connectToServer({
+      client_id: "sync-iter-consumer",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("sync-iter-svc");
+
+    // Fully consume the sync iterator (becomes async on remote)
+    const gen = await svc.getSyncRange(5);
+    const results = [];
+    for await (const item of gen) {
+      results.push(item);
+    }
+    expect(results).to.deep.equal([0, 1, 2, 3, 4]);
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(40000);
+
+  it("should not leak when creating multiple generators", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "multi-gen-provider",
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    function* infiniteCounter() {
+      let i = 0;
+      while (true) {
+        yield i++;
+      }
+    }
+
+    await server.registerService({
+      id: "multi-gen-svc",
+      config: { visibility: "public" },
+      getInfiniteCounter: infiniteCounter,
+    });
+
+    const client = await connectToServer({
+      client_id: "multi-gen-consumer",
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("multi-gen-svc");
+
+    // Create and partially consume several generators
+    for (let j = 0; j < 5; j++) {
+      const gen = await svc.getInfiniteCounter();
+      let count = 0;
+      for await (const item of gen) {
+        count++;
+        if (count >= 3) {
+          break;
+        }
+      }
+    }
+
+    // Wait for close signals to propagate
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Check the session store - should not have accumulated generator entries
+    const rpc = server.rpc;
+    const store = rpc._object_store;
+    let genCloseKeys = 0;
+    for (const [sessionKey, sessionVal] of Object.entries(store)) {
+      if (typeof sessionVal === "object" && sessionVal !== null) {
+        for (const k of Object.keys(sessionVal)) {
+          if (k.includes(":close")) {
+            genCloseKeys++;
+          }
+        }
+      }
+    }
+
+    expect(genCloseKeys).to.equal(0);
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(40000);
+
+  it("should keep active sessions alive during GC sweep", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "gc-activity-provider",
+    });
+
+    const rpc = server.rpc;
+    const store = rpc._object_store;
+
+    // Create two fake sessions: one with recent activity, one stale
+    const activeSessionId = "test-active-session-" + Date.now();
+    const staleSessionId = "test-stale-session-" + Date.now();
+    const now = Date.now();
+
+    store[activeSessionId] = {
+      _created_at: now - 20 * 60 * 1000, // Created 20 minutes ago
+      _last_activity_at: now - 1000, // Active 1 second ago
+      someMethod: () => "active",
+    };
+
+    store[staleSessionId] = {
+      _created_at: now - 20 * 60 * 1000, // Created 20 minutes ago
+      _last_activity_at: now - 20 * 60 * 1000, // Last active 20 minutes ago
+      someMethod: () => "stale",
+    };
+
+    // Run GC sweep
+    rpc._sweepStaleSessions();
+
+    // Active session should survive (recent _last_activity_at)
+    expect(store[activeSessionId]).to.not.be.undefined;
+    expect(store[activeSessionId].someMethod()).to.equal("active");
+
+    // Stale session should be cleaned up
+    expect(store[staleSessionId]).to.be.undefined;
+
+    // Clean up
+    delete store[activeSessionId];
+    await server.disconnect();
+  }).timeout(20000);
+
   // Test memory leak prevention (comprehensive)
   it("test memory leak prevention", async function () {
     this.timeout(120000);
@@ -2697,6 +2980,50 @@ describe("RPC", async () => {
     await api.disconnect();
   }).timeout(30000);
 
+  it("should remove callback session immediately after function returns", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "cb-session-immediate-server",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "cb-session-imm-svc",
+      config: { visibility: "protected" },
+      useCallback: async (cb) => {
+        const result = await cb(42);
+        return result;
+      },
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "cb-session-immediate-client",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("cb-session-imm-svc");
+
+    // Snapshot store keys before the call
+    const keysBefore = new Set(Object.keys(client.rpc._object_store));
+
+    const result = await svc.useCallback((x) => x * 2);
+    expect(result).to.equal(84);
+
+    // The session created for this call should be cleaned up immediately
+    const keysAfter = new Set(Object.keys(client.rpc._object_store));
+    const newSessions = [...keysAfter].filter((k) => !keysBefore.has(k));
+    expect(newSessions.length).to.equal(
+      0,
+      `Expected no new sessions after call returned, but found: ${newSessions}`,
+    );
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(20000);
+
   it("should invoke callback multiple times (progress pattern)", async () => {
     const server = await connectToServer({
       server_url: SERVER_URL,
@@ -2948,4 +3275,160 @@ describe("RPC", async () => {
     expect(callCounts.custom2).to.equal(1);
     expect(callCounts.custom3).to.equal(1);
   }).timeout(20000);
+
+  it("should enforce strict callback lifecycle: callbacks invalid after function returns", async () => {
+    // Connect server (provider)
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "lifecycle-provider",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    let storedCallback = null;
+
+    await server.registerService({
+      name: "Lifecycle Service",
+      id: "lifecycle-svc",
+      config: { visibility: "protected" },
+      use_callback_and_return: async (callback) => {
+        // Callback should work during execution
+        const result = await callback("during-execution");
+        storedCallback = callback;
+        return result;
+      },
+      invoke_stored_callback: async () => {
+        if (!storedCallback) throw new Error("No stored callback");
+        // This should fail because the session was cleaned up
+        const result = await storedCallback("after-return");
+        return result;
+      },
+    });
+
+    // Connect client (consumer)
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "lifecycle-consumer",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("lifecycle-svc");
+
+    // 1. Callback works DURING execution
+    const callbackInvocations = [];
+    const result = await svc.use_callback_and_return((msg) => {
+      callbackInvocations.push(msg);
+      return `reply-${msg}`;
+    });
+    expect(result).to.equal("reply-during-execution");
+    expect(callbackInvocations).to.deep.equal(["during-execution"]);
+
+    // 2. Session should be cleaned up after function returned
+    // Wait briefly for cleanup propagation
+    await new Promise((r) => setTimeout(r, 500));
+
+    // 3. Server tries to invoke the stored callback — should fail
+    // because the client cleaned up the session when the function returned
+    let invokeError = null;
+    try {
+      await svc.invoke_stored_callback();
+    } catch (e) {
+      invokeError = e;
+    }
+    expect(invokeError).to.not.be.null;
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(30000);
+
+  it("should keep _rintf callbacks alive after function returns and allow manual cleanup", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rintf-provider",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    let storedInterface = null;
+
+    await server.registerService({
+      name: "RIntf Service",
+      id: "rintf-svc",
+      config: { visibility: "protected" },
+      use_interface_and_return: async (interfaceObj) => {
+        // Call getItem during execution — should work
+        const result = await interfaceObj.getItem("key1");
+        storedInterface = interfaceObj;
+        return result;
+      },
+      call_stored_interface: async (key) => {
+        if (!storedInterface) throw new Error("No stored interface");
+        return await storedInterface.getItem(key);
+      },
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rintf-consumer",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("rintf-svc");
+
+    // Create an interface object with _rintf: true
+    const dataStore = { key1: "value1", key2: "value2" };
+    const interfaceObj = {
+      _rintf: true,
+      getItem: (key) => dataStore[key] || null,
+    };
+
+    // Verify no _rintf services exist before the call
+    const rintfServicesBefore = Object.keys(client.rpc._services).filter(
+      (k) => k.startsWith("_rintf_")
+    );
+    expect(rintfServicesBefore.length).to.equal(0);
+
+    // 1. Call with _rintf interface — callback works during execution
+    const result = await svc.use_interface_and_return(interfaceObj);
+    expect(result).to.equal("value1");
+
+    // Verify _rintf_service_id was set back on the original object
+    expect(interfaceObj._rintf_service_id).to.be.a("string");
+    expect(interfaceObj._rintf_service_id).to.match(/^_rintf_/);
+    const rintfServiceId = interfaceObj._rintf_service_id;
+
+    // Verify the _rintf service was auto-registered on the client side
+    expect(client.rpc._services[rintfServiceId]).to.not.be.undefined;
+
+    // 2. Callback still works AFTER function returned (because _rintf persists)
+    await new Promise((r) => setTimeout(r, 500));
+    const result2 = await svc.call_stored_interface("key2");
+    expect(result2).to.equal("value2");
+
+    // 3. Service persists — no auto-timeout
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(client.rpc._services[rintfServiceId]).to.not.be.undefined;
+    const result3 = await svc.call_stored_interface("key1");
+    expect(result3).to.equal("value1");
+
+    // 4. Manual unregistration works (auto-detects _rintf as local-only)
+    await client.rpc.unregister_service(rintfServiceId);
+
+    // Service should now be gone
+    expect(client.rpc._services[rintfServiceId]).to.be.undefined;
+
+    // Calling the stored interface should fail
+    let cleanupError = null;
+    try {
+      await svc.call_stored_interface("key1");
+    } catch (e) {
+      cleanupError = e;
+    }
+    expect(cleanupError).to.not.be.null;
+
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(30000);
 });

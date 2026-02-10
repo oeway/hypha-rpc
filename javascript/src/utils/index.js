@@ -539,3 +539,33 @@ export function isAsyncGenerator(obj) {
     obj[Symbol.toStringTag] === "AsyncGenerator"
   );
 }
+
+/**
+ * Check if an object is a custom async iterator (has Symbol.asyncIterator and next()) but not an async generator
+ * @param {any} obj - Object to check
+ * @returns {boolean} True if object is a custom async iterator
+ */
+export function isAsyncIterator(obj) {
+  if (!obj || isAsyncGenerator(obj)) return false;
+  return (
+    typeof obj === "object" &&
+    Symbol.asyncIterator in Object(obj) &&
+    typeof obj.next === "function"
+  );
+}
+
+/**
+ * Check if an object is a custom sync iterator (has Symbol.iterator and next()) but not a generator
+ * @param {any} obj - Object to check
+ * @returns {boolean} True if object is a custom sync iterator
+ */
+export function isSyncIterator(obj) {
+  if (!obj || isGenerator(obj)) return false;
+  return (
+    typeof obj === "object" &&
+    Symbol.iterator in Object(obj) &&
+    typeof obj.next === "function" &&
+    !Array.isArray(obj) &&
+    typeof obj !== "string"
+  );
+}

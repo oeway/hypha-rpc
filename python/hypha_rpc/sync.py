@@ -71,18 +71,27 @@ def convert_async_to_sync(async_func, loop, executor):
             if inspect.isasyncgen(result):
 
                 def sync_generator():
-                    while True:
+                    try:
+                        while True:
+                            try:
+                                # Get next item from async generator
+                                next_future = asyncio.run_coroutine_threadsafe(
+                                    result.__anext__(), loop
+                                )
+                                item = next_future.result()
+                                yield _encode_callables(
+                                    item, convert_async_to_sync, loop, executor
+                                )
+                            except StopAsyncIteration:
+                                break
+                    finally:
+                        # Ensure the async generator is closed on early break
                         try:
-                            # Get next item from async generator
-                            next_future = asyncio.run_coroutine_threadsafe(
-                                result.__anext__(), loop
-                            )
-                            item = next_future.result()
-                            yield _encode_callables(
-                                item, convert_async_to_sync, loop, executor
-                            )
-                        except StopAsyncIteration:
-                            break
+                            asyncio.run_coroutine_threadsafe(
+                                result.aclose(), loop
+                            ).result()
+                        except Exception:
+                            pass
 
                 return sync_generator()
             return _encode_callables(result, convert_async_to_sync, loop, executor)

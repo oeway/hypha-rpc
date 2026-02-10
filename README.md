@@ -57,7 +57,7 @@ The data representation is a JSON object (but can contain binary data, e.g. `Arr
 
 Notes:
  - `_encode(...)` in the hypha-rpc representation means the type will be recursively encoded (decoded).
- - When sending functions to be used remotely in a remote function call (e.g. passing an object with member functions when calling a remote function), the functions will only be available during the call and will be removed after the call. If you want to keep the function available for later calls, you can either mark the function as a "interface" function by setting any of the containing objects' `_rintf` to true, or you can register the function as a service, then call the service instead.
+ - When sending functions to be used remotely in a remote function call (e.g. passing an object with member functions when calling a remote function), the functions will only be available during the call and will be removed after the call returns. To keep callbacks alive beyond the function return, mark the containing object with `_rintf: true` — the object will be automatically registered as a persistent local service. See [Persistent Interface Objects (`_rintf`)](#persistent-interface-objects-_rintf) for details.
  - For n-D numpy array, there is no established n-D array library in javascript, the current behavior is, if there is `tf`(Tensorflow.js) detected, then it will be decoded into `tf.Tensor`. If `nj`(numjs) is detected, then it will be decoded into `nj.array`.
  - Typed array will be represented as numpy array if available, otherwise it will be converted to raw bytes.    
     Type Conversion
@@ -105,7 +105,6 @@ def encode_xarray(obj):
     """Encode the zarr store."""
     assert isinstance(obj, xr.DataArray)
     return {
-        "_rintf": True,
         "_rtype": "xarray",
         "data": obj.data,
         "dims": obj.dims,
@@ -219,6 +218,143 @@ Remote function call is almost the same as calling a local function. The argumen
 
  * For functions defined in Javascript, there is no difference when calling from Python
  * For functions defined in Python, when calling from Javascript, if the last argument is an object and its `_rkwargs` is set to true, then it will be converted into keyword arguments when calling the Python function. For example, if you have a Python function defined as `def foo(a, b, c=None):`, in Javascript, you should call it as `foo(9, 10, {c: 33, _rkwargs: true})`.
+
+### Persistent Interface Objects (`_rintf`)
+
+By default, when you pass an object with callable members (functions) as an argument to a remote function call, those functions are only available **during** the call. Once the remote function returns, the callback session is cleaned up and the functions can no longer be called.
+
+If you need the remote side to store and call your functions **after** the function returns (e.g. a lazy data store interface), mark the object with `_rintf: True`. This tells hypha-rpc to automatically register the object as a persistent local service instead of using an ephemeral callback session.
+
+#### How it works
+
+1. When `_encode` encounters a dict/object with `_rintf: true` and callable members, it:
+   - Extracts all callable members and registers them as a local service (with an auto-generated ID like `_rintf_abc123`)
+   - Sets `_rintf_service_id` on the **original** object so the caller can look it up later
+   - Includes `_rintf_service_id` in the encoded output sent to the remote side
+2. The service persists until explicitly unregistered or the RPC connection is closed.
+3. The caller can clean up with `rpc.unregister_service(service_id)` when the interface is no longer needed (server notification is automatically skipped for `_rintf` services).
+
+#### Python Example
+
+```python
+from hypha_rpc import connect_to_server
+
+server = await connect_to_server({"server_url": server_url})
+workspace = server.config.workspace
+token = await server.generate_token()
+
+# --- Server side: a service that stores an interface for later use ---
+stored_store = None
+
+async def upload_store(store):
+    """Receive a store interface and keep it for later use."""
+    nonlocal stored_store
+    # Can call store methods during execution
+    value = await store["getItem"]("key1")
+    stored_store = store
+    return value
+
+async def read_from_store(key):
+    """Call the stored interface after upload_store has returned."""
+    return await stored_store["getItem"](key)
+
+await server.register_service({
+    "id": "storage-svc",
+    "upload_store": upload_store,
+    "read_from_store": read_from_store,
+})
+
+# --- Client side: pass an _rintf object ---
+client = await connect_to_server({
+    "server_url": server_url,
+    "workspace": workspace,
+    "token": token,
+})
+svc = await client.get_service("storage-svc")
+
+data = {"key1": "hello", "key2": "world"}
+my_store = {
+    "_rintf": True,
+    "getItem": lambda key: data.get(key),
+}
+
+# After this call, my_store["_rintf_service_id"] is set
+result = await svc.upload_store(my_store)
+assert result == "hello"
+
+# The stored interface still works after upload_store returned
+result2 = await svc.read_from_store("key2")
+assert result2 == "world"
+
+# When done, clean up the local service
+service_id = my_store["_rintf_service_id"]
+await client.rpc.unregister_service(service_id)
+```
+
+#### JavaScript Example
+
+```javascript
+const server = await connectToServer({ server_url: serverUrl });
+const workspace = server.config.workspace;
+const token = await server.generateToken();
+
+// Server side
+let storedStore = null;
+await server.registerService({
+  id: "storage-svc",
+  uploadStore: async (store) => {
+    const value = await store.getItem("key1");
+    storedStore = store;
+    return value;
+  },
+  readFromStore: async (key) => {
+    return await storedStore.getItem(key);
+  },
+});
+
+// Client side
+const client = await connectToServer({
+  server_url: serverUrl,
+  workspace,
+  token,
+});
+const svc = await client.getService("storage-svc");
+
+const data = { key1: "hello", key2: "world" };
+const myStore = {
+  _rintf: true,
+  getItem: (key) => data[key] || null,
+};
+
+// After this call, myStore._rintf_service_id is set
+const result = await svc.uploadStore(myStore);
+console.log(result); // "hello"
+
+// Still works after uploadStore returned
+const result2 = await svc.readFromStore("key2");
+console.log(result2); // "world"
+
+// Clean up when done
+const serviceId = myStore._rintf_service_id;
+await client.rpc.unregister_service(serviceId);
+```
+
+#### Cleanup API
+
+| Language | Method | Description |
+|----------|--------|-------------|
+| Python | `await rpc.unregister_service(service_id)` | Removes the local `_rintf` service (raises if not found) |
+| JavaScript | `await rpc.unregister_service(serviceId)` | Removes the local `_rintf` service (throws if not found) |
+
+#### When to use `_rintf` vs `register_service`
+
+| | `_rintf: True` | `register_service()` |
+|--|----------------|----------------------|
+| **Use case** | Passing a store/interface as a function argument | Exposing a named service to the workspace |
+| **Registration** | Automatic (during encoding) | Explicit |
+| **Discovery** | Not discoverable; only the receiver has a reference | Discoverable by service ID |
+| **Cleanup** | `unregister_service(id)` or RPC close | `unregister_service(id)` |
+| **Lifecycle** | Tied to the object and the RPC connection | Tied to the RPC connection |
 
 ### Context Injection with `require_context`
 
