@@ -36,6 +36,7 @@ try:
 except ImportError:
     import websockets
     from websockets.protocol import State
+    from websockets.exceptions import InvalidStatus
 
     IS_PYODIDE = False
 
@@ -137,8 +138,9 @@ class WebsocketRPCConnection:
                 self._timeout,
             )
             return websocket
-        except websockets.exceptions.InvalidStatusCode as e:
-            if e.status_code == 403 and attempt_fallback:
+        except InvalidStatus as e:
+            status = e.response.status_code if hasattr(e, "response") else getattr(e, "status_code", None)
+            if status == 403 and attempt_fallback:
                 logger.info(
                     "Received 403 error, attempting connection with query parameters."
                 )
@@ -336,7 +338,7 @@ class WebsocketRPCConnection:
                         )
         except asyncio.CancelledError:
             logger.info("Listen task was cancelled.")
-        except websockets.exceptions.InvalidStatusCode as e:
+        except InvalidStatus as e:
             logger.error(f"HTTP error during WebSocket connection: {e}")
         except websockets.exceptions.ConnectionClosedOK as e:
             logger.info("Websocket connection closed gracefully")

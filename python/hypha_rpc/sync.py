@@ -145,8 +145,14 @@ class SyncHyphaServer(ObjectProxy):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        if self._server:
-            self._server.disconnect()
+        if self._server and self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                self._server.disconnect(), self._loop
+            )
+            try:
+                future.result(timeout=10)
+            except Exception:
+                pass
 
     async def _connect(self, config):
         config["loop"] = self._loop

@@ -1227,6 +1227,14 @@ class RPC(MessageEmitter):
             list(self._background_tasks) if hasattr(self, "_background_tasks") else []
         )
 
+        # Include the session GC task so it gets properly awaited after cancel
+        if (
+            hasattr(self, "_session_gc_task")
+            and self._session_gc_task
+            and not self._session_gc_task.done()
+        ):
+            tasks_to_cleanup.append(self._session_gc_task)
+
         # Also store fire-and-forget tasks from MessageEmitter._fire()
         if hasattr(self, "_fire_and_forget_tasks"):
             tasks_to_cleanup.extend(list(self._fire_and_forget_tasks))

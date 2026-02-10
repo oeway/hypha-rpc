@@ -1524,6 +1524,10 @@ async def test_memory_leak_prevention(websocket_server):
 
     # Test 1: Baseline state
     print("=== COMPREHENSIVE MEMORY LEAK TESTS ===")
+    # Allow time for connection setup sessions (e.g. client_disconnected
+    # subscription) to complete and be cleaned up before measuring baseline
+    await asyncio.sleep(0.5)
+    gc.collect()
     initial_analysis = get_detailed_session_analysis(api.rpc)
     assert_clean_state(initial_analysis, "Initial State")
 

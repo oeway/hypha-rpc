@@ -422,10 +422,13 @@ export class RPC extends MessageEmitter {
         if (
           reasonStr.includes("Method not found") ||
           reasonStr.includes("Session not found") ||
-          reasonStr.includes("Method expired")
+          reasonStr.includes("Method expired") ||
+          reasonStr.includes("Connection is closed") ||
+          reasonStr.includes("Client disconnected") ||
+          reasonStr.includes("RPC connection closed")
         ) {
           console.debug(
-            "Ignoring expected method/session not found error:",
+            "Ignoring expected disconnection/method error:",
             reason,
           );
           event.preventDefault();
@@ -603,7 +606,7 @@ export class RPC extends MessageEmitter {
                 this._clientDisconnectedSubscription = null;
               }
             } catch (subscribeError) {
-              console.warn(
+              console.debug(
                 `Failed to subscribe to client_disconnected events: ${subscribeError}`,
               );
               this._clientDisconnectedSubscription = null;
