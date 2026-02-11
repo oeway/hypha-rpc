@@ -53,7 +53,7 @@ jobs:
           path: ./javascript/coverage/
       - run: npm run build
       - name: Save build output
-        uses: actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@v4.6.1
         with:
           name: built-output
           path: ./javascript/dist
