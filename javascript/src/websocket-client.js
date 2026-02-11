@@ -1139,6 +1139,29 @@ export class LocalWebSocket {
   }
 }
 
+// Also export a hyphaWebsocketClient namespace for backwards compatibility.
+// hypha-core's deno build does: import { hyphaWebsocketClient } from 'hypha-rpc'
+// The UMD build wraps everything under this name via webpack's `library` option,
+// but the ESM build exports flat, so we need this explicit re-export.
+export const hyphaWebsocketClient = {
+  RPC,
+  API_VERSION,
+  schemaFunction,
+  loadRequirements,
+  login,
+  logout,
+  connectToServer,
+  connectToServerHTTP,
+  getRemoteService,
+  getRemoteServiceHTTP,
+  getRTCService,
+  registerRTCService,
+  get setupLocalClient() { return setupLocalClient; },
+  get LocalWebSocket() { return LocalWebSocket; },
+  HTTPStreamingRPCConnection,
+  normalizeServerUrlHTTP,
+};
+
 export function setupLocalClient({
   enable_execution = false,
   on_ready = null,
