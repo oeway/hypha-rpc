@@ -36,6 +36,39 @@ logger.setLevel(LOGLEVEL)
 MAX_RETRY = 1000000
 
 
+def _extract_workspace_from_token(token: str) -> Optional[str]:
+    """Extract workspace from a JWT token's scope claim.
+
+    JWT tokens issued by the Hypha server contain a ``scope`` field with
+    entries like ``wid:<workspace>`` indicating the current workspace.
+    This decodes the JWT payload (base64url-encoded JSON) to extract
+    the workspace without requiring any crypto library.
+    """
+    if not token:
+        return None
+    try:
+        import base64
+        import json
+        import re
+
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        # Decode the payload (second part) from base64url
+        payload = parts[1]
+        # Add padding
+        payload += "=" * (-len(payload) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
+        scope = decoded.get("scope")
+        if not isinstance(scope, str):
+            return None
+        # Look for "wid:<workspace>" in the scope string
+        match = re.search(r"(?:^|\s)wid:(\S+)", scope)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
 class HTTPStreamingRPCConnection:
     """HTTP Streaming RPC Connection.
 
@@ -74,6 +107,10 @@ class HTTPStreamingRPCConnection:
         self._timeout = timeout
         self._ssl = ssl
         self._token_refresh_interval = token_refresh_interval
+
+        # If no workspace specified but token provided, extract workspace from token
+        if not self._workspace and self._token:
+            self._workspace = _extract_workspace_from_token(self._token)
 
         self._handle_message: Optional[Callable] = None
         self._handle_disconnected: Optional[Callable] = None
@@ -114,8 +151,10 @@ class HTTPStreamingRPCConnection:
             await asyncio.sleep(2)  # Initial delay
             while not self._closed and self._http_client:
                 try:
-                    # Send refresh token request via POST
-                    workspace = self._workspace or "public"
+                    # After open(), _workspace is always set from connection_info
+                    workspace = self._workspace
+                    if not workspace:
+                        continue
                     url = f"{self._server_url}/{workspace}/rpc"
                     params = {"client_id": self._client_id}
 
@@ -200,7 +239,9 @@ class HTTPStreamingRPCConnection:
         if self._http_client is None:
             self._http_client = await self._create_http_client()
 
-        # Build stream URL - workspace is part of path, default to "public" for anonymous
+        # Build stream URL. Workspace should be set from: user config or token extraction.
+        # For anonymous users (no token, no workspace), "public" is a server-side routing
+        # hint that gets redirected to the user's own workspace via connection_info.
         ws = self._workspace or "public"
         stream_url = f"{self._server_url}/{ws}/rpc"
         params = {"client_id": self._client_id}
@@ -281,7 +322,7 @@ class HTTPStreamingRPCConnection:
                 if self._reconnection_token:
                     params["reconnection_token"] = self._reconnection_token
 
-                # Update URL with current workspace (may have changed after initial connection)
+                # Update URL with current workspace (set from connection_info after initial open)
                 ws = self._workspace or "public"
                 current_url = f"{self._server_url}/{ws}/rpc"
 
@@ -437,8 +478,10 @@ class HTTPStreamingRPCConnection:
         if self._http_client is None:
             self._http_client = await self._create_http_client()
 
-        # Build POST URL - workspace is part of path (must be set after connection)
-        ws = self._workspace or "public"
+        # Build POST URL - workspace is always set after open() from connection_info
+        ws = self._workspace
+        if not ws:
+            raise ConnectionError("Workspace not set - connection not established")
         url = f"{self._server_url}/{ws}/rpc"
         params = {"client_id": self._client_id}
 
@@ -596,6 +639,9 @@ async def _connect_to_server_http(config: dict):
         loop=config.get("loop"),
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
+        signing=config.get("signing", False),
+        signing_private_key=config.get("signing_private_key"),
+        signing_public_key=config.get("signing_public_key"),
     )
 
     await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))

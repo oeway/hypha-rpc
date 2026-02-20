@@ -1,5 +1,6 @@
 import { expect } from "chai";
 import { connectToServerHTTP } from "../src/http-client.js";
+import { connectToServer } from "../src/websocket-client.js";
 
 const SERVER_URL = "http://127.0.0.1:9394"; // Match the port in package.json test script
 // Unique suffix per browser instance to prevent client_id collisions
@@ -527,6 +528,62 @@ describeHttp("HTTP Manager Service Interaction", () => {
       console.log("✓ HTTP concurrent manager operations working");
     } finally {
       await server.disconnect();
+    }
+  });
+});
+
+describeHttp("HTTP Workspace From Token", () => {
+  it("should auto-detect workspace from token when not specified", async function () {
+    this.timeout(30000);
+
+    // First, connect via WebSocket to get a workspace and token
+    const wsServer = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: `ws-token-provider-${SUFFIX}`,
+    });
+
+    try {
+      const workspace = wsServer.config.workspace;
+      const token = await wsServer.generateToken();
+
+      // Register a service on the WebSocket client
+      await wsServer.registerService({
+        id: "ws-workspace-test",
+        config: { visibility: "public" },
+        getWorkspace: () => workspace,
+      });
+
+      // Connect via HTTP with token but WITHOUT specifying workspace.
+      // The HTTP client should extract workspace from the token.
+      const httpServer = await connectToServerHTTP({
+        server_url: SERVER_URL,
+        // NOTE: no "workspace" key here — this is the bug scenario
+        client_id: `http-auto-ws-test-${SUFFIX}`,
+        method_timeout: 10,
+        token: token,
+      });
+
+      try {
+        // Verify we connected to the correct workspace (not "public")
+        const httpWorkspace = httpServer.config.workspace;
+        expect(httpWorkspace).to.equal(workspace);
+        expect(httpWorkspace).to.not.equal("public");
+
+        // Verify cross-transport service call works
+        const svc = await httpServer.getService(
+          `${wsServer.config.client_id}:ws-workspace-test`,
+        );
+        const result = await svc.getWorkspace();
+        expect(result).to.equal(workspace);
+
+        console.log(
+          `✓ HTTP workspace auto-detected from token: ${httpWorkspace}`,
+        );
+      } finally {
+        await httpServer.disconnect();
+      }
+    } finally {
+      await wsServer.disconnect();
     }
   });
 });

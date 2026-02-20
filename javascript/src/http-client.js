@@ -64,6 +64,37 @@ import {
 const MAX_RETRY = 1000000;
 
 /**
+ * Extract workspace from a JWT token's scope claim.
+ *
+ * JWT tokens issued by the Hypha server contain a `scope` field with
+ * entries like "wid:<workspace>" indicating the current workspace.
+ * This function decodes the JWT payload (base64url-encoded JSON) to
+ * extract the workspace without requiring any crypto library.
+ *
+ * @param {string} token - JWT token string
+ * @returns {string|null} Workspace name or null if not found
+ */
+function extractWorkspaceFromToken(token) {
+  if (!token) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    // Decode the payload (second part) from base64url
+    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    // Pad to multiple of 4
+    while (payload.length % 4) payload += "=";
+    const decoded = JSON.parse(atob(payload));
+    const scope = decoded.scope;
+    if (typeof scope !== "string") return null;
+    // Look for "wid:<workspace>" in the scope string
+    const match = scope.match(/(?:^|\s)wid:(\S+)/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * HTTP Streaming RPC Connection.
  *
  * Uses HTTP GET with streaming for receiving messages and HTTP POST for sending messages.
@@ -98,6 +129,11 @@ export class HTTPStreamingRPCConnection {
     this._reconnection_token = reconnection_token;
     this._timeout = timeout;
     this._token_refresh_interval = token_refresh_interval;
+
+    // If no workspace specified but token provided, extract workspace from token
+    if (!this._workspace && this._token) {
+      this._workspace = extractWorkspaceFromToken(this._token);
+    }
 
     this._handle_message = null;
     this._handle_disconnected = null;
@@ -160,7 +196,10 @@ export class HTTPStreamingRPCConnection {
   async open() {
     console.info(`Opening HTTP streaming connection to ${this._server_url}`);
 
-    // Build stream URL - workspace is part of path, default to "public" for anonymous
+    // Build stream URL
+    // At this point, _workspace should be set from: user config, or token extraction.
+    // For anonymous users (no token, no workspace), fall back to "public" which the
+    // server redirects to the user's own workspace via connection_info.
     const ws = this._workspace || "public";
     const stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
 
@@ -247,7 +286,9 @@ export class HTTPStreamingRPCConnection {
   async _sendRefreshToken() {
     if (this._closed) return;
     try {
-      const ws = this._workspace || "public";
+      // After open(), _workspace is always set from connection_info
+      const ws = this._workspace;
+      if (!ws) return;
       const url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
       const body = msgpackEncode({ type: "refresh_token" });
       const response = await fetch(url, {
@@ -282,7 +323,7 @@ export class HTTPStreamingRPCConnection {
 
     while (!this._closed && retry < MAX_RETRY) {
       try {
-        // Update URL with current workspace (may have changed after initial connection)
+        // Update URL with current workspace (set from connection_info after initial open)
         const ws = this._workspace || "public";
         let stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
         if (this._reconnection_token) {
@@ -519,8 +560,11 @@ export class HTTPStreamingRPCConnection {
       throw new Error("Connection is closed");
     }
 
-    // Build POST URL - workspace is part of path (must be set after connection)
-    const ws = this._workspace || "public";
+    // Build POST URL - workspace is always set after open() from connection_info
+    const ws = this._workspace;
+    if (!ws) {
+      throw new Error("Workspace not set - connection not established");
+    }
     let post_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
 
     // Ensure data is Uint8Array
@@ -664,6 +708,9 @@ export async function _connectToServerHTTP(config) {
     method_timeout: config.method_timeout,
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
+    signing: config.signing || false,
+    signing_private_key: config.signing_private_key || null,
+    signing_public_key: config.signing_public_key || null,
   });
 
   await rpc.waitFor("services_registered", config.method_timeout || 120);

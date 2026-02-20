@@ -4860,3 +4860,242 @@ async def test_rintf_session_lifecycle(websocket_server):
 
     await client.disconnect()
     await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_signed_service_calls(websocket_server):
+    """Test Ed25519 signed service calls between two clients."""
+    from hypha_rpc.crypto import generate_signing_keypair, verify_signature
+
+    # Client 1: service provider (requires signed calls)
+    server = await connect_to_server(
+        {
+            "name": "signing-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "signing-server-client",
+            "signing": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    received_contexts = []
+
+    def verified_echo(message, context=None):
+        """Echo that records the context for verification."""
+        received_contexts.append(context)
+        return f"verified: {message}"
+
+    def verified_add(a, b, context=None):
+        received_contexts.append(context)
+        return a + b
+
+    await server.register_service(
+        {
+            "id": "signed-service",
+            "config": {
+                "require_context": True,
+                "require_signature": True,
+                "visibility": "protected",
+            },
+            "echo": verified_echo,
+            "add": verified_add,
+        }
+    )
+
+    # Client 2: caller with signing enabled, same workspace
+    client = await connect_to_server(
+        {
+            "name": "signing-client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "signing-caller-client",
+            "workspace": workspace,
+            "token": token,
+            "signing": True,
+        }
+    )
+
+    svc = await client.get_service("signed-service")
+
+    # Test 1: Signed call should succeed
+    result = await svc.echo("hello signed world")
+    assert result == "verified: hello signed world"
+
+    # Verify context had signature info
+    assert len(received_contexts) == 1
+    ctx = received_contexts[0]
+    assert ctx["signature_valid"] is True
+    assert ctx["verified_identity"] is not None
+    # The verified_identity should be the caller's public key (32 bytes)
+    assert len(ctx["verified_identity"]) == 32
+
+    # Test 2: Another signed call
+    result2 = await svc.add(5, 3)
+    assert result2 == 8
+
+    # Test 3: The caller's public key should match across calls
+    assert received_contexts[1]["verified_identity"] == received_contexts[0]["verified_identity"]
+
+    # Test 4: The caller's public key should be the one from the client's RPC
+    assert bytes(received_contexts[0]["verified_identity"]) == client.rpc._signing_public_key
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_unsigned_call_rejected_by_require_signature(websocket_server):
+    """Test that unsigned calls are rejected when require_signature is set."""
+    # Service provider requires signatures
+    server = await connect_to_server(
+        {
+            "name": "sig-required-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "sig-required-server-client",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    await server.register_service(
+        {
+            "id": "sig-required-service",
+            "config": {
+                "require_context": True,
+                "require_signature": True,
+                "visibility": "protected",
+            },
+            "echo": lambda msg, context=None: msg,
+        }
+    )
+
+    # Client WITHOUT signing, same workspace
+    client = await connect_to_server(
+        {
+            "name": "unsigned-client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "unsigned-caller-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("sig-required-service")
+
+    # Unsigned call should be rejected
+    with pytest.raises(Exception, match="Signature required"):
+        await svc.echo("should fail")
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_signed_calls_optional_service(websocket_server):
+    """Test that signed calls work with services that don't require signatures."""
+    # Service that accepts but doesn't require signatures
+    server = await connect_to_server(
+        {
+            "name": "optional-sig-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "optional-sig-server-client",
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    contexts = []
+
+    await server.register_service(
+        {
+            "id": "optional-sig-service",
+            "config": {
+                "require_context": True,
+                "visibility": "protected",
+            },
+            "echo": lambda msg, context=None: (
+                contexts.append(context) or f"echo: {msg}"
+            ),
+        }
+    )
+
+    # Signed client, same workspace
+    signed_client = await connect_to_server(
+        {
+            "name": "signed-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "signed-optional-caller",
+            "workspace": workspace,
+            "token": token,
+            "signing": True,
+        }
+    )
+
+    # Unsigned client, same workspace
+    unsigned_client = await connect_to_server(
+        {
+            "name": "unsigned-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "unsigned-optional-caller",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc_signed = await signed_client.get_service("optional-sig-service")
+    svc_unsigned = await unsigned_client.get_service("optional-sig-service")
+
+    # Both should succeed
+    result1 = await svc_signed.echo("signed msg")
+    assert result1 == "echo: signed msg"
+    assert contexts[-1]["signature_valid"] is True
+
+    result2 = await svc_unsigned.echo("unsigned msg")
+    assert result2 == "echo: unsigned msg"
+    # Unsigned calls should not have signature_valid in context
+    assert "signature_valid" not in contexts[-1] or contexts[-1].get("signature_valid") is None
+
+    await signed_client.disconnect()
+    await unsigned_client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_crypto_module_interop(websocket_server):
+    """Test the crypto module functions independently."""
+    from hypha_rpc.crypto import (
+        generate_signing_keypair,
+        sign_message,
+        verify_signature,
+        create_signable_data,
+        is_timestamp_valid,
+    )
+
+    # Generate keypair
+    private_key, public_key = generate_signing_keypair()
+    assert len(private_key) == 32
+    assert len(public_key) == 32
+
+    # Sign and verify
+    data = b"hello world"
+    signature = sign_message(private_key, data)
+    assert len(signature) == 64
+    assert verify_signature(public_key, signature, data) is True
+
+    # Tampered data should fail
+    assert verify_signature(public_key, signature, b"tampered") is False
+
+    # Wrong key should fail
+    other_private, other_public = generate_signing_keypair()
+    assert verify_signature(other_public, signature, data) is False
+
+    # Signable data creation
+    msg = {"type": "method", "from": "ws/client1", "to": "ws/client2", "method": "test", "_ts": 1234567890}
+    signable = create_signable_data(msg)
+    assert isinstance(signable, bytes)
+
+    # Timestamp validation
+    now_ms = int(time.time() * 1000)
+    assert is_timestamp_valid(now_ms) is True
+    assert is_timestamp_valid(now_ms - 600000) is False  # 10 min ago
+    assert is_timestamp_valid(now_ms + 10000) is False   # 10 sec in future
