@@ -914,6 +914,9 @@ async def _connect_to_server(config):
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
         long_message_chunk_size=config.get("long_message_chunk_size"),
+        signing=config.get("signing", False),
+        signing_private_key=config.get("signing_private_key"),
+        signing_public_key=config.get("signing_public_key"),
     )
     await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))
     wm = await rpc.get_manager_service(

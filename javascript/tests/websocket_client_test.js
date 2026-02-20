@@ -3432,3 +3432,173 @@ describe("RPC", async () => {
     await server.disconnect();
   }).timeout(30000);
 });
+
+describe("Signed Service Calls", () => {
+  it("should sign and verify RPC calls with Ed25519", async function () {
+    this.timeout(30000);
+
+    // Service provider with signing
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-signing-server",
+      signing: true,
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    const receivedContexts = [];
+
+    await server.registerService({
+      id: "signed-svc",
+      config: {
+        require_context: true,
+        require_signature: true,
+        visibility: "protected",
+      },
+      echo: (msg, context) => {
+        receivedContexts.push(context);
+        return `verified: ${msg}`;
+      },
+      add: (a, b, context) => {
+        receivedContexts.push(context);
+        return a + b;
+      },
+    });
+
+    // Caller with signing, same workspace
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-signing-caller",
+      workspace: workspace,
+      token: token,
+      signing: true,
+    });
+
+    const svc = await client.getService("signed-svc");
+
+    // Signed call should succeed
+    const result = await svc.echo("hello signed");
+    expect(result).to.equal("verified: hello signed");
+
+    // Context should have signature info
+    expect(receivedContexts.length).to.be.greaterThan(0);
+    const ctx = receivedContexts[0];
+    expect(ctx.signature_valid).to.be.true;
+    expect(ctx.verified_identity).to.not.be.null;
+
+    // Another call
+    const addResult = await svc.add(10, 20);
+    expect(addResult).to.equal(30);
+
+    // Consistent public key across calls
+    expect(receivedContexts[1].signature_valid).to.be.true;
+
+    console.log("✓ Ed25519 signed service calls working");
+
+    await client.disconnect();
+    await server.disconnect();
+  });
+
+  it("should reject unsigned calls when require_signature is set", async function () {
+    this.timeout(30000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-sig-required-server",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "sig-required-svc",
+      config: {
+        require_context: true,
+        require_signature: true,
+        visibility: "protected",
+      },
+      echo: (msg, context) => msg,
+    });
+
+    // Client WITHOUT signing, same workspace
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-unsigned-caller",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("sig-required-svc");
+
+    try {
+      await svc.echo("should fail");
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error.message || error.toString()).to.include("Signature required");
+      console.log("✓ Unsigned calls correctly rejected");
+    }
+
+    await client.disconnect();
+    await server.disconnect();
+  });
+
+  it("should work with optional signing (service does not require it)", async function () {
+    this.timeout(30000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-optional-sig-server",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    const contexts = [];
+
+    await server.registerService({
+      id: "optional-sig-svc",
+      config: {
+        require_context: true,
+        visibility: "protected",
+      },
+      echo: (msg, context) => {
+        contexts.push(context);
+        return `echo: ${msg}`;
+      },
+    });
+
+    // Signed client, same workspace
+    const signedClient = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-signed-optional",
+      workspace: workspace,
+      token: token,
+      signing: true,
+    });
+
+    // Unsigned client, same workspace
+    const unsignedClient = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-unsigned-optional",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svcSigned = await signedClient.getService("optional-sig-svc");
+    const svcUnsigned = await unsignedClient.getService("optional-sig-svc");
+
+    // Both should succeed
+    const r1 = await svcSigned.echo("signed");
+    expect(r1).to.equal("echo: signed");
+    expect(contexts[contexts.length - 1].signature_valid).to.be.true;
+
+    const r2 = await svcUnsigned.echo("unsigned");
+    expect(r2).to.equal("echo: unsigned");
+    // Unsigned calls should not have signature_valid set
+    expect(contexts[contexts.length - 1].signature_valid).to.be.undefined;
+
+    console.log("✓ Optional signing works correctly");
+
+    await signedClient.disconnect();
+    await unsignedClient.disconnect();
+    await server.disconnect();
+  });
+});

@@ -959,6 +959,124 @@ class TestHTTPReconnection:
             await ws_server.disconnect()
 
 
+class TestHTTPWorkspaceFromToken:
+    """Test HTTP transport workspace resolution from JWT token."""
+
+    @pytest.mark.asyncio
+    async def test_http_workspace_auto_detected_from_token(self, websocket_server):
+        """Test that HTTP client auto-detects workspace from token when not specified.
+
+        This is the core fix for the bug where HTTP transport connected to
+        'public' workspace instead of the user's workspace. The HTTP client
+        should extract the workspace from the JWT token's scope claim.
+        """
+        # First, connect via WebSocket to get a workspace and token
+        ws_server = await connect_to_server(
+            {
+                "server_url": SERVER_URL,
+                "client_id": "ws-token-workspace-provider",
+            }
+        )
+
+        try:
+            workspace = ws_server.config["workspace"]
+            token = await ws_server.generate_token()
+
+            # Register a service on the WebSocket client
+            await ws_server.register_service(
+                {
+                    "id": "ws-workspace-test-service",
+                    "config": {"visibility": "public"},
+                    "get_workspace": lambda: workspace,
+                }
+            )
+
+            # Connect via HTTP with token but WITHOUT specifying workspace.
+            # The HTTP client should extract workspace from the token.
+            http_server = await connect_to_server(
+                {
+                    "server_url": SERVER_URL,
+                    # NOTE: no "workspace" key here — this is the bug scenario
+                    "client_id": "http-auto-workspace-test",
+                    "transport": "http",
+                    "token": token,
+                }
+            )
+
+            try:
+                # Verify we connected to the correct workspace (not "public")
+                http_workspace = http_server.config.get("workspace")
+                assert http_workspace == workspace, (
+                    f"HTTP client connected to '{http_workspace}' "
+                    f"instead of expected '{workspace}'"
+                )
+                assert http_workspace != "public", (
+                    "HTTP client should not connect to 'public' workspace"
+                )
+
+                # Verify cross-transport service call works
+                svc = await http_server.get_service(
+                    f"{ws_server.config['client_id']}:ws-workspace-test-service"
+                )
+                result = await svc.get_workspace()
+                assert result == workspace
+
+                print(
+                    f"✓ HTTP workspace auto-detected from token: {http_workspace}"
+                )
+            finally:
+                await http_server.disconnect()
+
+        finally:
+            await ws_server.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_http_token_workspace_extraction_unit(self, websocket_server):
+        """Unit test for _extract_workspace_from_token function."""
+        from hypha_rpc.http_client import _extract_workspace_from_token
+        import base64
+        import json
+
+        # Create a fake JWT with a scope containing wid:
+        payload = {
+            "sub": "github|478667",
+            "scope": "ws:ws-user-github|478667#a wid:ws-user-github|478667 cid:test-client",
+            "exp": 9999999999,
+        }
+        payload_b64 = (
+            base64.urlsafe_b64encode(json.dumps(payload).encode())
+            .decode()
+            .rstrip("=")
+        )
+        fake_jwt = f"eyJhbGciOiJIUzI1NiJ9.{payload_b64}.fake_signature"
+
+        result = _extract_workspace_from_token(fake_jwt)
+        assert result == "ws-user-github|478667", f"Expected workspace, got: {result}"
+
+        # Test with no wid: in scope
+        payload_no_wid = {
+            "sub": "test",
+            "scope": "ws:public#a",
+            "exp": 9999999999,
+        }
+        payload_b64_no_wid = (
+            base64.urlsafe_b64encode(json.dumps(payload_no_wid).encode())
+            .decode()
+            .rstrip("=")
+        )
+        fake_jwt_no_wid = (
+            f"eyJhbGciOiJIUzI1NiJ9.{payload_b64_no_wid}.fake_signature"
+        )
+        assert _extract_workspace_from_token(fake_jwt_no_wid) is None
+
+        # Test with invalid token
+        assert _extract_workspace_from_token("not-a-jwt") is None
+        assert _extract_workspace_from_token("") is None
+        assert _extract_workspace_from_token(None) is None
+
+        print("✓ Token workspace extraction unit tests passed")
+
+
 if __name__ == "__main__":
     # Allow running tests directly
     pytest.main([__file__, "-v", "-s"])

@@ -28,6 +28,13 @@ export {
 export { RPC, API_VERSION, schemaFunction };
 export { loadRequirements };
 export { getRTCService, registerRTCService };
+export {
+  generateSigningKeypair,
+  signMessage,
+  verifySignature,
+  createSignableData,
+  isTimestampValid,
+} from "./crypto.js";
 
 const MAX_RETRY = 1000000;
 
@@ -753,6 +760,9 @@ export async function connectToServer(config) {
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
     long_message_chunk_size: config.long_message_chunk_size,
+    signing: config.signing || false,
+    signing_private_key: config.signing_private_key || null,
+    signing_public_key: config.signing_public_key || null,
   });
   await rpc.waitFor("services_registered", config.method_timeout || 120);
   const wm = await rpc.get_manager_service({

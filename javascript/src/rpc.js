@@ -20,6 +20,13 @@ import {
 import { schemaFunction } from "./utils/schema.js";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
+import {
+  signMessage,
+  verifySignature,
+  createSignableData,
+  isTimestampValid,
+  generateSigningKeypair,
+} from "./crypto.js";
 
 export const API_VERSION = 3;
 const CHUNK_SIZE = 1024 * 256;
@@ -375,6 +382,9 @@ export class RPC extends MessageEmitter {
       app_id = null,
       server_base_url = null,
       long_message_chunk_size = null,
+      signing = false,
+      signing_private_key = null,
+      signing_public_key = null,
     },
   ) {
     super(debug);
@@ -401,6 +411,27 @@ export class RPC extends MessageEmitter {
     };
     // Index: target_id -> Set of top-level session keys for fast cleanup
     this._targetIdIndex = {};
+
+    // Signing support (Ed25519)
+    this._signing_enabled = false;
+    this._signing_private_key = null;
+    this._signing_public_key = null;
+    this._signing_ready = null; // Promise that resolves when keypair is ready
+    if (signing) {
+      if (signing_private_key && signing_public_key) {
+        this._signing_private_key = signing_private_key;
+        this._signing_public_key = signing_public_key;
+        this._signing_enabled = true;
+        this._signing_ready = Promise.resolve();
+      } else {
+        // Generate keypair asynchronously
+        this._signing_ready = generateSigningKeypair().then((keyPair) => {
+          this._signing_private_key = keyPair.privateKey;
+          this._signing_public_key = keyPair.publicKey;
+          this._signing_enabled = true;
+        });
+      }
+    }
 
     // Track background tasks for proper cleanup
     this._background_tasks = new Set();
@@ -1269,6 +1300,7 @@ export class RPC extends MessageEmitter {
     run_in_executor,
     visibility,
     authorized_workspaces,
+    require_signature,
   ) {
     if (typeof aObject === "function") {
       // mark the method as a remote method that requires context
@@ -1281,6 +1313,7 @@ export class RPC extends MessageEmitter {
         method_id: "services." + object_id,
         visibility: visibility,
         authorized_workspaces: authorized_workspaces,
+        require_signature: require_signature,
       });
     } else if (aObject instanceof Array || aObject instanceof Object) {
       for (let key of Object.keys(aObject)) {
@@ -1313,6 +1346,7 @@ export class RPC extends MessageEmitter {
           run_in_executor,
           visibility,
           authorized_workspaces,
+          require_signature,
         );
       }
     }
@@ -1379,6 +1413,7 @@ export class RPC extends MessageEmitter {
         }
       }
     }
+    const require_signature = !!api.config.require_signature;
     this._annotate_service_methods(
       api,
       api["id"],
@@ -1386,6 +1421,7 @@ export class RPC extends MessageEmitter {
       run_in_executor,
       visibility,
       authorized_workspaces,
+      require_signature,
     );
 
     if (this._services[api.id]) {
@@ -2056,19 +2092,41 @@ export class RPC extends MessageEmitter {
       this._fire(main_message.type, main_message);
       return;
     }
-    let message_package = msgpack_packb(main_message);
-    if (extra_data) {
-      const extra = msgpack_packb(extra_data);
-      const combined = new Uint8Array(message_package.length + extra.length);
-      combined.set(message_package);
-      combined.set(extra, message_package.length);
-      message_package = combined;
+
+    const _packAndSend = () => {
+      let message_package = msgpack_packb(main_message);
+      if (extra_data) {
+        const extra = msgpack_packb(extra_data);
+        const combined = new Uint8Array(message_package.length + extra.length);
+        combined.set(message_package);
+        combined.set(extra, message_package.length);
+        message_package = combined;
+      }
+      const total_size = message_package.length;
+      if (total_size > this._long_message_chunk_size + 1024) {
+        console.warn(`Sending large message (size=${total_size})`);
+      }
+      return this._emit_message(message_package);
+    };
+
+    // Add Ed25519 signature if signing is enabled
+    if (this._signing_enabled && main_message.to) {
+      main_message._ts = Date.now();
+      const signable = createSignableData(main_message);
+      // signMessage is async (Web Crypto API), so we return a promise chain
+      return signMessage(this._signing_private_key, signable).then(
+        (signature) => {
+          main_message._sig = {
+            v: 1,
+            pub: this._signing_public_key,
+            sig: signature,
+          };
+          return _packAndSend();
+        },
+      );
     }
-    const total_size = message_package.length;
-    if (total_size > this._long_message_chunk_size + 1024) {
-      console.warn(`Sending large message (size=${total_size})`);
-    }
-    return this._emit_message(message_package);
+
+    return _packAndSend();
   }
 
   _generate_remote_method(
@@ -2216,6 +2274,24 @@ export class RPC extends MessageEmitter {
               throw new Error(`Unsupported promise type: ${with_promise}`);
             }
           }
+          // Add Ed25519 signature if signing is enabled
+          if (self._signing_ready) {
+            await self._signing_ready;
+          }
+          if (self._signing_enabled && main_message.to) {
+            main_message._ts = Date.now();
+            const signable = createSignableData(main_message);
+            const signature = await signMessage(
+              self._signing_private_key,
+              signable,
+            );
+            main_message._sig = {
+              v: 1,
+              pub: self._signing_public_key,
+              sig: signature,
+            };
+          }
+
           // The message consists of two segments, the main message and extra data
           let message_package = msgpack_packb(main_message);
           if (extra_data) {
@@ -2537,6 +2613,40 @@ export class RPC extends MessageEmitter {
       } else {
         args = [];
       }
+      // Verify Ed25519 signature if present
+      if (data._sig && typeof data._sig === "object" && data._sig.v === 1) {
+        const signable = createSignableData(data);
+        const sigValid = await verifySignature(
+          new Uint8Array(data._sig.pub),
+          new Uint8Array(data._sig.sig),
+          signable,
+        );
+        const tsValid = isTimestampValid(data._ts || 0, this._method_timeout);
+        data.ctx.signature_valid = sigValid && tsValid;
+        data.ctx.verified_identity = sigValid
+          ? new Uint8Array(data._sig.pub)
+          : null;
+        if (!sigValid) {
+          console.warn("Invalid signature on method call:", method_name);
+        } else if (!tsValid) {
+          console.warn(
+            "Expired timestamp on signed method call:",
+            method_name,
+          );
+        }
+      }
+
+      // Check if service requires signature
+      if (this._method_annotations.has(method)) {
+        if (this._method_annotations.get(method).require_signature) {
+          if (!data.ctx || !data.ctx.signature_valid) {
+            throw new Error(
+              "Signature required for method " + method_name,
+            );
+          }
+        }
+      }
+
       if (
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context

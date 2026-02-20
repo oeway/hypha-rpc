@@ -42,6 +42,19 @@ try:
 except ImportError:
     HAS_PYDANTIC = False
 
+try:
+    from .crypto import (
+        generate_signing_keypair,
+        sign_message,
+        verify_signature,
+        create_signable_data,
+        is_timestamp_valid,
+    )
+
+    HAS_SIGNING = True
+except ImportError:
+    HAS_SIGNING = False
+
 CHUNK_SIZE = 1024 * 256
 API_VERSION = 3
 ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
@@ -534,6 +547,17 @@ class RemoteFunction:
             else:
                 raise RuntimeError(f"Unsupported promise type: {self._with_promise}")
 
+        # Add Ed25519 signature if signing is enabled
+        if self._rpc._signing_enabled and main_message.get("to"):
+            main_message["_ts"] = int(time.time() * 1000)
+            signable = create_signable_data(main_message)
+            signature = sign_message(self._rpc._signing_private_key, signable)
+            main_message["_sig"] = {
+                "v": 1,
+                "pub": self._rpc._signing_public_key,
+                "sig": signature,
+            }
+
         # TWO-SEGMENT MSGPACK PROTOCOL:
         # Encode main message (routing + metadata) and extra data (args/kwargs) separately
         # This allows efficient routing without deserializing the entire payload
@@ -623,6 +647,9 @@ class RPC(MessageEmitter):
         app_id=None,
         server_base_url=None,
         long_message_chunk_size=None,
+        signing=False,
+        signing_private_key=None,
+        signing_public_key=None,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -675,6 +702,26 @@ class RPC(MessageEmitter):
         }
         # Index: target_id -> set of top-level session keys for fast cleanup
         self._target_id_index = {}
+
+        # Signing support (Ed25519)
+        self._signing_enabled = False
+        self._signing_private_key = None
+        self._signing_public_key = None
+        if signing:
+            if not HAS_SIGNING:
+                raise ImportError(
+                    "The 'cryptography' package is required for signing. "
+                    "Install it with: pip install cryptography"
+                )
+            if signing_private_key and signing_public_key:
+                self._signing_private_key = signing_private_key
+                self._signing_public_key = signing_public_key
+            else:
+                self._signing_private_key, self._signing_public_key = (
+                    generate_signing_keypair()
+                )
+            self._signing_enabled = True
+            logger.info("Signing enabled with Ed25519 keypair")
 
         if HAS_PYDANTIC:
             self.register_codec(
@@ -1564,6 +1611,7 @@ class RPC(MessageEmitter):
         run_in_executor=False,
         visibility="protected",
         authorized_workspaces=None,
+        require_signature=False,
     ):
         if callable(a_object):
             # mark the method as a remote method that requires context
@@ -1578,6 +1626,7 @@ class RPC(MessageEmitter):
                 "method_id": "services." + object_id,
                 "visibility": visibility,
                 "authorized_workspaces": authorized_workspaces,
+                "require_signature": require_signature,
             }
         elif isinstance(a_object, (dict, list, tuple)):
             if isinstance(a_object, ObjectProxy):
@@ -1612,6 +1661,7 @@ class RPC(MessageEmitter):
                     run_in_executor=run_in_executor,
                     visibility=visibility,
                     authorized_workspaces=authorized_workspaces,
+                    require_signature=require_signature,
                 )
 
     def add_service(self, api, overwrite=False):
@@ -1677,6 +1727,7 @@ class RPC(MessageEmitter):
                     raise ValueError(
                         f"Each workspace id in authorized_workspaces must be a string, got {type(ws_id)}"
                     )
+        require_signature = bool(api["config"].get("require_signature", False))
         self._annotate_service_methods(
             api,
             api["id"],
@@ -1684,6 +1735,7 @@ class RPC(MessageEmitter):
             run_in_executor=run_in_executor,
             visibility=visibility,
             authorized_workspaces=authorized_workspaces,
+            require_signature=require_signature,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -2305,6 +2357,17 @@ class RPC(MessageEmitter):
             self._fire(main_message["type"], main_message)
             return
 
+        # Add Ed25519 signature if signing is enabled
+        if self._signing_enabled and main_message.get("to"):
+            main_message["_ts"] = int(time.time() * 1000)
+            signable = create_signable_data(main_message)
+            signature = sign_message(self._signing_private_key, signable)
+            main_message["_sig"] = {
+                "v": 1,
+                "pub": self._signing_public_key,
+                "sig": signature,
+            }
+
         # TWO-SEGMENT PROTOCOL: Encode main message (routing, type, target, etc.)
         message_package = msgpack.packb(main_message)
 
@@ -2625,6 +2688,43 @@ class RPC(MessageEmitter):
                 kwargs = args.pop()
             else:
                 kwargs = {}
+
+            # Verify Ed25519 signature if present
+            if "_sig" in data and HAS_SIGNING:
+                sig_info = data["_sig"]
+                if isinstance(sig_info, dict) and sig_info.get("v") == 1:
+                    signable = create_signable_data(data)
+                    sig_valid = verify_signature(
+                        bytes(sig_info["pub"]),
+                        bytes(sig_info["sig"]),
+                        signable,
+                    )
+                    ts_valid = is_timestamp_valid(
+                        data.get("_ts", 0), self._method_timeout
+                    )
+                    data["ctx"]["signature_valid"] = sig_valid and ts_valid
+                    data["ctx"]["verified_identity"] = (
+                        bytes(sig_info["pub"]) if sig_valid else None
+                    )
+                    if not sig_valid:
+                        logger.warning(
+                            "Invalid signature on method call: %s", method_name
+                        )
+                    elif not ts_valid:
+                        logger.warning(
+                            "Expired timestamp on signed method call: %s",
+                            method_name,
+                        )
+                else:
+                    data["ctx"]["signature_valid"] = False
+                    data["ctx"]["verified_identity"] = None
+            # Check if service requires signature
+            if method in self._method_annotations:
+                if self._method_annotations[method].get("require_signature"):
+                    if not data.get("ctx", {}).get("signature_valid"):
+                        raise PermissionError(
+                            f"Signature required for method {method_name}"
+                        )
 
             if method in self._method_annotations and self._method_annotations[
                 method
