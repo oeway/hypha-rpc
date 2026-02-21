@@ -542,7 +542,7 @@ export class RPC extends MessageEmitter {
             const failedServices = [];
 
             // Use timeout for service registration to prevent hanging
-            const serviceRegistrationTimeout = this._method_timeout || 30000;
+            const serviceRegistrationTimeout = (this._method_timeout || 30) * 1000;
 
             for (let service of services) {
               try {
