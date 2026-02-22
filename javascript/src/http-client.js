@@ -708,9 +708,9 @@ export async function _connectToServerHTTP(config) {
     method_timeout: config.method_timeout,
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
-    signing: config.signing || false,
-    signing_private_key: config.signing_private_key || null,
-    signing_public_key: config.signing_public_key || null,
+    encryption: config.encryption || false,
+    encryption_private_key: config.encryption_private_key || null,
+    encryption_public_key: config.encryption_public_key || null,
   });
 
   await rpc.waitFor("services_registered", config.method_timeout || 120);

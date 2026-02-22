@@ -1,4 +1,5 @@
-import { RPC, API_VERSION } from "./rpc.js";
+import { RPC, API_VERSION, _applyEncryptionKeyToService } from "./rpc.js";
+import { publicKeyFromHex } from "./crypto.js";
 import {
   assert,
   randId,
@@ -29,11 +30,11 @@ export { RPC, API_VERSION, schemaFunction };
 export { loadRequirements };
 export { getRTCService, registerRTCService };
 export {
-  generateSigningKeypair,
-  signMessage,
-  verifySignature,
-  createSignableData,
-  isTimestampValid,
+  generateEncryptionKeypair,
+  encryptPayload,
+  decryptPayload,
+  publicKeyToHex,
+  publicKeyFromHex,
 } from "./crypto.js";
 
 const MAX_RETRY = 1000000;
@@ -627,14 +628,20 @@ async function webrtcGetService(wm, query, config) {
   // established with webrtc: true
   const webrtc = config.webrtc !== undefined ? config.webrtc : "auto";
   const webrtc_config = config.webrtc_config;
+  const encryptionPublicKey = config.encryption_public_key;
   if (config.webrtc !== undefined) delete config.webrtc;
   if (config.webrtc_config !== undefined) delete config.webrtc_config;
+  if (config.encryption_public_key !== undefined)
+    delete config.encryption_public_key;
   assert(
     [undefined, true, false, "auto"].includes(webrtc),
     "webrtc must be true, false or 'auto'",
   );
 
   const svc = await wm.getService(query, config);
+  if (encryptionPublicKey) {
+    _applyEncryptionKeyToService(svc, publicKeyFromHex(encryptionPublicKey));
+  }
   if (webrtc === true || webrtc === "auto") {
     if (svc.id.includes(":") && svc.id.includes("/")) {
       try {
@@ -760,9 +767,9 @@ export async function connectToServer(config) {
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
     long_message_chunk_size: config.long_message_chunk_size,
-    signing: config.signing || false,
-    signing_private_key: config.signing_private_key || null,
-    signing_public_key: config.signing_public_key || null,
+    encryption: config.encryption || false,
+    encryption_private_key: config.encryption_private_key || null,
+    encryption_public_key: config.encryption_public_key || null,
   });
   await rpc.waitFor("services_registered", config.method_timeout || 120);
   const wm = await rpc.get_manager_service({
@@ -997,9 +1004,15 @@ export async function connectToServer(config) {
     });
   } else {
     const _getService = wm.getService;
-    wm.getService = (query, config) => {
+    wm.getService = async (query, config) => {
       config = config || {};
-      return _getService(query, config);
+      const encryptionPublicKey = config.encryption_public_key;
+      delete config.encryption_public_key;
+      const svc = await _getService(query, config);
+      if (encryptionPublicKey) {
+        _applyEncryptionKeyToService(svc, publicKeyFromHex(encryptionPublicKey));
+      }
+      return svc;
     };
     wm.getService.__schema__ = _getService.__schema__;
   }

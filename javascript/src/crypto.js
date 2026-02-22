@@ -1,141 +1,101 @@
 /**
- * Cryptographic utilities for hypha-rpc signed and encrypted service calls.
+ * Cryptographic utilities for hypha-rpc end-to-end encrypted service calls.
  *
- * Uses the Web Crypto API (native in browser and Node.js 20+) for Ed25519
- * signing/verification. All output is interoperable with the Python
- * `cryptography` package.
+ * Uses tweetnacl (libsodium-compatible) for:
+ * - Curve25519 ECDH + XSalsa20-Poly1305 authenticated encryption (crypto_box)
+ *
+ * All output is interoperable with the Python PyNaCl package.
+ *
+ * tweetnacl is an optional dependency. If it is not installed, the hex-conversion
+ * helpers still work, but encryption/decryption functions will throw a clear error.
  *
  * @module crypto
  */
 
-import { encode as msgpack_packb } from "@msgpack/msgpack";
+let _nacl = null;
+
+function _requireCrypto() {
+  if (_nacl) return _nacl;
+  try {
+    // Use require() for synchronous loading; works in both bundled and Node.js contexts
+    _nacl = require("tweetnacl");
+    // Handle ES module default export
+    if (_nacl.default) _nacl = _nacl.default;
+    return _nacl;
+  } catch (e) {
+    throw new Error(
+      "The 'tweetnacl' package is required for encryption. " +
+        "Install it with: npm install tweetnacl",
+    );
+  }
+}
 
 /**
- * Get the SubtleCrypto instance, works in both browser and Node.js.
- * @returns {SubtleCrypto}
+ * Convert a 32-byte public key to a 64-character hex string.
+ * @param {Uint8Array} publicKeyBytes - 32-byte raw public key.
+ * @returns {string} 64-character hex string.
  */
-function getSubtle() {
-  if (typeof globalThis !== "undefined" && globalThis.crypto && globalThis.crypto.subtle) {
-    return globalThis.crypto.subtle;
-  }
-  throw new Error(
-    "Web Crypto API (crypto.subtle) is not available in this environment. " +
-    "Ed25519 signing requires a modern browser or Node.js 20+."
+export function publicKeyToHex(publicKeyBytes) {
+  return Array.from(publicKeyBytes, (b) => b.toString(16).padStart(2, "0")).join(
+    "",
   );
 }
 
 /**
- * Generate an Ed25519 signing keypair.
+ * Convert a 64-character hex string to a 32-byte public key.
+ * @param {string} hexString - 64-character hex string.
+ * @returns {Uint8Array} 32-byte raw public key.
+ */
+export function publicKeyFromHex(hexString) {
+  const bytes = new Uint8Array(hexString.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hexString.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
+// --- Curve25519 + XSalsa20-Poly1305 Encryption (crypto_box) ---
+
+/**
+ * Generate a Curve25519 keypair for authenticated encryption.
  * @returns {Promise<{privateKey: Uint8Array, publicKey: Uint8Array}>}
  *   Raw 32-byte private key and 32-byte public key.
  */
-export async function generateSigningKeypair() {
-  const subtle = getSubtle();
-  const keyPair = await subtle.generateKey("Ed25519", true, ["sign", "verify"]);
-
-  // Export raw keys
-  const publicRaw = new Uint8Array(
-    await subtle.exportKey("raw", keyPair.publicKey)
-  );
-
-  // Ed25519 private keys must be exported as PKCS8, then we extract the raw 32 bytes.
-  // PKCS8 for Ed25519 has a fixed 16-byte prefix, with the raw key at bytes 16-48.
-  const pkcs8 = new Uint8Array(
-    await subtle.exportKey("pkcs8", keyPair.privateKey)
-  );
-  const privateRaw = pkcs8.slice(16, 48);
-
-  return { privateKey: privateRaw, publicKey: publicRaw };
+export async function generateEncryptionKeypair() {
+  const nacl = _requireCrypto();
+  const kp = nacl.box.keyPair();
+  return { privateKey: kp.secretKey, publicKey: kp.publicKey };
 }
 
 /**
- * Import a raw 32-byte Ed25519 private key for signing.
- * @param {Uint8Array} privateKeyBytes - 32-byte raw private key.
- * @returns {Promise<CryptoKey>}
+ * Encrypt plaintext using crypto_box (Curve25519 + XSalsa20-Poly1305).
+ * @param {Uint8Array} myPrivateBytes - 32-byte raw Curve25519 private key.
+ * @param {Uint8Array} theirPublicBytes - 32-byte raw Curve25519 public key.
+ * @param {Uint8Array} plaintext - Data to encrypt.
+ * @returns {Promise<{nonce: Uint8Array, ciphertext: Uint8Array}>}
+ *   nonce is 24 bytes; ciphertext includes 16-byte Poly1305 auth tag.
  */
-async function importPrivateKey(privateKeyBytes) {
-  const subtle = getSubtle();
-  // Build PKCS8 wrapper: fixed 16-byte prefix for Ed25519 + 32-byte raw key
-  const pkcs8Prefix = new Uint8Array([
-    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
-    0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
-  ]);
-  const pkcs8 = new Uint8Array(48);
-  pkcs8.set(pkcs8Prefix);
-  pkcs8.set(privateKeyBytes, 16);
-  return subtle.importKey("pkcs8", pkcs8, "Ed25519", false, ["sign"]);
+export async function encryptPayload(myPrivateBytes, theirPublicBytes, plaintext) {
+  const nacl = _requireCrypto();
+  const nonce = nacl.randomBytes(nacl.box.nonceLength); // 24 bytes
+  const ciphertext = nacl.box(plaintext, nonce, theirPublicBytes, myPrivateBytes);
+  return { nonce, ciphertext };
 }
 
 /**
- * Import a raw 32-byte Ed25519 public key for verification.
- * @param {Uint8Array} publicKeyBytes - 32-byte raw public key.
- * @returns {Promise<CryptoKey>}
+ * Decrypt ciphertext using crypto_box (Curve25519 + XSalsa20-Poly1305).
+ * @param {Uint8Array} myPrivateBytes - 32-byte raw Curve25519 private key.
+ * @param {Uint8Array} theirPublicBytes - 32-byte raw Curve25519 public key.
+ * @param {Uint8Array} nonce - 24-byte nonce used during encryption.
+ * @param {Uint8Array} ciphertext - Data to decrypt (includes 16-byte Poly1305 auth tag).
+ * @returns {Promise<Uint8Array>} Decrypted plaintext.
+ * @throws {Error} If decryption/authentication fails.
  */
-async function importPublicKey(publicKeyBytes) {
-  const subtle = getSubtle();
-  return subtle.importKey("raw", publicKeyBytes, "Ed25519", false, ["verify"]);
-}
-
-/**
- * Sign data with an Ed25519 private key.
- * @param {Uint8Array} privateKeyBytes - 32-byte raw Ed25519 private key.
- * @param {Uint8Array} data - Data to sign.
- * @returns {Promise<Uint8Array>} 64-byte Ed25519 signature.
- */
-export async function signMessage(privateKeyBytes, data) {
-  const subtle = getSubtle();
-  const key = await importPrivateKey(privateKeyBytes);
-  const signature = await subtle.sign("Ed25519", key, data);
-  return new Uint8Array(signature);
-}
-
-/**
- * Verify an Ed25519 signature.
- * @param {Uint8Array} publicKeyBytes - 32-byte raw Ed25519 public key.
- * @param {Uint8Array} signature - 64-byte Ed25519 signature.
- * @param {Uint8Array} data - Data that was signed.
- * @returns {Promise<boolean>} True if valid.
- */
-export async function verifySignature(publicKeyBytes, signature, data) {
-  const subtle = getSubtle();
-  try {
-    const key = await importPublicKey(publicKeyBytes);
-    return await subtle.verify("Ed25519", key, signature, data);
-  } catch {
-    return false;
+export async function decryptPayload(myPrivateBytes, theirPublicBytes, nonce, ciphertext) {
+  const nacl = _requireCrypto();
+  const plaintext = nacl.box.open(ciphertext, nonce, theirPublicBytes, myPrivateBytes);
+  if (plaintext === null) {
+    throw new Error("Decryption failed");
   }
-}
-
-/**
- * Create the canonical byte representation of a message for signing.
- *
- * Extracts signing-relevant fields from segment 1 and serializes them
- * with msgpack for deterministic byte output (matching Python's implementation).
- *
- * @param {Object} mainMessage - The RPC message metadata.
- * @returns {Uint8Array} Msgpack-encoded signable fields.
- */
-export function createSignableData(mainMessage) {
-  // Use sorted keys for deterministic output matching Python's msgpack
-  const signable = {
-    _ts: mainMessage._ts,
-    from: mainMessage.from,
-    method: mainMessage.method,
-    to: mainMessage.to,
-    type: mainMessage.type,
-  };
-  return msgpack_packb(signable, { sortKeys: true });
-}
-
-/**
- * Check if a timestamp is within acceptable bounds.
- * @param {number} timestampMs - Timestamp in milliseconds.
- * @param {number} [maxAgeSeconds=300] - Maximum age in seconds.
- * @returns {boolean} True if the timestamp is within bounds.
- */
-export function isTimestampValid(timestampMs, maxAgeSeconds = 300) {
-  const nowMs = Date.now();
-  const ageMs = nowMs - timestampMs;
-  // Allow 5 seconds of clock skew into the future
-  return -5000 <= ageMs && ageMs <= maxAgeSeconds * 1000;
+  return plaintext;
 }

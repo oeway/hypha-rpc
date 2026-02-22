@@ -639,9 +639,9 @@ async def _connect_to_server_http(config: dict):
         loop=config.get("loop"),
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
-        signing=config.get("signing", False),
-        signing_private_key=config.get("signing_private_key"),
-        signing_public_key=config.get("signing_public_key"),
+        encryption=config.get("encryption", False),
+        encryption_private_key=config.get("encryption_private_key"),
+        encryption_public_key=config.get("encryption_public_key"),
     )
 
     await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))
