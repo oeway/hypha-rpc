@@ -21,12 +21,36 @@ import { schemaFunction } from "./utils/schema.js";
 
 import { encode as msgpack_packb, decodeMulti } from "@msgpack/msgpack";
 import {
-  signMessage,
-  verifySignature,
-  createSignableData,
-  isTimestampValid,
-  generateSigningKeypair,
+  publicKeyToHex,
+  publicKeyFromHex,
+  generateEncryptionKeypair,
+  encryptPayload,
+  decryptPayload,
 } from "./crypto.js";
+
+/**
+ * Apply an out-of-band encryption public key to all remote methods in a service.
+ * @param {Object} svc - The decoded service object.
+ * @param {Uint8Array} encPubBytes - 32-byte raw X25519 public key.
+ */
+function _applyEncryptionKeyToService(svc, encPubBytes) {
+  if (svc && typeof svc === "object" && !ArrayBuffer.isView(svc)) {
+    for (const key of Object.keys(svc)) {
+      const value = svc[key];
+      if (typeof value === "function" && value.__rpc_object__) {
+        value.__rpc_object__._renc_pub = encPubBytes;
+      } else if (
+        value &&
+        typeof value === "object" &&
+        !ArrayBuffer.isView(value)
+      ) {
+        _applyEncryptionKeyToService(value, encPubBytes);
+      }
+    }
+  }
+}
+
+export { _applyEncryptionKeyToService };
 
 export const API_VERSION = 3;
 const CHUNK_SIZE = 1024 * 256;
@@ -382,9 +406,9 @@ export class RPC extends MessageEmitter {
       app_id = null,
       server_base_url = null,
       long_message_chunk_size = null,
-      signing = false,
-      signing_private_key = null,
-      signing_public_key = null,
+      encryption = false,
+      encryption_private_key = null,
+      encryption_public_key = null,
     },
   ) {
     super(debug);
@@ -412,23 +436,22 @@ export class RPC extends MessageEmitter {
     // Index: target_id -> Set of top-level session keys for fast cleanup
     this._targetIdIndex = {};
 
-    // Signing support (Ed25519)
-    this._signing_enabled = false;
-    this._signing_private_key = null;
-    this._signing_public_key = null;
-    this._signing_ready = null; // Promise that resolves when keypair is ready
-    if (signing) {
-      if (signing_private_key && signing_public_key) {
-        this._signing_private_key = signing_private_key;
-        this._signing_public_key = signing_public_key;
-        this._signing_enabled = true;
-        this._signing_ready = Promise.resolve();
+    // Encryption support (X25519 ECDH + AES-256-GCM)
+    this._encryption_enabled = false;
+    this._encryption_private_key = null;
+    this._encryption_public_key = null;
+    this._encryption_ready = null;
+    if (encryption) {
+      if (encryption_private_key && encryption_public_key) {
+        this._encryption_private_key = encryption_private_key;
+        this._encryption_public_key = encryption_public_key;
+        this._encryption_enabled = true;
+        this._encryption_ready = Promise.resolve();
       } else {
-        // Generate keypair asynchronously
-        this._signing_ready = generateSigningKeypair().then((keyPair) => {
-          this._signing_private_key = keyPair.privateKey;
-          this._signing_public_key = keyPair.publicKey;
-          this._signing_enabled = true;
+        this._encryption_ready = generateEncryptionKeypair().then((keyPair) => {
+          this._encryption_private_key = keyPair.privateKey;
+          this._encryption_public_key = keyPair.publicKey;
+          this._encryption_enabled = true;
         });
       }
     }
@@ -542,6 +565,7 @@ export class RPC extends MessageEmitter {
             const failedServices = [];
 
             // Use timeout for service registration to prevent hanging
+            // _method_timeout is in seconds, withTimeout expects milliseconds
             const serviceRegistrationTimeout = (this._method_timeout || 30) * 1000;
 
             for (let service of services) {
@@ -692,6 +716,15 @@ export class RPC extends MessageEmitter {
         console.log("No connection to emit message");
       };
     }
+  }
+
+  /**
+   * Return this client's X25519 public key as a 64-char hex string.
+   * Returns null if encryption is not enabled.
+   */
+  getPublicKey() {
+    if (!this._encryption_enabled || !this._encryption_public_key) return null;
+    return publicKeyToHex(this._encryption_public_key);
   }
 
   register_codec(config) {
@@ -1245,7 +1278,8 @@ export class RPC extends MessageEmitter {
     );
   }
   async get_remote_service(service_uri, config) {
-    let { timeout, case_conversion, kwargs_expansion } = config || {};
+    let { timeout, case_conversion, kwargs_expansion, encryption_public_key } =
+      config || {};
     timeout = timeout === undefined ? this._method_timeout : timeout;
     if (!service_uri && this._connection.manager_id) {
       service_uri = "*/" + this._connection.manager_id;
@@ -1279,6 +1313,10 @@ export class RPC extends MessageEmitter {
         "Timeout Error: Failed to get remote service: " + service_uri,
       );
       svc.id = `${provider}:${service_id}`;
+      if (encryption_public_key) {
+        const encPubBytes = publicKeyFromHex(encryption_public_key);
+        _applyEncryptionKeyToService(svc, encPubBytes);
+      }
       if (kwargs_expansion) {
         svc = expandKwargs(svc);
       }
@@ -1300,7 +1338,7 @@ export class RPC extends MessageEmitter {
     run_in_executor,
     visibility,
     authorized_workspaces,
-    require_signature,
+    trusted_keys,
   ) {
     if (typeof aObject === "function") {
       // mark the method as a remote method that requires context
@@ -1313,7 +1351,7 @@ export class RPC extends MessageEmitter {
         method_id: "services." + object_id,
         visibility: visibility,
         authorized_workspaces: authorized_workspaces,
-        require_signature: require_signature,
+        trusted_keys: trusted_keys,
       });
     } else if (aObject instanceof Array || aObject instanceof Object) {
       for (let key of Object.keys(aObject)) {
@@ -1346,7 +1384,7 @@ export class RPC extends MessageEmitter {
           run_in_executor,
           visibility,
           authorized_workspaces,
-          require_signature,
+          trusted_keys,
         );
       }
     }
@@ -1413,7 +1451,24 @@ export class RPC extends MessageEmitter {
         }
       }
     }
-    const require_signature = !!api.config.require_signature;
+    const trustedKeysHex = api.config.trusted_keys;
+    let trusted_keys = null;
+    if (trustedKeysHex && trustedKeysHex.length > 0) {
+      if (!Array.isArray(trustedKeysHex)) {
+        throw new Error(
+          "trusted_keys must be an array of hex-encoded public keys",
+        );
+      }
+      trusted_keys = new Set();
+      for (const keyHex of trustedKeysHex) {
+        if (typeof keyHex !== "string" || keyHex.length !== 64) {
+          throw new Error(
+            `Each trusted key must be a 64-char hex string, got: ${keyHex}`,
+          );
+        }
+        trusted_keys.add(keyHex);
+      }
+    }
     this._annotate_service_methods(
       api,
       api["id"],
@@ -1421,7 +1476,7 @@ export class RPC extends MessageEmitter {
       run_in_executor,
       visibility,
       authorized_workspaces,
-      require_signature,
+      trusted_keys,
     );
 
     if (this._services[api.id]) {
@@ -2093,40 +2148,19 @@ export class RPC extends MessageEmitter {
       return;
     }
 
-    const _packAndSend = () => {
-      let message_package = msgpack_packb(main_message);
-      if (extra_data) {
-        const extra = msgpack_packb(extra_data);
-        const combined = new Uint8Array(message_package.length + extra.length);
-        combined.set(message_package);
-        combined.set(extra, message_package.length);
-        message_package = combined;
-      }
-      const total_size = message_package.length;
-      if (total_size > this._long_message_chunk_size + 1024) {
-        console.warn(`Sending large message (size=${total_size})`);
-      }
-      return this._emit_message(message_package);
-    };
-
-    // Add Ed25519 signature if signing is enabled
-    if (this._signing_enabled && main_message.to) {
-      main_message._ts = Date.now();
-      const signable = createSignableData(main_message);
-      // signMessage is async (Web Crypto API), so we return a promise chain
-      return signMessage(this._signing_private_key, signable).then(
-        (signature) => {
-          main_message._sig = {
-            v: 1,
-            pub: this._signing_public_key,
-            sig: signature,
-          };
-          return _packAndSend();
-        },
-      );
+    let message_package = msgpack_packb(main_message);
+    if (extra_data) {
+      const extra = msgpack_packb(extra_data);
+      const combined = new Uint8Array(message_package.length + extra.length);
+      combined.set(message_package);
+      combined.set(extra, message_package.length);
+      message_package = combined;
     }
-
-    return _packAndSend();
+    const total_size = message_package.length;
+    if (total_size > this._long_message_chunk_size + 1024) {
+      console.warn(`Sending large message (size=${total_size})`);
+    }
+    return this._emit_message(message_package);
   }
 
   _generate_remote_method(
@@ -2274,21 +2308,28 @@ export class RPC extends MessageEmitter {
               throw new Error(`Unsupported promise type: ${with_promise}`);
             }
           }
-          // Add Ed25519 signature if signing is enabled
-          if (self._signing_ready) {
-            await self._signing_ready;
+          // E2E encrypt extra_data if both sides support encryption
+          if (self._encryption_ready) {
+            await self._encryption_ready;
           }
-          if (self._signing_enabled && main_message.to) {
-            main_message._ts = Date.now();
-            const signable = createSignableData(main_message);
-            const signature = await signMessage(
-              self._signing_private_key,
-              signable,
+          if (
+            extra_data &&
+            self._encryption_enabled &&
+            encoded_method._renc_pub
+          ) {
+            const plaintext = msgpack_packb(extra_data);
+            const { nonce, ciphertext } = await encryptPayload(
+              self._encryption_private_key,
+              new Uint8Array(encoded_method._renc_pub),
+              plaintext,
             );
-            main_message._sig = {
-              v: 1,
-              pub: self._signing_public_key,
-              sig: signature,
+            extra_data = {
+              _enc: {
+                v: 2,
+                pub: self._encryption_public_key,
+                nonce: nonce,
+              },
+              data: ciphertext,
             };
           }
 
@@ -2428,11 +2469,49 @@ export class RPC extends MessageEmitter {
       }
       const local_parent = data.parent;
 
+      // E2E Decryption: if extra_data was encrypted, decrypt it now
+      let callerEncryptionPub = null;
+      if (data._enc && this._encryption_enabled) {
+        const encInfo = data._enc;
+        if (encInfo && typeof encInfo === "object" && encInfo.v === 2) {
+          callerEncryptionPub = new Uint8Array(encInfo.pub);
+          const nonce = new Uint8Array(encInfo.nonce);
+          const ciphertext = new Uint8Array(data.data);
+          let plaintext;
+          try {
+            plaintext = await decryptPayload(
+              this._encryption_private_key,
+              callerEncryptionPub,
+              nonce,
+              ciphertext,
+            );
+          } catch (e) {
+            throw new Error(
+              `Decryption failed for method ${method_name}. Invalid key or tampered data.`,
+            );
+          }
+          // Unpack original extra_data and merge back
+          const decoded = [];
+          for (const item of decodeMulti(plaintext)) {
+            decoded.push(item);
+          }
+          const originalExtra = decoded[0];
+          delete data._enc;
+          delete data.data;
+          Object.assign(data, originalExtra);
+          // Store caller's encryption pub in context
+          data.ctx.encryption = true;
+          data.ctx.caller_public_key = publicKeyToHex(callerEncryptionPub);
+        }
+      }
+
       if (data.promise) {
         // Decode the promise with the remote session id
         // Such that the session id will be passed to the remote as a parent session id
         const promise = await this._decode(
-          data.promise === "*" ? this._expand_promise(data) : data.promise,
+          data.promise === "*"
+            ? this._expand_promise(data, callerEncryptionPub)
+            : data.promise,
           data.session,
           local_parent,
           remote_workspace,
@@ -2591,6 +2670,24 @@ export class RPC extends MessageEmitter {
         }
       }
 
+      // Check trusted_keys (encryption-based authentication)
+      if (this._method_annotations.has(method)) {
+        const annotation = this._method_annotations.get(method);
+        if (annotation.trusted_keys) {
+          if (!callerEncryptionPub) {
+            throw new Error(
+              `Encryption required for method ${method_name} (trusted_keys is set)`,
+            );
+          }
+          const callerHex = publicKeyToHex(callerEncryptionPub);
+          if (!annotation.trusted_keys.has(callerHex)) {
+            throw new Error(
+              `Caller's public key is not in the trusted keys list for ${method_name}`,
+            );
+          }
+        }
+      }
+
       // Make sure the parent session is still open
       // Skip for service methods — services are persistent and don't
       // depend on the originating session being alive.
@@ -2613,40 +2710,6 @@ export class RPC extends MessageEmitter {
       } else {
         args = [];
       }
-      // Verify Ed25519 signature if present
-      if (data._sig && typeof data._sig === "object" && data._sig.v === 1) {
-        const signable = createSignableData(data);
-        const sigValid = await verifySignature(
-          new Uint8Array(data._sig.pub),
-          new Uint8Array(data._sig.sig),
-          signable,
-        );
-        const tsValid = isTimestampValid(data._ts || 0, this._method_timeout);
-        data.ctx.signature_valid = sigValid && tsValid;
-        data.ctx.verified_identity = sigValid
-          ? new Uint8Array(data._sig.pub)
-          : null;
-        if (!sigValid) {
-          console.warn("Invalid signature on method call:", method_name);
-        } else if (!tsValid) {
-          console.warn(
-            "Expired timestamp on signed method call:",
-            method_name,
-          );
-        }
-      }
-
-      // Check if service requires signature
-      if (this._method_annotations.has(method)) {
-        if (this._method_annotations.get(method).require_signature) {
-          if (!data.ctx || !data.ctx.signature_valid) {
-            throw new Error(
-              "Signature required for method " + method_name,
-            );
-          }
-        }
-      }
-
       if (
         this._method_annotations.has(method) &&
         this._method_annotations.get(method).require_context
@@ -2891,6 +2954,10 @@ export class RPC extends MessageEmitter {
           _rpromise: "*",
           _rname: aObject.name,
         };
+        // Attach encryption public key for session methods (e.g. resolve/reject)
+        if (this._encryption_enabled) {
+          bObject._renc_pub = this._encryption_public_key;
+        }
         let store = this._get_session_store(session_id, true);
         assert(
           store !== null,
@@ -3347,26 +3414,38 @@ export class RPC extends MessageEmitter {
     return bObject;
   }
 
-  _expand_promise(data) {
+  _expand_promise(data, callerEncryptionPub) {
+    const target = data.from.split("/")[1];
+    const session = data.session;
+    const method = data.method;
+    const heartbeat = {
+      _rtype: "method",
+      _rtarget: target,
+      _rmethod: `${session}.heartbeat`,
+      _rdoc: `heartbeat callback for method: ${method}`,
+    };
+    const resolve = {
+      _rtype: "method",
+      _rtarget: target,
+      _rmethod: `${session}.resolve`,
+      _rdoc: `resolve callback for method: ${method}`,
+    };
+    const reject = {
+      _rtype: "method",
+      _rtarget: target,
+      _rmethod: `${session}.reject`,
+      _rdoc: `reject callback for method: ${method}`,
+    };
+    // Attach caller's encryption pubkey so responses are encrypted back
+    if (callerEncryptionPub) {
+      heartbeat._renc_pub = callerEncryptionPub;
+      resolve._renc_pub = callerEncryptionPub;
+      reject._renc_pub = callerEncryptionPub;
+    }
     return {
-      heartbeat: {
-        _rtype: "method",
-        _rtarget: data.from.split("/")[1],
-        _rmethod: data.session + ".heartbeat",
-        _rdoc: `heartbeat callback for method: ${data.method}`,
-      },
-      resolve: {
-        _rtype: "method",
-        _rtarget: data.from.split("/")[1],
-        _rmethod: data.session + ".resolve",
-        _rdoc: `resolve callback for method: ${data.method}`,
-      },
-      reject: {
-        _rtype: "method",
-        _rtarget: data.from.split("/")[1],
-        _rmethod: data.session + ".reject",
-        _rdoc: `reject callback for method: ${data.method}`,
-      },
+      heartbeat,
+      resolve,
+      reject,
       interval: data.t,
     };
   }

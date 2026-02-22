@@ -811,6 +811,7 @@ async def webrtc_get_service(wm, query, config=None, **kwargs):
     # established with webrtc=True
     webrtc = config.get("webrtc", "auto")
     webrtc_config = config.get("webrtc_config")
+    encryption_public_key_hex = config.pop("encryption_public_key", None)
     if "webrtc" in config:
         del config["webrtc"]
     if "webrtc_config" in config:
@@ -823,6 +824,10 @@ async def webrtc_get_service(wm, query, config=None, **kwargs):
     ], "webrtc must be true, false or 'auto'"
     # pass other kwargs to the original get_service function
     svc = await wm.get_service(query, config)
+    if encryption_public_key_hex:
+        from .rpc import _apply_encryption_key_to_service
+        enc_pub_bytes = bytes.fromhex(encryption_public_key_hex)
+        _apply_encryption_key_to_service(svc, enc_pub_bytes)
 
     from .webrtc_client import AIORTC_AVAILABLE, get_rtc_service
 
@@ -914,9 +919,9 @@ async def _connect_to_server(config):
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
         long_message_chunk_size=config.get("long_message_chunk_size"),
-        signing=config.get("signing", False),
-        signing_private_key=config.get("signing_private_key"),
-        signing_public_key=config.get("signing_public_key"),
+        encryption=config.get("encryption", False),
+        encryption_private_key=config.get("encryption_private_key"),
+        encryption_public_key=config.get("encryption_public_key"),
     )
     await rpc.wait_for("services_registered", timeout=config.get("method_timeout", 120))
     wm = await rpc.get_manager_service(
@@ -1183,7 +1188,13 @@ async def _connect_to_server(config):
         async def get_service(query, config=None, **kwargs):
             config = config or {}
             config.update(kwargs)
-            return await _get_service(query, config=config)
+            encryption_public_key_hex = config.pop("encryption_public_key", None)
+            svc = await _get_service(query, config=config)
+            if encryption_public_key_hex:
+                from .rpc import _apply_encryption_key_to_service
+                enc_pub_bytes = bytes.fromhex(encryption_public_key_hex)
+                _apply_encryption_key_to_service(svc, enc_pub_bytes)
+            return svc
 
         get_service.__schema__ = wm.get_service.__schema__
         wm.get_service = get_service

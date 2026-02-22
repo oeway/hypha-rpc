@@ -44,16 +44,15 @@ except ImportError:
 
 try:
     from .crypto import (
-        generate_signing_keypair,
-        sign_message,
-        verify_signature,
-        create_signable_data,
-        is_timestamp_valid,
+        generate_encryption_keypair,
+        encrypt_payload,
+        decrypt_payload,
+        public_key_to_hex,
     )
 
-    HAS_SIGNING = True
+    HAS_CRYPTO = True
 except ImportError:
-    HAS_SIGNING = False
+    HAS_CRYPTO = False
 
 CHUNK_SIZE = 1024 * 256
 API_VERSION = 3
@@ -417,6 +416,7 @@ class RemoteFunction:
         self._with_promise = with_promise
 
         self.__rpc_object__ = encoded_method.copy()
+        self._target_encryption_pub = encoded_method.get("_renc_pub")
         method_id = encoded_method["_rmethod"]
         self.__name__ = encoded_method.get("_rname") or method_id.split(".")[-1]
         if "#" in self.__name__:
@@ -547,15 +547,25 @@ class RemoteFunction:
             else:
                 raise RuntimeError(f"Unsupported promise type: {self._with_promise}")
 
-        # Add Ed25519 signature if signing is enabled
-        if self._rpc._signing_enabled and main_message.get("to"):
-            main_message["_ts"] = int(time.time() * 1000)
-            signable = create_signable_data(main_message)
-            signature = sign_message(self._rpc._signing_private_key, signable)
-            main_message["_sig"] = {
-                "v": 1,
-                "pub": self._rpc._signing_public_key,
-                "sig": signature,
+        # E2E encrypt extra_data if both sides support encryption
+        if (
+            extra_data
+            and self._rpc._encryption_enabled
+            and self._target_encryption_pub
+        ):
+            plaintext = msgpack.packb(extra_data)
+            nonce, ciphertext = encrypt_payload(
+                self._rpc._encryption_private_key,
+                bytes(self._target_encryption_pub),
+                plaintext,
+            )
+            extra_data = {
+                "_enc": {
+                    "v": 2,
+                    "pub": self._rpc._encryption_public_key,
+                    "nonce": nonce,
+                },
+                "data": ciphertext,
             }
 
         # TWO-SEGMENT MSGPACK PROTOCOL:
@@ -629,6 +639,22 @@ class RemoteFunction:
         return self.__repr__()
 
 
+def _apply_encryption_key_to_service(svc, enc_pub_bytes):
+    """Apply an out-of-band encryption public key to all RemoteFunction objects in a service."""
+    if isinstance(svc, dict):
+        for value in svc.values():
+            if isinstance(value, RemoteFunction):
+                value._target_encryption_pub = enc_pub_bytes
+            elif isinstance(value, (dict, list)):
+                _apply_encryption_key_to_service(value, enc_pub_bytes)
+    elif isinstance(svc, (list, tuple)):
+        for item in svc:
+            if isinstance(item, RemoteFunction):
+                item._target_encryption_pub = enc_pub_bytes
+            elif isinstance(item, (dict, list)):
+                _apply_encryption_key_to_service(item, enc_pub_bytes)
+
+
 class RPC(MessageEmitter):
     """Represent the RPC."""
 
@@ -647,9 +673,9 @@ class RPC(MessageEmitter):
         app_id=None,
         server_base_url=None,
         long_message_chunk_size=None,
-        signing=False,
-        signing_private_key=None,
-        signing_public_key=None,
+        encryption=False,
+        encryption_private_key=None,
+        encryption_public_key=None,
     ):
         """Set up instance."""
         self._codecs = codecs or {}
@@ -703,25 +729,25 @@ class RPC(MessageEmitter):
         # Index: target_id -> set of top-level session keys for fast cleanup
         self._target_id_index = {}
 
-        # Signing support (Ed25519)
-        self._signing_enabled = False
-        self._signing_private_key = None
-        self._signing_public_key = None
-        if signing:
-            if not HAS_SIGNING:
+        # Encryption support (X25519 ECDH + AES-256-GCM)
+        self._encryption_enabled = False
+        self._encryption_private_key = None
+        self._encryption_public_key = None
+        if encryption:
+            if not HAS_CRYPTO:
                 raise ImportError(
-                    "The 'cryptography' package is required for signing. "
+                    "The 'cryptography' package is required for encryption. "
                     "Install it with: pip install cryptography"
                 )
-            if signing_private_key and signing_public_key:
-                self._signing_private_key = signing_private_key
-                self._signing_public_key = signing_public_key
+            if encryption_private_key and encryption_public_key:
+                self._encryption_private_key = encryption_private_key
+                self._encryption_public_key = encryption_public_key
             else:
-                self._signing_private_key, self._signing_public_key = (
-                    generate_signing_keypair()
+                self._encryption_private_key, self._encryption_public_key = (
+                    generate_encryption_keypair()
                 )
-            self._signing_enabled = True
-            logger.info("Signing enabled with Ed25519 keypair")
+            self._encryption_enabled = True
+            logger.info("Encryption enabled with X25519 keypair")
 
         if HAS_PYDANTIC:
             self.register_codec(
@@ -936,6 +962,15 @@ class RPC(MessageEmitter):
             self._emit_message = _emit_message
 
         self.NUMPY_MODULE = _numpy_module if _numpy_module is not None else False
+
+    def get_public_key(self):
+        """Return this client's X25519 public key as a 64-char hex string.
+
+        Returns None if encryption is not enabled.
+        """
+        if not self._encryption_enabled or self._encryption_public_key is None:
+            return None
+        return self._encryption_public_key.hex()
 
     def register_codec(self, config: dict):
         """Register codec."""
@@ -1565,6 +1600,7 @@ class RPC(MessageEmitter):
         config.update(kwargs)
         timeout = config.get("timeout", self._method_timeout)
         case_conversion = config.get("case_conversion")
+        encryption_public_key_hex = config.pop("encryption_public_key", None)
         if service_uri is None and self._connection.manager_id:
             service_uri = "*/" + self._connection.manager_id
         elif ":" not in service_uri:
@@ -1595,6 +1631,9 @@ class RPC(MessageEmitter):
             svc["id"] = service_uri
             if isinstance(svc, ObjectProxy):
                 svc = svc.toDict()
+            if encryption_public_key_hex:
+                enc_pub_bytes = bytes.fromhex(encryption_public_key_hex)
+                _apply_encryption_key_to_service(svc, enc_pub_bytes)
             if case_conversion:
                 return RemoteService.fromDict(convert_case(svc, case_conversion))
             else:
@@ -1611,7 +1650,7 @@ class RPC(MessageEmitter):
         run_in_executor=False,
         visibility="protected",
         authorized_workspaces=None,
-        require_signature=False,
+        trusted_keys=None,
     ):
         if callable(a_object):
             # mark the method as a remote method that requires context
@@ -1626,7 +1665,7 @@ class RPC(MessageEmitter):
                 "method_id": "services." + object_id,
                 "visibility": visibility,
                 "authorized_workspaces": authorized_workspaces,
-                "require_signature": require_signature,
+                "trusted_keys": trusted_keys,
             }
         elif isinstance(a_object, (dict, list, tuple)):
             if isinstance(a_object, ObjectProxy):
@@ -1661,7 +1700,7 @@ class RPC(MessageEmitter):
                     run_in_executor=run_in_executor,
                     visibility=visibility,
                     authorized_workspaces=authorized_workspaces,
-                    require_signature=require_signature,
+                    trusted_keys=trusted_keys,
                 )
 
     def add_service(self, api, overwrite=False):
@@ -1727,7 +1766,21 @@ class RPC(MessageEmitter):
                     raise ValueError(
                         f"Each workspace id in authorized_workspaces must be a string, got {type(ws_id)}"
                     )
-        require_signature = bool(api["config"].get("require_signature", False))
+        trusted_keys_hex = api["config"].get("trusted_keys")
+        trusted_keys = None
+        if trusted_keys_hex:
+            if not isinstance(trusted_keys_hex, (list, tuple)):
+                raise ValueError(
+                    "trusted_keys must be a list of hex-encoded public keys"
+                )
+            trusted_keys = set()
+            for key_hex in trusted_keys_hex:
+                if not isinstance(key_hex, str) or len(key_hex) != 64:
+                    raise ValueError(
+                        f"Each trusted key must be a 64-char hex string, "
+                        f"got: {key_hex!r}"
+                    )
+                trusted_keys.add(key_hex)
         self._annotate_service_methods(
             api,
             api["id"],
@@ -1735,7 +1788,7 @@ class RPC(MessageEmitter):
             run_in_executor=run_in_executor,
             visibility=visibility,
             authorized_workspaces=authorized_workspaces,
-            require_signature=require_signature,
+            trusted_keys=trusted_keys,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -2357,17 +2410,6 @@ class RPC(MessageEmitter):
             self._fire(main_message["type"], main_message)
             return
 
-        # Add Ed25519 signature if signing is enabled
-        if self._signing_enabled and main_message.get("to"):
-            main_message["_ts"] = int(time.time() * 1000)
-            signable = create_signable_data(main_message)
-            signature = sign_message(self._signing_private_key, signable)
-            main_message["_sig"] = {
-                "v": 1,
-                "pub": self._signing_public_key,
-                "sig": signature,
-            }
-
         # TWO-SEGMENT PROTOCOL: Encode main message (routing, type, target, etc.)
         message_package = msgpack.packb(main_message)
 
@@ -2497,13 +2539,45 @@ class RPC(MessageEmitter):
 
             local_parent = data.get("parent")
 
+            # E2E Decryption: if extra_data was encrypted, decrypt it now
+            caller_encryption_pub = None
+            if "_enc" in data and self._encryption_enabled:
+                enc_info = data["_enc"]
+                if isinstance(enc_info, dict) and enc_info.get("v") == 2:
+                    caller_encryption_pub = bytes(enc_info["pub"])
+                    nonce = bytes(enc_info["nonce"])
+                    ciphertext = bytes(data["data"])
+                    try:
+                        plaintext = decrypt_payload(
+                            self._encryption_private_key,
+                            caller_encryption_pub,
+                            nonce,
+                            ciphertext,
+                        )
+                    except Exception:
+                        raise PermissionError(
+                            f"Decryption failed for method {method_name}. "
+                            "Invalid key or tampered data."
+                        )
+                    # Unpack the original extra_data and merge back
+                    original_extra = msgpack.unpackb(plaintext)
+                    # Remove encryption envelope, merge original fields
+                    del data["_enc"]
+                    del data["data"]
+                    data.update(original_extra)
+                    # Store caller's encryption pub in context
+                    data["ctx"]["encryption"] = True
+                    data["ctx"]["caller_public_key"] = public_key_to_hex(
+                        caller_encryption_pub
+                    )
+
             if "promise" in data:
                 # Decode the promise with the remote session id
                 # such that the session id will be passed to the remote
                 # as a parent session id.
                 promise = self._decode(
                     (
-                        self._expand_promise(data)
+                        self._expand_promise(data, caller_encryption_pub)
                         if data["promise"] == "*"
                         else data["promise"]
                     ),
@@ -2667,6 +2741,22 @@ class RPC(MessageEmitter):
                         f" to target {session_target_id}"
                     )
 
+            # Check trusted_keys (encryption-based authentication)
+            if method in self._method_annotations:
+                trusted_keys = self._method_annotations[method].get("trusted_keys")
+                if trusted_keys is not None:
+                    if caller_encryption_pub is None:
+                        raise PermissionError(
+                            f"Encryption required for method {method_name} "
+                            "(trusted_keys is set)"
+                        )
+                    caller_hex = public_key_to_hex(caller_encryption_pub)
+                    if caller_hex not in trusted_keys:
+                        raise PermissionError(
+                            f"Caller's public key is not in the trusted keys "
+                            f"list for {method_name}"
+                        )
+
             # Make sure the parent session is still open
             # Skip for service methods — services are persistent and don't
             # depend on the originating session being alive.
@@ -2688,43 +2778,6 @@ class RPC(MessageEmitter):
                 kwargs = args.pop()
             else:
                 kwargs = {}
-
-            # Verify Ed25519 signature if present
-            if "_sig" in data and HAS_SIGNING:
-                sig_info = data["_sig"]
-                if isinstance(sig_info, dict) and sig_info.get("v") == 1:
-                    signable = create_signable_data(data)
-                    sig_valid = verify_signature(
-                        bytes(sig_info["pub"]),
-                        bytes(sig_info["sig"]),
-                        signable,
-                    )
-                    ts_valid = is_timestamp_valid(
-                        data.get("_ts", 0), self._method_timeout
-                    )
-                    data["ctx"]["signature_valid"] = sig_valid and ts_valid
-                    data["ctx"]["verified_identity"] = (
-                        bytes(sig_info["pub"]) if sig_valid else None
-                    )
-                    if not sig_valid:
-                        logger.warning(
-                            "Invalid signature on method call: %s", method_name
-                        )
-                    elif not ts_valid:
-                        logger.warning(
-                            "Expired timestamp on signed method call: %s",
-                            method_name,
-                        )
-                else:
-                    data["ctx"]["signature_valid"] = False
-                    data["ctx"]["verified_identity"] = None
-            # Check if service requires signature
-            if method in self._method_annotations:
-                if self._method_annotations[method].get("require_signature"):
-                    if not data.get("ctx", {}).get("signature_valid"):
-                        raise PermissionError(
-                            f"Signature required for method {method_name}"
-                        )
 
             if method in self._method_annotations and self._method_annotations[
                 method
@@ -2959,6 +3012,9 @@ class RPC(MessageEmitter):
                     "_rname": getattr(a_object, "__name__", None),
                     "_rpromise": "*",
                 }
+                # Attach encryption public key for session methods (e.g. resolve/reject)
+                if self._encryption_enabled:
+                    b_object["_renc_pub"] = self._encryption_public_key
                 store = self._get_session_store(session_id, create=True)
                 store[object_id] = a_object
 
@@ -3431,25 +3487,36 @@ class RPC(MessageEmitter):
             b_object = a_object
         return b_object
 
-    def _expand_promise(self, data):
+    def _expand_promise(self, data, caller_encryption_pub=None):
+        target = data["from"].split("/")[1]
+        session = data["session"]
+        method = data["method"]
+        heartbeat = {
+            "_rtype": "method",
+            "_rtarget": target,
+            "_rmethod": f"{session}.heartbeat",
+            "_rdoc": f"heartbeat callback for method: {method}",
+        }
+        resolve = {
+            "_rtype": "method",
+            "_rtarget": target,
+            "_rmethod": f"{session}.resolve",
+            "_rdoc": f"resolve callback for method: {method}",
+        }
+        reject = {
+            "_rtype": "method",
+            "_rtarget": target,
+            "_rmethod": f"{session}.reject",
+            "_rdoc": f"reject callback for method: {method}",
+        }
+        # Attach caller's encryption pubkey so responses are encrypted back
+        if caller_encryption_pub is not None:
+            heartbeat["_renc_pub"] = caller_encryption_pub
+            resolve["_renc_pub"] = caller_encryption_pub
+            reject["_renc_pub"] = caller_encryption_pub
         return {
-            "heartbeat": {
-                "_rtype": "method",
-                "_rtarget": data["from"].split("/")[1],
-                "_rmethod": data["session"] + ".heartbeat",
-                "_rdoc": f"heartbeat callback for method: {data['method']}",
-            },
-            "resolve": {
-                "_rtype": "method",
-                "_rtarget": data["from"].split("/")[1],
-                "_rmethod": data["session"] + ".resolve",
-                "_rdoc": f"resolve callback for method: {data['method']}",
-            },
-            "reject": {
-                "_rtype": "method",
-                "_rtarget": data["from"].split("/")[1],
-                "_rmethod": data["session"] + ".reject",
-                "_rdoc": f"reject callback for method: {data['method']}",
-            },
+            "heartbeat": heartbeat,
+            "resolve": resolve,
+            "reject": reject,
             "interval": data["t"],
         }

@@ -811,3 +811,111 @@ register_rtc_service(
 ```
 
 Please note that the synchronous wrapper is designed to provide a convenient synchronous interface for the asynchronous `hypha-rpc` API. It utilizes asyncio and threading under the hood to achieve synchronous behavior.
+
+## End-to-End Encryption
+
+Hypha RPC supports opt-in end-to-end encryption (E2E) so that the Hypha server — which acts as a message relay — cannot read or tamper with RPC payloads. Encryption uses **libsodium's `crypto_box`** (Curve25519 + XSalsa20-Poly1305) via [PyNaCl](https://pynacl.readthedocs.io/) in Python and [tweetnacl](https://tweetnacl.js.org/) in JavaScript.
+
+The encryption libraries are **optional dependencies** — install them only if you need E2E encryption:
+
+```bash
+# Python
+pip install hypha-rpc[encryption]
+
+# JavaScript (tweetnacl is installed automatically as an optional dependency)
+npm install tweetnacl
+```
+
+For a full security analysis, threat model, and architectural details, see [docs/security.md](docs/security.md).
+
+### Quick Start
+
+**1. Enable encryption when connecting:**
+
+```python
+from hypha_rpc import connect_to_server
+
+server = await connect_to_server({
+    "server_url": "https://hypha.aicell.io",
+    "encryption": True,  # Generates a Curve25519 keypair
+})
+```
+
+```javascript
+const server = await hyphaWebsocketClient.connectToServer({
+    server_url: "https://hypha.aicell.io",
+    encryption: true,
+});
+```
+
+**2. Register an encrypted service with `trusted_keys`:**
+
+```python
+# Get this client's public key (hex string) — share it out-of-band
+my_pub_key = server.rpc.get_public_key()
+
+await server.register_service({
+    "id": "secure-analysis",
+    "config": {
+        "visibility": "protected",
+        "trusted_keys": [authorized_caller_pub_key],  # Only these callers allowed
+    },
+    "analyze": lambda data: do_analysis(data),
+})
+```
+
+```javascript
+const myPubKey = server.rpc.getPublicKey();
+
+await server.registerService({
+    id: "secure-analysis",
+    config: {
+        visibility: "protected",
+        trusted_keys: [authorizedCallerPubKey],
+    },
+    analyze: (data) => doAnalysis(data),
+});
+```
+
+**3. Call the encrypted service (caller provides the target's public key):**
+
+```python
+# The caller must know the service's public key (exchanged out-of-band)
+svc = await client.get_service("secure-analysis",
+    encryption_public_key=service_pub_key
+)
+result = await svc.analyze(sensitive_data)  # Encrypted transparently
+```
+
+```javascript
+const svc = await client.getService("secure-analysis", {
+    encryption_public_key: servicePubKey,
+});
+const result = await svc.analyze(sensitiveData);
+```
+
+### Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Out-of-band key exchange** | Public keys are shared independently of the server (e.g. config file, secure channel). The server never distributes or sees encryption keys. |
+| **`trusted_keys`** | A list of hex-encoded Curve25519 public keys. Only callers whose key is in the list can invoke the service. |
+| **`encryption_public_key`** | Passed by the caller to `get_service()`. Tells hypha-rpc which public key to encrypt payloads for. |
+| **Transparent encryption** | Once configured, all RPC calls and return values are automatically encrypted/decrypted. No changes to service function signatures. |
+| **Selective encryption** | Encryption is opt-in per service. Unencrypted services continue to work as before. |
+
+### Generating and Sharing Keys
+
+```python
+from hypha_rpc.crypto import generate_encryption_keypair, public_key_to_hex
+
+private_key, public_key = generate_encryption_keypair()
+print(public_key_to_hex(public_key))  # 64-char hex string to share
+```
+
+```javascript
+import { generateEncryptionKeypair, publicKeyToHex } from "hypha-rpc";
+
+const { privateKey, publicKey } = await generateEncryptionKeypair();
+console.log(publicKeyToHex(publicKey));  // 64-char hex string to share
+```

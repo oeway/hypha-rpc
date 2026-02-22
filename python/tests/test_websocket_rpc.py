@@ -4863,17 +4863,15 @@ async def test_rintf_session_lifecycle(websocket_server):
 
 
 @pytest.mark.asyncio
-async def test_signed_service_calls(websocket_server):
-    """Test Ed25519 signed service calls between two clients."""
-    from hypha_rpc.crypto import generate_signing_keypair, verify_signature
-
-    # Client 1: service provider (requires signed calls)
+async def test_encrypted_service_calls(websocket_server):
+    """Test E2E encrypted service calls between two clients."""
+    # Service provider with encryption
     server = await connect_to_server(
         {
-            "name": "signing-server",
+            "name": "encryption-server",
             "server_url": WS_SERVER_URL,
-            "client_id": "signing-server-client",
-            "signing": True,
+            "client_id": "encryption-server-client",
+            "encryption": True,
         }
     )
     workspace = server.config.workspace
@@ -4884,7 +4882,7 @@ async def test_signed_service_calls(websocket_server):
     def verified_echo(message, context=None):
         """Echo that records the context for verification."""
         received_contexts.append(context)
-        return f"verified: {message}"
+        return f"encrypted: {message}"
 
     def verified_add(a, b, context=None):
         received_contexts.append(context)
@@ -4892,10 +4890,9 @@ async def test_signed_service_calls(websocket_server):
 
     await server.register_service(
         {
-            "id": "signed-service",
+            "id": "encrypted-service",
             "config": {
                 "require_context": True,
-                "require_signature": True,
                 "visibility": "protected",
             },
             "echo": verified_echo,
@@ -4903,102 +4900,59 @@ async def test_signed_service_calls(websocket_server):
         }
     )
 
-    # Client 2: caller with signing enabled, same workspace
+    # Caller with encryption enabled, same workspace
     client = await connect_to_server(
         {
-            "name": "signing-client",
+            "name": "encryption-client",
             "server_url": WS_SERVER_URL,
-            "client_id": "signing-caller-client",
+            "client_id": "encryption-caller-client",
             "workspace": workspace,
             "token": token,
-            "signing": True,
+            "encryption": True,
         }
     )
 
-    svc = await client.get_service("signed-service")
+    # Caller provides server's public key out-of-band (not via the server)
+    server_pub_key = server.rpc.get_public_key()
+    svc = await client.get_service(
+        "encrypted-service", encryption_public_key=server_pub_key
+    )
 
-    # Test 1: Signed call should succeed
-    result = await svc.echo("hello signed world")
-    assert result == "verified: hello signed world"
+    # Test 1: Encrypted call should succeed
+    result = await svc.echo("hello encrypted world")
+    assert result == "encrypted: hello encrypted world"
 
-    # Verify context had signature info
+    # Verify context had encryption info
     assert len(received_contexts) == 1
     ctx = received_contexts[0]
-    assert ctx["signature_valid"] is True
-    assert ctx["verified_identity"] is not None
-    # The verified_identity should be the caller's public key (32 bytes)
-    assert len(ctx["verified_identity"]) == 32
+    assert ctx.get("encryption") is True
+    assert ctx.get("caller_public_key") is not None
+    assert len(ctx["caller_public_key"]) == 64  # hex string
 
-    # Test 2: Another signed call
+    # Test 2: Another encrypted call
     result2 = await svc.add(5, 3)
     assert result2 == 8
 
     # Test 3: The caller's public key should match across calls
-    assert received_contexts[1]["verified_identity"] == received_contexts[0]["verified_identity"]
+    assert received_contexts[1]["caller_public_key"] == received_contexts[0]["caller_public_key"]
 
     # Test 4: The caller's public key should be the one from the client's RPC
-    assert bytes(received_contexts[0]["verified_identity"]) == client.rpc._signing_public_key
+    assert received_contexts[0]["caller_public_key"] == client.rpc.get_public_key()
 
     await client.disconnect()
     await server.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_unsigned_call_rejected_by_require_signature(websocket_server):
-    """Test that unsigned calls are rejected when require_signature is set."""
-    # Service provider requires signatures
+async def test_unencrypted_to_encrypted_service(websocket_server):
+    """Test that unencrypted calls to encrypted services work (no encryption applied)."""
+    # Service provider with encryption
     server = await connect_to_server(
         {
-            "name": "sig-required-server",
+            "name": "enc-service-server",
             "server_url": WS_SERVER_URL,
-            "client_id": "sig-required-server-client",
-        }
-    )
-    workspace = server.config.workspace
-    token = await server.generate_token()
-
-    await server.register_service(
-        {
-            "id": "sig-required-service",
-            "config": {
-                "require_context": True,
-                "require_signature": True,
-                "visibility": "protected",
-            },
-            "echo": lambda msg, context=None: msg,
-        }
-    )
-
-    # Client WITHOUT signing, same workspace
-    client = await connect_to_server(
-        {
-            "name": "unsigned-client",
-            "server_url": WS_SERVER_URL,
-            "client_id": "unsigned-caller-client",
-            "workspace": workspace,
-            "token": token,
-        }
-    )
-
-    svc = await client.get_service("sig-required-service")
-
-    # Unsigned call should be rejected
-    with pytest.raises(Exception, match="Signature required"):
-        await svc.echo("should fail")
-
-    await client.disconnect()
-    await server.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_signed_calls_optional_service(websocket_server):
-    """Test that signed calls work with services that don't require signatures."""
-    # Service that accepts but doesn't require signatures
-    server = await connect_to_server(
-        {
-            "name": "optional-sig-server",
-            "server_url": WS_SERVER_URL,
-            "client_id": "optional-sig-server-client",
+            "client_id": "enc-service-server-client",
+            "encryption": True,
         }
     )
     workspace = server.config.workspace
@@ -5008,7 +4962,7 @@ async def test_signed_calls_optional_service(websocket_server):
 
     await server.register_service(
         {
-            "id": "optional-sig-service",
+            "id": "enc-optional-service",
             "config": {
                 "require_context": True,
                 "visibility": "protected",
@@ -5019,83 +4973,527 @@ async def test_signed_calls_optional_service(websocket_server):
         }
     )
 
-    # Signed client, same workspace
-    signed_client = await connect_to_server(
+    # Encrypted client, same workspace
+    enc_client = await connect_to_server(
         {
-            "name": "signed-caller",
+            "name": "enc-caller",
             "server_url": WS_SERVER_URL,
-            "client_id": "signed-optional-caller",
+            "client_id": "enc-optional-caller",
             "workspace": workspace,
             "token": token,
-            "signing": True,
+            "encryption": True,
         }
     )
 
-    # Unsigned client, same workspace
-    unsigned_client = await connect_to_server(
+    # Unencrypted client, same workspace
+    plain_client = await connect_to_server(
         {
-            "name": "unsigned-caller",
+            "name": "plain-caller",
             "server_url": WS_SERVER_URL,
-            "client_id": "unsigned-optional-caller",
+            "client_id": "plain-optional-caller",
             "workspace": workspace,
             "token": token,
         }
     )
 
-    svc_signed = await signed_client.get_service("optional-sig-service")
-    svc_unsigned = await unsigned_client.get_service("optional-sig-service")
+    # Encrypted client provides server's public key out-of-band
+    server_pub_key = server.rpc.get_public_key()
+    svc_enc = await enc_client.get_service(
+        "enc-optional-service", encryption_public_key=server_pub_key
+    )
+    # Plain client does NOT provide encryption key
+    svc_plain = await plain_client.get_service("enc-optional-service")
 
     # Both should succeed
-    result1 = await svc_signed.echo("signed msg")
-    assert result1 == "echo: signed msg"
-    assert contexts[-1]["signature_valid"] is True
+    result1 = await svc_enc.echo("encrypted msg")
+    assert result1 == "echo: encrypted msg"
+    assert contexts[-1].get("encryption") is True
 
-    result2 = await svc_unsigned.echo("unsigned msg")
-    assert result2 == "echo: unsigned msg"
-    # Unsigned calls should not have signature_valid in context
-    assert "signature_valid" not in contexts[-1] or contexts[-1].get("signature_valid") is None
+    result2 = await svc_plain.echo("plain msg")
+    assert result2 == "echo: plain msg"
+    # Unencrypted calls should not have encryption in context
+    assert "encryption" not in contexts[-1] or contexts[-1].get("encryption") is None
 
-    await signed_client.disconnect()
-    await unsigned_client.disconnect()
+    await enc_client.disconnect()
+    await plain_client.disconnect()
     await server.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_crypto_module_interop(websocket_server):
-    """Test the crypto module functions independently."""
+async def test_crypto_module_encryption(websocket_server):
+    """Test the crypto module encryption functions independently."""
     from hypha_rpc.crypto import (
-        generate_signing_keypair,
-        sign_message,
-        verify_signature,
-        create_signable_data,
-        is_timestamp_valid,
+        generate_encryption_keypair,
+        encrypt_payload,
+        decrypt_payload,
+        public_key_to_hex,
+        public_key_from_hex,
     )
 
-    # Generate keypair
-    private_key, public_key = generate_signing_keypair()
-    assert len(private_key) == 32
-    assert len(public_key) == 32
+    # Generate keypairs for two parties
+    priv_a, pub_a = generate_encryption_keypair()
+    assert len(priv_a) == 32
+    assert len(pub_a) == 32
 
-    # Sign and verify
-    data = b"hello world"
-    signature = sign_message(private_key, data)
-    assert len(signature) == 64
-    assert verify_signature(public_key, signature, data) is True
+    priv_b, pub_b = generate_encryption_keypair()
+    assert len(priv_b) == 32
+    assert len(pub_b) == 32
 
-    # Tampered data should fail
-    assert verify_signature(public_key, signature, b"tampered") is False
+    # Encrypt from A to B
+    plaintext = b"hello encrypted world"
+    nonce, ciphertext = encrypt_payload(priv_a, pub_b, plaintext)
+    assert len(nonce) == 24
+    assert len(ciphertext) > len(plaintext)  # includes 16-byte auth tag
+
+    # B decrypts
+    decrypted = decrypt_payload(priv_b, pub_a, nonce, ciphertext)
+    assert decrypted == plaintext
 
     # Wrong key should fail
-    other_private, other_public = generate_signing_keypair()
-    assert verify_signature(other_public, signature, data) is False
+    priv_c, pub_c = generate_encryption_keypair()
+    try:
+        decrypt_payload(priv_c, pub_a, nonce, ciphertext)
+        assert False, "Should have raised an exception"
+    except Exception:
+        pass  # Expected
 
-    # Signable data creation
-    msg = {"type": "method", "from": "ws/client1", "to": "ws/client2", "method": "test", "_ts": 1234567890}
-    signable = create_signable_data(msg)
-    assert isinstance(signable, bytes)
+    # Hex conversion
+    hex_str = public_key_to_hex(pub_a)
+    assert len(hex_str) == 64
+    assert public_key_from_hex(hex_str) == pub_a
 
-    # Timestamp validation
-    now_ms = int(time.time() * 1000)
-    assert is_timestamp_valid(now_ms) is True
-    assert is_timestamp_valid(now_ms - 600000) is False  # 10 min ago
-    assert is_timestamp_valid(now_ms + 10000) is False   # 10 sec in future
+
+@pytest.mark.asyncio
+async def test_trusted_keys_allows_authorized_caller(websocket_server):
+    """Test that a caller whose public key is in trusted_keys can call the service."""
+    # Service provider with encryption
+    server = await connect_to_server(
+        {
+            "name": "trusted-keys-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "trusted-keys-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Authorized caller with encryption enabled
+    client = await connect_to_server(
+        {
+            "name": "trusted-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "trusted-caller-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+
+    # Get the caller's public key
+    caller_pub_key = client.rpc.get_public_key()
+    assert caller_pub_key is not None
+    assert len(caller_pub_key) == 64  # 32 bytes = 64 hex chars
+
+    received_contexts = []
+
+    def verified_echo(message, context=None):
+        received_contexts.append(context)
+        return f"trusted: {message}"
+
+    # Register service with trusted_keys containing the caller's key
+    await server.register_service(
+        {
+            "id": "trusted-service",
+            "config": {
+                "require_context": True,
+                "trusted_keys": [caller_pub_key],
+                "visibility": "protected",
+            },
+            "echo": verified_echo,
+        }
+    )
+
+    # Caller provides server's public key out-of-band
+    server_pub_key = server.rpc.get_public_key()
+    svc = await client.get_service(
+        "trusted-service", encryption_public_key=server_pub_key
+    )
+    result = await svc.echo("hello trusted")
+    assert result == "trusted: hello trusted"
+
+    # Verify context has encryption info
+    ctx = received_contexts[0]
+    assert ctx.get("encryption") is True
+    assert ctx.get("caller_public_key") == caller_pub_key
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_trusted_keys_rejects_unauthorized_caller(websocket_server):
+    """Test that a caller whose key is NOT in trusted_keys is rejected."""
+    # Service provider with encryption
+    server = await connect_to_server(
+        {
+            "name": "trusted-reject-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "trusted-reject-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # A fake trusted key (not the caller's key)
+    fake_trusted_key = "aa" * 32  # 64-char hex string
+
+    await server.register_service(
+        {
+            "id": "trusted-reject-service",
+            "config": {
+                "require_context": True,
+                "trusted_keys": [fake_trusted_key],
+                "visibility": "protected",
+            },
+            "echo": lambda msg, context=None: msg,
+        }
+    )
+
+    # Caller with encryption enabled, but their key is not in trusted_keys
+    client = await connect_to_server(
+        {
+            "name": "untrusted-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "untrusted-caller-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+
+    # Caller provides server's public key to enable encryption
+    server_pub_key = server.rpc.get_public_key()
+    svc = await client.get_service(
+        "trusted-reject-service", encryption_public_key=server_pub_key
+    )
+
+    with pytest.raises(Exception, match="not in the trusted keys"):
+        await svc.echo("should fail")
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_trusted_keys_rejects_unencrypted_caller(websocket_server):
+    """Test that an unencrypted caller is rejected when trusted_keys is set."""
+    # Service provider with encryption
+    server = await connect_to_server(
+        {
+            "name": "trusted-unenc-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "trusted-unenc-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    some_key = "bb" * 32
+
+    await server.register_service(
+        {
+            "id": "trusted-unenc-service",
+            "config": {
+                "require_context": True,
+                "trusted_keys": [some_key],
+                "visibility": "protected",
+            },
+            "echo": lambda msg, context=None: msg,
+        }
+    )
+
+    # Client WITHOUT encryption
+    client = await connect_to_server(
+        {
+            "name": "no-enc-client",
+            "server_url": WS_SERVER_URL,
+            "client_id": "no-enc-caller-client",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await client.get_service("trusted-unenc-service")
+
+    # Should fail — trusted_keys requires encryption
+    with pytest.raises(Exception, match="Encryption required"):
+        await svc.echo("should fail")
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.asyncio
+async def test_wrong_encryption_key_fails(websocket_server):
+    """Test that providing the wrong encryption public key causes decryption failure."""
+    server = await connect_to_server(
+        {
+            "name": "wrong-key-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "wrong-key-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    await server.register_service(
+        {
+            "id": "wrong-key-svc",
+            "config": {"visibility": "protected"},
+            "echo": lambda msg: f"echo: {msg}",
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "wrong-key-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "wrong-key-caller-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+
+    # Use a wrong public key (not the server's)
+    wrong_key = "bb" * 32
+    svc = await client.get_service("wrong-key-svc", encryption_public_key=wrong_key)
+
+    # Call should fail — provider can't decrypt because wrong key was used.
+    # This results in either a "Decryption failed" error or a timeout
+    # (because the encrypted response also can't be decrypted by the caller).
+    with pytest.raises(Exception):
+        await svc.echo("hello")
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_encrypted_large_binary_payload(websocket_server):
+    """Test E2E encryption with large binary (numpy) data."""
+    import numpy as np
+
+    server = await connect_to_server(
+        {
+            "name": "enc-binary-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "enc-binary-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    await server.register_service(
+        {
+            "id": "enc-binary-svc",
+            "config": {"visibility": "protected"},
+            "process": lambda arr: arr * 2,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "enc-binary-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "enc-binary-caller-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+
+    server_pub_key = server.rpc.get_public_key()
+    svc = await client.get_service(
+        "enc-binary-svc", encryption_public_key=server_pub_key
+    )
+
+    # Send a large numpy array through encrypted channel
+    data = np.random.rand(1000).astype(np.float32)
+    result = await svc.process(data)
+    np.testing.assert_allclose(result, data * 2, rtol=1e-5)
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_encrypted_return_value(websocket_server):
+    """Test that return values are also encrypted (round-trip encryption)."""
+    server = await connect_to_server(
+        {
+            "name": "enc-return-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "enc-return-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    secret_data = {"secret": "top-secret-value", "numbers": [1, 2, 3]}
+
+    await server.register_service(
+        {
+            "id": "enc-return-svc",
+            "config": {"visibility": "protected"},
+            "get_secret": lambda: secret_data,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "enc-return-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "enc-return-caller-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+
+    server_pub_key = server.rpc.get_public_key()
+    svc = await client.get_service(
+        "enc-return-svc", encryption_public_key=server_pub_key
+    )
+
+    result = await svc.get_secret()
+    assert result["secret"] == "top-secret-value"
+    assert result["numbers"] == [1, 2, 3]
+
+    await client.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_multiple_trusted_keys(websocket_server):
+    """Test that multiple keys in trusted_keys all work."""
+    server = await connect_to_server(
+        {
+            "name": "multi-trusted-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "multi-trusted-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    # Two callers
+    client_a = await connect_to_server(
+        {
+            "name": "multi-trusted-a",
+            "server_url": WS_SERVER_URL,
+            "client_id": "multi-trusted-a-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+    client_b = await connect_to_server(
+        {
+            "name": "multi-trusted-b",
+            "server_url": WS_SERVER_URL,
+            "client_id": "multi-trusted-b-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+
+    key_a = client_a.rpc.get_public_key()
+    key_b = client_b.rpc.get_public_key()
+
+    await server.register_service(
+        {
+            "id": "multi-trusted-svc",
+            "config": {
+                "require_context": True,
+                "trusted_keys": [key_a, key_b],
+                "visibility": "protected",
+            },
+            "echo": lambda msg, context=None: msg,
+        }
+    )
+
+    server_pub = server.rpc.get_public_key()
+    svc_a = await client_a.get_service(
+        "multi-trusted-svc", encryption_public_key=server_pub
+    )
+    svc_b = await client_b.get_service(
+        "multi-trusted-svc", encryption_public_key=server_pub
+    )
+
+    # Both should succeed
+    assert await svc_a.echo("from A") == "from A"
+    assert await svc_b.echo("from B") == "from B"
+
+    await client_a.disconnect()
+    await client_b.disconnect()
+    await server.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_empty_trusted_keys_allows_all(websocket_server):
+    """Test that an empty trusted_keys list is treated as 'no restriction'."""
+    server = await connect_to_server(
+        {
+            "name": "empty-trusted-server",
+            "server_url": WS_SERVER_URL,
+            "client_id": "empty-trusted-server-client",
+            "encryption": True,
+        }
+    )
+    workspace = server.config.workspace
+    token = await server.generate_token()
+
+    await server.register_service(
+        {
+            "id": "empty-trusted-svc",
+            "config": {
+                "require_context": True,
+                "trusted_keys": [],
+                "visibility": "protected",
+            },
+            "echo": lambda msg, context=None: msg,
+        }
+    )
+
+    client = await connect_to_server(
+        {
+            "name": "empty-trusted-caller",
+            "server_url": WS_SERVER_URL,
+            "client_id": "empty-trusted-caller-client",
+            "workspace": workspace,
+            "token": token,
+            "encryption": True,
+        }
+    )
+
+    server_pub = server.rpc.get_public_key()
+    svc = await client.get_service(
+        "empty-trusted-svc", encryption_public_key=server_pub
+    )
+
+    # Empty trusted_keys is treated as no restriction — call should succeed
+    result = await svc.echo("should work")
+    assert result == "should work"
+
+    await client.disconnect()
+    await server.disconnect()

@@ -3,6 +3,11 @@ import {
   login,
   connectToServer,
   schemaFunction,
+  generateEncryptionKeypair,
+  publicKeyToHex,
+  publicKeyFromHex,
+  encryptPayload,
+  decryptPayload,
 } from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
 import { assert } from "../src/utils";
@@ -3433,15 +3438,15 @@ describe("RPC", async () => {
   }).timeout(30000);
 });
 
-describe("Signed Service Calls", () => {
-  it("should sign and verify RPC calls with Ed25519", async function () {
+describe("E2E Encrypted Service Calls", () => {
+  it("should encrypt and decrypt RPC calls", async function () {
     this.timeout(30000);
 
-    // Service provider with signing
+    // Service provider with encryption
     const server = await connectToServer({
       server_url: SERVER_URL,
-      client_id: "js-signing-server",
-      signing: true,
+      client_id: "js-enc-server",
+      encryption: true,
     });
     const workspace = server.config.workspace;
     const token = await server.generateToken();
@@ -3449,15 +3454,14 @@ describe("Signed Service Calls", () => {
     const receivedContexts = [];
 
     await server.registerService({
-      id: "signed-svc",
+      id: "encrypted-svc",
       config: {
         require_context: true,
-        require_signature: true,
         visibility: "protected",
       },
       echo: (msg, context) => {
         receivedContexts.push(context);
-        return `verified: ${msg}`;
+        return `encrypted: ${msg}`;
       },
       add: (a, b, context) => {
         receivedContexts.push(context);
@@ -3465,88 +3469,59 @@ describe("Signed Service Calls", () => {
       },
     });
 
-    // Caller with signing, same workspace
+    // Caller with encryption, same workspace
     const client = await connectToServer({
       server_url: SERVER_URL,
-      client_id: "js-signing-caller",
+      client_id: "js-enc-caller",
       workspace: workspace,
       token: token,
-      signing: true,
+      encryption: true,
     });
 
-    const svc = await client.getService("signed-svc");
+    // Caller provides server's public key out-of-band (not via server)
+    const serverPubKey = server.rpc.getPublicKey();
+    const svc = await client.getService("encrypted-svc", {
+      encryption_public_key: serverPubKey,
+    });
 
-    // Signed call should succeed
-    const result = await svc.echo("hello signed");
-    expect(result).to.equal("verified: hello signed");
+    // Encrypted call should succeed
+    const result = await svc.echo("hello encrypted");
+    expect(result).to.equal("encrypted: hello encrypted");
 
-    // Context should have signature info
+    // Context should have encryption info
     expect(receivedContexts.length).to.be.greaterThan(0);
     const ctx = receivedContexts[0];
-    expect(ctx.signature_valid).to.be.true;
-    expect(ctx.verified_identity).to.not.be.null;
+    expect(ctx.encryption).to.be.true;
+    expect(ctx.caller_public_key).to.be.a("string");
+    expect(ctx.caller_public_key).to.have.lengthOf(64);
 
     // Another call
     const addResult = await svc.add(10, 20);
     expect(addResult).to.equal(30);
 
     // Consistent public key across calls
-    expect(receivedContexts[1].signature_valid).to.be.true;
+    expect(receivedContexts[1].caller_public_key).to.equal(
+      receivedContexts[0].caller_public_key,
+    );
 
-    console.log("✓ Ed25519 signed service calls working");
+    // Caller's key should match
+    expect(receivedContexts[0].caller_public_key).to.equal(
+      client.rpc.getPublicKey(),
+    );
 
-    await client.disconnect();
-    await server.disconnect();
-  });
-
-  it("should reject unsigned calls when require_signature is set", async function () {
-    this.timeout(30000);
-
-    const server = await connectToServer({
-      server_url: SERVER_URL,
-      client_id: "js-sig-required-server",
-    });
-    const workspace = server.config.workspace;
-    const token = await server.generateToken();
-
-    await server.registerService({
-      id: "sig-required-svc",
-      config: {
-        require_context: true,
-        require_signature: true,
-        visibility: "protected",
-      },
-      echo: (msg, context) => msg,
-    });
-
-    // Client WITHOUT signing, same workspace
-    const client = await connectToServer({
-      server_url: SERVER_URL,
-      client_id: "js-unsigned-caller",
-      workspace: workspace,
-      token: token,
-    });
-
-    const svc = await client.getService("sig-required-svc");
-
-    try {
-      await svc.echo("should fail");
-      expect.fail("Should have thrown");
-    } catch (error) {
-      expect(error.message || error.toString()).to.include("Signature required");
-      console.log("✓ Unsigned calls correctly rejected");
-    }
+    console.log("✓ E2E encrypted service calls working");
 
     await client.disconnect();
     await server.disconnect();
   });
 
-  it("should work with optional signing (service does not require it)", async function () {
+  it("should work with mixed encrypted and unencrypted clients", async function () {
     this.timeout(30000);
 
     const server = await connectToServer({
       server_url: SERVER_URL,
-      client_id: "js-optional-sig-server",
+      client_id: "js-enc-optional-server",
+      encryption: true,
     });
     const workspace = server.config.workspace;
     const token = await server.generateToken();
@@ -3554,7 +3529,7 @@ describe("Signed Service Calls", () => {
     const contexts = [];
 
     await server.registerService({
-      id: "optional-sig-svc",
+      id: "enc-optional-svc",
       config: {
         require_context: true,
         visibility: "protected",
@@ -3565,40 +3540,398 @@ describe("Signed Service Calls", () => {
       },
     });
 
-    // Signed client, same workspace
-    const signedClient = await connectToServer({
+    // Encrypted client, same workspace
+    const encClient = await connectToServer({
       server_url: SERVER_URL,
-      client_id: "js-signed-optional",
+      client_id: "js-enc-optional",
       workspace: workspace,
       token: token,
-      signing: true,
+      encryption: true,
     });
 
-    // Unsigned client, same workspace
-    const unsignedClient = await connectToServer({
+    // Unencrypted client, same workspace
+    const plainClient = await connectToServer({
       server_url: SERVER_URL,
-      client_id: "js-unsigned-optional",
+      client_id: "js-plain-optional",
       workspace: workspace,
       token: token,
     });
 
-    const svcSigned = await signedClient.getService("optional-sig-svc");
-    const svcUnsigned = await unsignedClient.getService("optional-sig-svc");
+    // Encrypted client provides server's public key out-of-band
+    const serverPubKey = server.rpc.getPublicKey();
+    const svcEnc = await encClient.getService("enc-optional-svc", {
+      encryption_public_key: serverPubKey,
+    });
+    // Plain client does NOT provide encryption key
+    const svcPlain = await plainClient.getService("enc-optional-svc");
 
     // Both should succeed
-    const r1 = await svcSigned.echo("signed");
-    expect(r1).to.equal("echo: signed");
-    expect(contexts[contexts.length - 1].signature_valid).to.be.true;
+    const r1 = await svcEnc.echo("encrypted");
+    expect(r1).to.equal("echo: encrypted");
+    expect(contexts[contexts.length - 1].encryption).to.be.true;
 
-    const r2 = await svcUnsigned.echo("unsigned");
-    expect(r2).to.equal("echo: unsigned");
-    // Unsigned calls should not have signature_valid set
-    expect(contexts[contexts.length - 1].signature_valid).to.be.undefined;
+    const r2 = await svcPlain.echo("plain");
+    expect(r2).to.equal("echo: plain");
+    // Unencrypted calls should not have encryption flag
+    expect(contexts[contexts.length - 1].encryption).to.be.undefined;
 
-    console.log("✓ Optional signing works correctly");
+    console.log("✓ Mixed encryption works correctly");
 
-    await signedClient.disconnect();
-    await unsignedClient.disconnect();
+    await encClient.disconnect();
+    await plainClient.disconnect();
+    await server.disconnect();
+  });
+});
+
+describe("Trusted Keys", () => {
+  it("should allow calls from an authorized encrypted caller", async function () {
+    this.timeout(30000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-trusted-keys-server",
+      encryption: true,
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    // Authorized caller with encryption
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-trusted-caller",
+      workspace: workspace,
+      token: token,
+      encryption: true,
+    });
+
+    const callerPubKey = client.rpc.getPublicKey();
+    expect(callerPubKey).to.be.a("string");
+    expect(callerPubKey).to.have.lengthOf(64);
+
+    const contexts = [];
+
+    await server.registerService({
+      id: "trusted-svc",
+      config: {
+        require_context: true,
+        trusted_keys: [callerPubKey],
+        visibility: "protected",
+      },
+      echo: (msg, context) => {
+        contexts.push(context);
+        return `trusted: ${msg}`;
+      },
+    });
+
+    // Caller provides server's public key out-of-band
+    const serverPubKey = server.rpc.getPublicKey();
+    const svc = await client.getService("trusted-svc", {
+      encryption_public_key: serverPubKey,
+    });
+    const result = await svc.echo("hello trusted");
+    expect(result).to.equal("trusted: hello trusted");
+    expect(contexts[0].encryption).to.be.true;
+    expect(contexts[0].caller_public_key).to.equal(callerPubKey);
+
+    console.log("✓ Trusted keys: authorized encrypted caller accepted");
+
+    await client.disconnect();
+    await server.disconnect();
+  });
+
+  it("should reject calls from an unauthorized encrypted caller", async function () {
+    this.timeout(30000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-trusted-reject-server",
+      encryption: true,
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    const fakeKey = "aa".repeat(32); // not the caller's key
+
+    await server.registerService({
+      id: "trusted-reject-svc",
+      config: {
+        require_context: true,
+        trusted_keys: [fakeKey],
+        visibility: "protected",
+      },
+      echo: (msg, context) => msg,
+    });
+
+    // Caller with encryption, but their key is NOT in trusted_keys
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-untrusted-caller",
+      workspace: workspace,
+      token: token,
+      encryption: true,
+    });
+
+    // Caller provides server's public key to enable encryption
+    const serverPubKey = server.rpc.getPublicKey();
+    const svc = await client.getService("trusted-reject-svc", {
+      encryption_public_key: serverPubKey,
+    });
+
+    try {
+      await svc.echo("should fail");
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error.message || error.toString()).to.include(
+        "not in the trusted keys",
+      );
+      console.log("✓ Trusted keys: unauthorized caller rejected");
+    }
+
+    await client.disconnect();
+    await server.disconnect();
+  });
+
+  it("should reject unencrypted calls when trusted_keys is set", async function () {
+    this.timeout(30000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-trusted-unenc-server",
+      encryption: true,
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "trusted-unenc-svc",
+      config: {
+        require_context: true,
+        trusted_keys: ["bb".repeat(32)],
+        visibility: "protected",
+      },
+      echo: (msg, context) => msg,
+    });
+
+    // Client WITHOUT encryption
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-unenc-trusted-caller",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("trusted-unenc-svc");
+
+    try {
+      await svc.echo("should fail");
+      expect.fail("Should have thrown");
+    } catch (error) {
+      // trusted_keys requires encryption
+      expect(error.message || error.toString()).to.include(
+        "Encryption required",
+      );
+      console.log("✓ Trusted keys: unencrypted caller rejected");
+    }
+
+    await client.disconnect();
+    await server.disconnect();
+  });
+});
+
+describe("Crypto Module", () => {
+  it("should generate keypairs, encrypt and decrypt", async function () {
+    this.timeout(10000);
+
+    // Generate two keypairs
+    const kpA = await generateEncryptionKeypair();
+    expect(kpA.privateKey).to.have.lengthOf(32);
+    expect(kpA.publicKey).to.have.lengthOf(32);
+
+    const kpB = await generateEncryptionKeypair();
+    expect(kpB.privateKey).to.have.lengthOf(32);
+    expect(kpB.publicKey).to.have.lengthOf(32);
+
+    // Encrypt from A to B
+    const plaintext = new TextEncoder().encode("hello encrypted world");
+    const { nonce, ciphertext } = await encryptPayload(
+      kpA.privateKey,
+      kpB.publicKey,
+      plaintext,
+    );
+    expect(nonce).to.have.lengthOf(24); // XSalsa20 nonce
+    expect(ciphertext.length).to.be.greaterThan(plaintext.length); // auth tag
+
+    // B decrypts
+    const decrypted = await decryptPayload(
+      kpB.privateKey,
+      kpA.publicKey,
+      nonce,
+      ciphertext,
+    );
+    const decoded = new TextDecoder().decode(decrypted);
+    expect(decoded).to.equal("hello encrypted world");
+
+    // Wrong key should fail
+    const kpC = await generateEncryptionKeypair();
+    try {
+      await decryptPayload(kpC.privateKey, kpA.publicKey, nonce, ciphertext);
+      expect.fail("Should have thrown");
+    } catch (e) {
+      expect(e.message).to.include("Decryption failed");
+    }
+
+    // Hex conversion round-trip
+    const hex = publicKeyToHex(kpA.publicKey);
+    expect(hex).to.have.lengthOf(64);
+    const recovered = publicKeyFromHex(hex);
+    expect(Array.from(recovered)).to.deep.equal(Array.from(kpA.publicKey));
+
+    console.log("✓ Crypto module: keypair, encrypt, decrypt, hex conversion");
+  });
+});
+
+describe("E2E Encryption Edge Cases", () => {
+  it("should encrypt and decrypt return values (round-trip)", async function () {
+    this.timeout(30000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-enc-return-server",
+      encryption: true,
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    const secretData = { secret: "top-secret", numbers: [1, 2, 3] };
+
+    await server.registerService({
+      id: "enc-return-svc",
+      config: { visibility: "protected" },
+      getSecret: () => secretData,
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-enc-return-caller",
+      workspace: workspace,
+      token: token,
+      encryption: true,
+    });
+
+    const serverPubKey = server.rpc.getPublicKey();
+    const svc = await client.getService("enc-return-svc", {
+      encryption_public_key: serverPubKey,
+    });
+
+    const result = await svc.getSecret();
+    expect(result.secret).to.equal("top-secret");
+    expect(result.numbers).to.deep.equal([1, 2, 3]);
+
+    console.log("✓ Encrypted return values work correctly");
+
+    await client.disconnect();
+    await server.disconnect();
+  });
+
+  it("should fail with wrong encryption_public_key", async function () {
+    this.timeout(60000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-wrong-key-server",
+      encryption: true,
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      id: "wrong-key-svc",
+      config: { visibility: "protected" },
+      echo: (msg) => `echo: ${msg}`,
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-wrong-key-caller",
+      workspace: workspace,
+      token: token,
+      encryption: true,
+    });
+
+    // Use a wrong public key
+    const wrongKey = "bb".repeat(32);
+    const svc = await client.getService("wrong-key-svc", {
+      encryption_public_key: wrongKey,
+    });
+
+    try {
+      await svc.echo("hello");
+      expect.fail("Should have thrown");
+    } catch (e) {
+      // Expected — decryption fails on the server side
+      console.log("✓ Wrong encryption key correctly rejected");
+    }
+
+    await client.disconnect();
+    await server.disconnect();
+  });
+
+  it("should work with multiple trusted_keys", async function () {
+    this.timeout(30000);
+
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-multi-trusted-server",
+      encryption: true,
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    const clientA = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-multi-trusted-a",
+      workspace: workspace,
+      token: token,
+      encryption: true,
+    });
+    const clientB = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "js-multi-trusted-b",
+      workspace: workspace,
+      token: token,
+      encryption: true,
+    });
+
+    const keyA = clientA.rpc.getPublicKey();
+    const keyB = clientB.rpc.getPublicKey();
+
+    await server.registerService({
+      id: "multi-trusted-svc",
+      config: {
+        require_context: true,
+        trusted_keys: [keyA, keyB],
+        visibility: "protected",
+      },
+      echo: (msg, context) => msg,
+    });
+
+    const serverPub = server.rpc.getPublicKey();
+    const svcA = await clientA.getService("multi-trusted-svc", {
+      encryption_public_key: serverPub,
+    });
+    const svcB = await clientB.getService("multi-trusted-svc", {
+      encryption_public_key: serverPub,
+    });
+
+    const resultA = await svcA.echo("from A");
+    expect(resultA).to.equal("from A");
+    const resultB = await svcB.echo("from B");
+    expect(resultB).to.equal("from B");
+
+    console.log("✓ Multiple trusted keys work correctly");
+
+    await clientA.disconnect();
+    await clientB.disconnect();
     await server.disconnect();
   });
 });
