@@ -908,6 +908,7 @@ async def _connect_to_server(config):
         client_id=client_id,
         workspace=workspace,
         default_context={"connection_type": "websocket"},
+        silent=config.get("silent", False),
         name=config.get("name"),
         method_timeout=config.get("method_timeout"),
         loop=config.get("loop"),
@@ -1296,6 +1297,7 @@ def connect_to_server(config=None, **kwargs):
         client_id: Unique client identifier (optional, auto-generated if not provided)
         transport: Transport type - "websocket" (default) or "http"
         method_timeout: Timeout for RPC method calls
+        silent: Disable automatic service reporting on connect (optional)
         ssl: SSL configuration (True/False/SSLContext)
 
     Returns:
