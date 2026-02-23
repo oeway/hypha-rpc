@@ -145,7 +145,16 @@ def fill_missing_args_and_kwargs(original_func_sig, args, kwargs):
             if isinstance(param.default, Field) or (
                 _check_pydantic_available() and isinstance(param.default, FieldInfo)
             ):
-                bound_args.arguments[name] = param.default.default
+                default_value = param.default.default
+                # Check if the default is PydanticUndefined or Ellipsis (required field)
+                if default_value is ... or (
+                    _check_pydantic_available()
+                    and default_value is PydanticUndefined
+                ):
+                    raise TypeError(
+                        f"Missing required argument: '{name}'"
+                    )
+                bound_args.arguments[name] = default_value
             else:
                 bound_args.arguments[name] = param.default
     bound_args.apply_defaults()
