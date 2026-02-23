@@ -309,7 +309,9 @@ class PyodideWebsocketRPCConnection:
                 )
 
             def on_message(evt):
-                data = evt.data.to_py()
+                data = evt.data
+                if hasattr(data, "to_py"):
+                    data = data.to_py()
                 if isinstance(data, str):
                     data = json.loads(data)
                     if data.get("type") == "reconnection_token":
@@ -318,7 +320,16 @@ class PyodideWebsocketRPCConnection:
                     else:
                         logger.info("Received message from the server: %s", data)
                 elif self._handle_message:
-                    data = data.tobytes()
+                    if hasattr(data, "tobytes"):
+                        data = data.tobytes()
+                    elif isinstance(data, (bytes, bytearray, memoryview)):
+                        data = bytes(data)
+                    else:
+                        logger.error(
+                            "Unsupported message type from websocket: %s",
+                            type(data),
+                        )
+                        return
                     try:
                         if self._is_async:
                             asyncio.create_task(self._handle_message(data))
