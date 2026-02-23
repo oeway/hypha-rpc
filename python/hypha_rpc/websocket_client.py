@@ -231,8 +231,19 @@ class WebsocketRPCConnection:
                 }
             )
             await self._websocket.send(auth_info)
-            first_message = await self._websocket.recv()
-            first_message = json.loads(first_message)
+            # Wait for the connection_info JSON message.
+            # During reconnection, the server may flush buffered binary
+            # (msgpack) messages before sending connection_info, so we
+            # skip any binary frames until we receive a text/JSON one.
+            while True:
+                first_message = await self._websocket.recv()
+                if isinstance(first_message, bytes):
+                    logger.debug(
+                        "Binary message received before connection info, ignoring"
+                    )
+                    continue
+                first_message = json.loads(first_message)
+                break
             if first_message.get("type") == "connection_info":
                 self.connection_info = first_message
                 if self._workspace:

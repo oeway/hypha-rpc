@@ -50,6 +50,7 @@ class WebsocketRPCConnection {
     WebSocketClass = null,
     token_refresh_interval = 2 * 60 * 60,
     additional_headers = null,
+    ping_interval = 30,
   ) {
     assert(server_url && client_id, "server_url and client_id are required");
     this._server_url = server_url;
@@ -70,6 +71,8 @@ class WebsocketRPCConnection {
     this._token_refresh_interval = token_refresh_interval;
     this.manager_id = null;
     this._refresh_token_task = null;
+    this._ping_task = null;
+    this._ping_interval = ping_interval;
     this._reconnect_timeouts = new Set(); // Track reconnection timeouts
     this._additional_headers = additional_headers;
     this._reconnecting = false; // Mutex to prevent overlapping reconnection attempts
@@ -90,6 +93,12 @@ class WebsocketRPCConnection {
     if (this._refresh_token_task) {
       clearInterval(this._refresh_token_task);
       this._refresh_token_task = null;
+    }
+
+    // Clear ping keepalive interval
+    if (this._ping_task) {
+      clearInterval(this._ping_task);
+      this._ping_task = null;
     }
 
     // Clear all reconnection timeouts
@@ -174,6 +183,10 @@ class WebsocketRPCConnection {
     return new Promise((resolve, reject) => {
       this._websocket.onmessage = (event) => {
         const data = event.data;
+        if (typeof data !== "string") {
+          // Binary message received before connection info, ignore it
+          return;
+        }
         const first_message = JSON.parse(data);
         if (first_message.type == "connection_info") {
           this.connection_info = first_message;
@@ -264,6 +277,19 @@ class WebsocketRPCConnection {
           }, this._token_refresh_interval * 1000);
         }, 2000);
       }
+      // Start periodic ping to keep the connection alive.
+      // Browser WebSocket API doesn't support protocol-level ping frames,
+      // so we send application-level {"type": "ping"} messages that the
+      // Hypha server recognizes and responds to with {"type": "pong"}.
+      // Without this, idle connections are closed by the server's
+      // HYPHA_WS_IDLE_TIMEOUT (default 600s).
+      if (this._ping_interval > 0) {
+        this._ping_task = setInterval(() => {
+          if (!this._closed) {
+            this._send_ping();
+          }
+        }, this._ping_interval * 1000);
+      }
       // Listen to messages from the server
       this._enable_reconnect = true;
       this._closed = false;
@@ -271,10 +297,10 @@ class WebsocketRPCConnection {
       this._websocket.onmessage = (event) => {
         if (typeof event.data === "string") {
           const parsedData = JSON.parse(event.data);
-          // Check if the message is a reconnection token
           if (parsedData.type === "reconnection_token") {
             this._reconnection_token = parsedData.reconnection_token;
-            // console.log("Reconnection token received");
+          } else if (parsedData.type === "pong") {
+            // Keepalive response, no action needed
           } else {
             console.log("Received message from the server:", parsedData);
           }
@@ -304,6 +330,12 @@ class WebsocketRPCConnection {
         error,
       );
       throw error;
+    }
+  }
+
+  _send_ping() {
+    if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
+      this._websocket.send(JSON.stringify({ type: "ping" }));
     }
   }
 
@@ -723,6 +755,7 @@ export async function connectToServer(config) {
     config.WebSocketClass,
     config.token_refresh_interval,
     config.additional_headers,
+    config.ping_interval,
   );
   const connection_info = await connection.open();
   assert(
