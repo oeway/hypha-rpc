@@ -698,6 +698,8 @@ class RPC(MessageEmitter):
         self._session_gc_task = None
         self._session_ttl = 10 * 60  # 10 minutes default TTL for interface sessions
         self._background_tasks = set()
+        self._client_disconnected_subscription = None
+        self._bound_handle_client_disconnected = None
         super().__init__(self._remote_logger)
 
         # Set up exception handler for unhandled asyncio futures
@@ -852,10 +854,38 @@ class RPC(MessageEmitter):
                         try:
                             manager_dict = ObjectProxy.toDict(manager)
                             if "subscribe" in manager_dict:
+                                # Clean up previous subscription and handler to prevent
+                                # duplicates on reconnection (listener leak fix)
+                                if self._client_disconnected_subscription:
+                                    try:
+                                        if hasattr(
+                                            self._client_disconnected_subscription,
+                                            "unsubscribe",
+                                        ):
+                                            self._client_disconnected_subscription.unsubscribe()
+                                    except Exception as e:
+                                        logger.debug(
+                                            f"Error unsubscribing old client_disconnected: {e}"
+                                        )
+                                    self._client_disconnected_subscription = None
+                                if self._bound_handle_client_disconnected:
+                                    try:
+                                        self.off(
+                                            "client_disconnected",
+                                            self._bound_handle_client_disconnected,
+                                        )
+                                    except ValueError:
+                                        # Handler may not be in list if previous
+                                        # subscription setup was interrupted
+                                        pass
+                                    self._bound_handle_client_disconnected = None
+
                                 logger.debug(
                                     "Subscribing to client_disconnected events"
                                 )
 
+                                # Store handler at instance level so it can be
+                                # properly removed on reconnection or close
                                 async def handle_client_disconnected(event):
                                     client_id = event.get("client")
                                     if client_id:
@@ -865,6 +895,10 @@ class RPC(MessageEmitter):
                                         await self._handle_client_disconnected(
                                             client_id
                                         )
+
+                                self._bound_handle_client_disconnected = (
+                                    handle_client_disconnected
+                                )
 
                                 # Subscribe to the event topic first with timeout
                                 self._client_disconnected_subscription = (
@@ -876,7 +910,8 @@ class RPC(MessageEmitter):
 
                                 # Then register the local event handler
                                 self.on(
-                                    "client_disconnected", handle_client_disconnected
+                                    "client_disconnected",
+                                    self._bound_handle_client_disconnected,
                                 )
 
                                 logger.debug(
@@ -1220,15 +1255,28 @@ class RPC(MessageEmitter):
 
         # Remove the local event handler for client_disconnected
         # Note: Actual unsubscription from server is done in async disconnect() method
-        if (
-            hasattr(self, "_client_disconnected_subscription")
-            and self._client_disconnected_subscription
-        ):
+        if self._client_disconnected_subscription:
             try:
-                # Remove the local event handler
-                self.off("client_disconnected")
+                if hasattr(
+                    self._client_disconnected_subscription, "unsubscribe"
+                ):
+                    self._client_disconnected_subscription.unsubscribe()
             except Exception as e:
-                logger.debug(f"Error removing client_disconnected handler: {e}")
+                logger.debug(
+                    f"Error unsubscribing client_disconnected: {e}"
+                )
+            self._client_disconnected_subscription = None
+        if self._bound_handle_client_disconnected:
+            try:
+                self.off(
+                    "client_disconnected",
+                    self._bound_handle_client_disconnected,
+                )
+            except Exception as e:
+                logger.debug(
+                    f"Error removing client_disconnected handler: {e}"
+                )
+            self._bound_handle_client_disconnected = None
 
         # Clear connection callbacks to break circular references
         # The on_connected callback captures 'self' in its closure

@@ -231,12 +231,14 @@ class WebsocketRPCConnection:
                 }
             )
             await self._websocket.send(auth_info)
-            # Wait for the connection_info JSON message.
+            # Wait for the connection_info JSON message with timeout.
             # During reconnection, the server may flush buffered binary
             # (msgpack) messages before sending connection_info, so we
             # skip any binary frames until we receive a text/JSON one.
             while True:
-                first_message = await self._websocket.recv()
+                first_message = await asyncio.wait_for(
+                    self._websocket.recv(), timeout=self._timeout
+                )
                 if isinstance(first_message, bytes):
                     logger.debug(
                         "Binary message received before connection info, ignoring"

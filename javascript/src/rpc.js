@@ -620,9 +620,39 @@ export class RPC extends MessageEmitter {
                 manager.subscribe &&
                 typeof manager.subscribe === "function"
               ) {
+                // Clean up previous subscription and handler to prevent
+                // duplicates on reconnection (listener leak fix)
+                if (this._clientDisconnectedSubscription) {
+                  try {
+                    if (
+                      typeof this._clientDisconnectedSubscription.unsubscribe ===
+                      "function"
+                    ) {
+                      this._clientDisconnectedSubscription.unsubscribe();
+                    }
+                  } catch (e) {
+                    console.debug(
+                      `Error unsubscribing old client_disconnected: ${e}`,
+                    );
+                  }
+                  this._clientDisconnectedSubscription = null;
+                }
+                if (this._boundHandleClientDisconnected) {
+                  try {
+                    this.off(
+                      "client_disconnected",
+                      this._boundHandleClientDisconnected,
+                    );
+                  } catch (e) {
+                    // Handler may not be in list if previous setup was interrupted
+                  }
+                  this._boundHandleClientDisconnected = null;
+                }
+
                 console.debug("Subscribing to client_disconnected events");
 
-                const handleClientDisconnected = async (event) => {
+                // Store handler at instance level so it can be removed later
+                this._boundHandleClientDisconnected = async (event) => {
                   // The client ID is in event.data.id based on the event structure
                   const clientId = event.data?.id || event.client;
                   const workspace = event.data?.workspace;
@@ -649,7 +679,10 @@ export class RPC extends MessageEmitter {
                 );
 
                 // Then register the local event handler
-                this.on("client_disconnected", handleClientDisconnected);
+                this.on(
+                  "client_disconnected",
+                  this._boundHandleClientDisconnected,
+                );
 
                 console.debug(
                   "Successfully subscribed to client_disconnected events",
@@ -960,7 +993,7 @@ export class RPC extends MessageEmitter {
       this._boundHandleError = null;
     }
 
-    // Clean up client_disconnected subscription
+    // Clean up client_disconnected subscription and handler
     if (this._clientDisconnectedSubscription) {
       try {
         if (
@@ -971,8 +1004,11 @@ export class RPC extends MessageEmitter {
       } catch (e) {
         console.debug(`Error unsubscribing client_disconnected: ${e}`);
       }
-      this.off("client_disconnected");
       this._clientDisconnectedSubscription = null;
+    }
+    if (this._boundHandleClientDisconnected) {
+      this.off("client_disconnected", this._boundHandleClientDisconnected);
+      this._boundHandleClientDisconnected = null;
     }
 
     // Remove the global unhandled rejection handler
