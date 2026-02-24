@@ -634,6 +634,7 @@ async def _connect_to_server_http(config: dict):
         client_id=client_id,
         workspace=workspace,
         default_context={"connection_type": "http_streaming"},
+        silent=config.get("silent", False),
         name=config.get("name"),
         method_timeout=config.get("method_timeout"),
         loop=config.get("loop"),

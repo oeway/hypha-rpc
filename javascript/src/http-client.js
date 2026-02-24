@@ -704,6 +704,7 @@ export async function _connectToServerHTTP(config) {
     client_id: clientId,
     workspace,
     default_context: { connection_type: "http_streaming" },
+    silent: config.silent || false,
     name: config.name,
     method_timeout: config.method_timeout,
     app_id: config.app_id,

@@ -76,6 +76,7 @@ async function _setupRPC(config) {
     workspace: config.workspace,
     app_id: config.app_id,
     long_message_chunk_size: config.long_message_chunk_size,
+    silent: config.silent || false,
   });
   return rpc;
 }
