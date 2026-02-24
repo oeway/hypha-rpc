@@ -147,14 +147,7 @@ class WebsocketRPCConnection {
             .then(resolve)
             .catch(reject);
         } else {
-          // Connection closed before onopen — reject so callers fail fast
-          // instead of hanging. _notifyDisconnected is skipped here because
-          // this connection was never fully established.
-          reject(
-            new Error(
-              `Connection closed before open (code: ${event.code}): ${event.reason || "unknown"}`,
-            ),
-          );
+          this._notifyDisconnected(event.reason);
         }
       };
     });
@@ -188,26 +181,6 @@ class WebsocketRPCConnection {
 
   _establish_connection() {
     return new Promise((resolve, reject) => {
-      // If the WebSocket closes before we receive connection_info, reject immediately
-      // instead of waiting for the waitFor() timeout (which could be 60s+).
-      // This allows the reconnection loop to retry quickly rather than being stuck.
-      const onEarlyClose = (event) => {
-        reject(
-          new Error(
-            `Connection closed before handshake complete (code: ${event.code}): ${event.reason || "unknown"}`,
-          ),
-        );
-      };
-      if (this._websocket.addEventListener) {
-        this._websocket.addEventListener("close", onEarlyClose);
-      }
-
-      const cleanup = () => {
-        if (this._websocket && this._websocket.removeEventListener) {
-          this._websocket.removeEventListener("close", onEarlyClose);
-        }
-      };
-
       this._websocket.onmessage = (event) => {
         const data = event.data;
         if (typeof data !== "string") {
@@ -216,7 +189,6 @@ class WebsocketRPCConnection {
         }
         const first_message = JSON.parse(data);
         if (first_message.type == "connection_info") {
-          cleanup();
           this.connection_info = first_message;
           if (this._workspace) {
             assert(
@@ -249,13 +221,11 @@ class WebsocketRPCConnection {
           }
           resolve(this.connection_info);
         } else if (first_message.type == "error") {
-          cleanup();
           const error = "ConnectionAbortedError: " + first_message.message;
           console.error("Failed to connect, " + error);
           reject(new Error(error));
           return;
         } else {
-          cleanup();
           console.error(
             "ConnectionAbortedError: Unexpected message received from the server:",
             data,
