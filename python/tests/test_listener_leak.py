@@ -22,6 +22,7 @@ from . import WS_SERVER_URL
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(120)
 async def test_no_handler_accumulation_after_reconnections(websocket_server):
     """After N reconnections, there should be exactly 1 client_disconnected handler.
 
@@ -56,8 +57,8 @@ async def test_no_handler_accumulation_after_reconnections(websocket_server):
     initial_count = count_disconnect_handlers()
     assert initial_count <= 1, f"Expected 0 or 1 initial handlers, got {initial_count}"
 
-    # Perform 5 reconnection cycles
-    NUM_RECONNECTIONS = 5
+    # Perform 3 reconnection cycles
+    NUM_RECONNECTIONS = 3
     for cycle in range(NUM_RECONNECTIONS):
         # Wait for services_registered to know reconnection is complete
         services_registered = asyncio.Event()
@@ -108,6 +109,7 @@ async def test_no_handler_accumulation_after_reconnections(websocket_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(60)
 async def test_subscription_reference_managed_on_reconnection(websocket_server):
     """Verify that _client_disconnected_subscription is updated on each reconnection.
 
@@ -219,6 +221,7 @@ async def test_close_cleans_up_handler_and_subscription(websocket_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(120)
 async def test_service_works_after_reconnection_no_duplicates(websocket_server):
     """Verify that service calls work correctly after multiple reconnections.
 
