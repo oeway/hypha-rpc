@@ -137,6 +137,7 @@ async def _setup_rpc(config):
         workspace=config["workspace"],
         app_id=config.get("app_id"),
         long_message_chunk_size=config.get("long_message_chunk_size"),
+        silent=config.get("silent", False),
     )
     return rpc
 

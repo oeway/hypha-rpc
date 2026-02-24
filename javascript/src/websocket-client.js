@@ -795,6 +795,7 @@ export async function connectToServer(config) {
     client_id: clientId,
     workspace,
     default_context: { connection_type: "websocket" },
+    silent: config.silent || false,
     name: config.name,
     method_timeout: config.method_timeout,
     app_id: config.app_id,
