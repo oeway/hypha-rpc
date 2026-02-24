@@ -541,6 +541,7 @@ export class RPC extends MessageEmitter {
       this._boundHandleError = console.error;
       this.on("method", this._boundHandleMethod);
       this.on("error", this._boundHandleError);
+      this.on("peer_not_found", this._handlePeerNotFound.bind(this));
 
       assert(connection.emit_message && connection.on_message);
       assert(
@@ -1076,6 +1077,35 @@ export class RPC extends MessageEmitter {
       console.error(
         `Error handling client disconnection for ${clientId}: ${e}`,
       );
+    }
+  }
+
+  _handlePeerNotFound(data) {
+    /**
+     * Handle server notification that target peer is not connected.
+     *
+     * When the server detects that an RPC message targets a disconnected
+     * client, it sends back a 'peer_not_found' message instead of silently
+     * dropping it. This allows pending calls to fail immediately.
+     */
+    const sessionId = data.session;
+    const peerId = data.peer_id || data.from || "unknown";
+    const errorMsg = data.error || `Peer ${peerId} is not connected`;
+    console.debug(`Peer not found: ${peerId} (session=${sessionId})`);
+
+    // Reject the specific pending call identified by sessionId
+    if (sessionId) {
+      const session = this._object_store[sessionId];
+      if (session && typeof session === "object") {
+        this._cleanupSessionEntry(session, errorMsg);
+        delete this._object_store[sessionId];
+        this._removeFromTargetIdIndex(sessionId);
+      }
+    }
+
+    // Also clean up all other sessions targeting this peer
+    if (peerId) {
+      this._cleanupSessionsForClient(peerId);
     }
   }
 
