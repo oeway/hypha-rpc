@@ -155,8 +155,10 @@ class HTTPStreamingRPCConnection:
                     workspace = self._workspace
                     if not workspace:
                         continue
-                    url = f"{self._server_url}/{workspace}/rpc"
+                    url = f"{self._server_url}/rpc"
                     params = {"client_id": self._client_id}
+                    if workspace:
+                        params["workspace"] = workspace
 
                     refresh_message = msgpack.packb({"type": "refresh_token"})
                     response = await self._http_client.post(
@@ -239,12 +241,13 @@ class HTTPStreamingRPCConnection:
         if self._http_client is None:
             self._http_client = await self._create_http_client()
 
-        # Build stream URL. Workspace should be set from: user config or token extraction.
-        # For anonymous users (no token, no workspace), "public" is a server-side routing
-        # hint that gets redirected to the user's own workspace via connection_info.
-        ws = self._workspace or "public"
-        stream_url = f"{self._server_url}/{ws}/rpc"
+        # Build stream URL. Workspace may be set from user config or token extraction.
+        # On first connection, workspace may be None (resolved by server from token).
+        # After connection, self._workspace is set from connection_info["workspace"].
+        stream_url = f"{self._server_url}/rpc"
         params = {"client_id": self._client_id}
+        if self._workspace:
+            params["workspace"] = self._workspace
 
         # Add reconnection token if available (for reconnection)
         if self._reconnection_token:
@@ -323,8 +326,9 @@ class HTTPStreamingRPCConnection:
                     params["reconnection_token"] = self._reconnection_token
 
                 # Update URL with current workspace (set from connection_info after initial open)
-                ws = self._workspace or "public"
-                current_url = f"{self._server_url}/{ws}/rpc"
+                current_url = f"{self._server_url}/rpc"
+                if self._workspace:
+                    params["workspace"] = self._workspace
 
                 # Recreate HTTP client if it was closed (e.g. after network failure)
                 if self._http_client is None:
@@ -479,11 +483,10 @@ class HTTPStreamingRPCConnection:
             self._http_client = await self._create_http_client()
 
         # Build POST URL - workspace is always set after open() from connection_info
-        ws = self._workspace
-        if not ws:
+        if not self._workspace:
             raise ConnectionError("Workspace not set - connection not established")
-        url = f"{self._server_url}/{ws}/rpc"
-        params = {"client_id": self._client_id}
+        url = f"{self._server_url}/rpc"
+        params = {"client_id": self._client_id, "workspace": self._workspace}
 
         max_retries = 3
         last_error = None

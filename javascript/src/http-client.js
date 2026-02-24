@@ -196,12 +196,13 @@ export class HTTPStreamingRPCConnection {
   async open() {
     console.info(`Opening HTTP streaming connection to ${this._server_url}`);
 
-    // Build stream URL
-    // At this point, _workspace should be set from: user config, or token extraction.
-    // For anonymous users (no token, no workspace), fall back to "public" which the
-    // server redirects to the user's own workspace via connection_info.
-    const ws = this._workspace || "public";
-    const stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+    // Build stream URL using the workspace-less /rpc endpoint.
+    // Workspace is passed as a query parameter when available.
+    // On first connection, workspace may be null (server assigns one via connection_info).
+    let stream_url = `${this._server_url}/rpc?client_id=${this._client_id}`;
+    if (this._workspace) {
+      stream_url += `&workspace=${encodeURIComponent(this._workspace)}`;
+    }
 
     // Start streaming in background
     this._startStreamLoop(stream_url);
@@ -287,9 +288,10 @@ export class HTTPStreamingRPCConnection {
     if (this._closed) return;
     try {
       // After open(), _workspace is always set from connection_info
-      const ws = this._workspace;
-      if (!ws) return;
-      const url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+      let url = `${this._server_url}/rpc?client_id=${this._client_id}`;
+      if (this._workspace) {
+        url += `&workspace=${encodeURIComponent(this._workspace)}`;
+      }
       const body = msgpackEncode({ type: "refresh_token" });
       const response = await fetch(url, {
         method: "POST",
@@ -323,9 +325,12 @@ export class HTTPStreamingRPCConnection {
 
     while (!this._closed && retry < MAX_RETRY) {
       try {
-        // Update URL with current workspace (set from connection_info after initial open)
-        const ws = this._workspace || "public";
-        let stream_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+        // Update URL with current workspace (set from connection_info after initial open).
+        // Workspace is passed as a query parameter when available.
+        let stream_url = `${this._server_url}/rpc?client_id=${this._client_id}`;
+        if (this._workspace) {
+          stream_url += `&workspace=${encodeURIComponent(this._workspace)}`;
+        }
         if (this._reconnection_token) {
           stream_url += `&reconnection_token=${encodeURIComponent(this._reconnection_token)}`;
         }
@@ -560,12 +565,12 @@ export class HTTPStreamingRPCConnection {
       throw new Error("Connection is closed");
     }
 
-    // Build POST URL - workspace is always set after open() from connection_info
-    const ws = this._workspace;
-    if (!ws) {
+    // Build POST URL using the workspace-less /rpc endpoint.
+    // Workspace is passed as a query parameter when available.
+    if (!this._workspace) {
       throw new Error("Workspace not set - connection not established");
     }
-    let post_url = `${this._server_url}/${ws}/rpc?client_id=${this._client_id}`;
+    let post_url = `${this._server_url}/rpc?client_id=${this._client_id}&workspace=${encodeURIComponent(this._workspace)}`;
 
     // Ensure data is Uint8Array
     const body = data instanceof Uint8Array ? data : new Uint8Array(data);
