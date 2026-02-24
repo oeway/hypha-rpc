@@ -44,7 +44,7 @@ jobs:
         uses: actions/setup-python@v4.5.0
         with:
           python-version: "3.11"
-      - run: pip install "psutil" "redis==5.2.0" "hypha @ git+https://github.com/amun-ai/hypha@main" "aioboto3==13.1.1" "dulwich>=0.21.7"
+      - run: pip install "psutil" "redis==5.2.0" "hypha>=0.21.51" "aioboto3==13.1.1" "dulwich>=0.21.7"
       - run: npm run test
       - name: Upload coverage reports
         uses: actions/upload-artifact@v4.4.3
