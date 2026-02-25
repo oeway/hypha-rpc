@@ -632,9 +632,7 @@ export class RPC extends MessageEmitter {
                       this._clientDisconnectedSubscription.unsubscribe();
                     }
                   } catch (e) {
-                    // console.debug(
-                      // `Error unsubscribing old client_disconnected: ${e}`,
-                    // );
+                    // console.debug(`Error unsubscribing old client_disconnected: ${e}`);
                   }
                   this._clientDisconnectedSubscription = null;
                 }
