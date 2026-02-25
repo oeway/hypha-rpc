@@ -462,18 +462,19 @@ class WebsocketRPCConnection {
             }
 
             // Log specific error types for better debugging
-            if (e.name === "NetworkError" || e.message?.includes("network")) {
-              console.error(`Network error during reconnection: ${e.message}`);
+            // Convert to string first to safely handle non-standard error objects
+            const errStr = `${e}`;
+            if (errStr.includes("NetworkError") || errStr.includes("network")) {
+              console.error(`Network error during reconnection: ${errStr}`);
             } else if (
-              e.name === "TimeoutError" ||
-              e.message?.includes("timeout")
+              errStr.includes("TimeoutError") || errStr.includes("timeout")
             ) {
               console.error(
-                `Connection timeout during reconnection: ${e.message}`,
+                `Connection timeout during reconnection: ${errStr}`,
               );
             } else {
               console.error(
-                `Unexpected error during reconnection: ${e.message}`,
+                `Unexpected error during reconnection: ${errStr}`,
               );
             }
 
