@@ -76,6 +76,7 @@ class WebsocketRPCConnection {
     this._reconnect_timeouts = new Set(); // Track reconnection timeouts
     this._additional_headers = additional_headers;
     this._reconnecting = false; // Mutex to prevent overlapping reconnection attempts
+    this._closedDuringReconnect = false; // Flag for close events during reconnection
     this._disconnectedNotified = false;
   }
 
@@ -318,7 +319,9 @@ class WebsocketRPCConnection {
       this._websocket.onclose = this._handle_close.bind(this);
 
       if (this._handle_connected) {
-        this._handle_connected(this.connection_info);
+        // Await async callbacks so errors (e.g. service re-registration
+        // failures) propagate instead of becoming unhandled rejections.
+        await this._handle_connected(this.connection_info);
       }
       return this.connection_info;
     } catch (error) {
@@ -384,9 +387,10 @@ class WebsocketRPCConnection {
         // Notify the RPC layer immediately so it can reject pending calls
         this._notifyDisconnected(event.reason);
 
-        // Prevent overlapping reconnection attempts
+        // If a reconnection is already in progress, signal it so the
+        // reconnect loop can detect that the newly-opened socket died and retry.
         if (this._reconnecting) {
-          // console.debug("Reconnection already in progress, skipping");
+          this._closedDuringReconnect = true;
           return;
         }
         this._reconnecting = true;
@@ -408,6 +412,10 @@ class WebsocketRPCConnection {
             console.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
+            // Reset the flag before each attempt so we can detect new close
+            // events that arrive while open() and the settle period run.
+            this._closedDuringReconnect = false;
+
             // Open the connection, this will trigger the on_connected callback
             await this.open();
 
@@ -415,6 +423,22 @@ class WebsocketRPCConnection {
             // This gives time for the on_connected callback to complete
             // which includes re-registering all services to the server
             await new Promise((resolve) => setTimeout(resolve, 500));
+
+            // Check if the WebSocket died during the settle period.
+            // This handles the race where _handle_close fires while
+            // _reconnecting is true and sets _closedDuringReconnect.
+            if (
+              this._closedDuringReconnect ||
+              !this._websocket ||
+              this._websocket.readyState !== WebSocket.OPEN
+            ) {
+              console.warn(
+                "WebSocket closed during reconnection settle period, retrying...",
+              );
+              this._closedDuringReconnect = false;
+              // Fall through to the retry logic below
+              throw new Error("Connection lost during reconnection settle");
+            }
 
             console.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
@@ -459,9 +483,7 @@ class WebsocketRPCConnection {
             const jitter = (Math.random() * 2 - 1) * maxJitter * delay;
             const finalDelay = Math.max(100, delay + jitter);
 
-            // console.debug(
-              `Waiting ${(finalDelay / 1000).toFixed(2)}s before next reconnection attempt`,
-            );
+            // console.debug(`Waiting ${(finalDelay / 1000).toFixed(2)}s before next reconnection attempt`);
 
             // Track the reconnection timeout to prevent leaks
             const timeoutId = setTimeout(async () => {
@@ -526,6 +548,7 @@ class WebsocketRPCConnection {
   disconnect(reason) {
     this._closed = true;
     this._reconnecting = false;
+    this._closedDuringReconnect = false;
     // Ensure websocket is closed if it exists and is not already closed or closing
     if (
       this._websocket &&
@@ -1200,6 +1223,8 @@ export class LocalWebSocket {
 // hypha-core's deno build does: import { hyphaWebsocketClient } from 'hypha-rpc'
 // The UMD build wraps everything under this name via webpack's `library` option,
 // but the ESM build exports flat, so we need this explicit re-export.
+export { WebsocketRPCConnection };
+
 export const hyphaWebsocketClient = {
   RPC,
   API_VERSION,

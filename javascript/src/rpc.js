@@ -482,9 +482,9 @@ export class RPC extends MessageEmitter {
           reasonStr.includes("RPC connection closed")
         ) {
           // console.debug(
-            "Ignoring expected disconnection/method error:",
-            reason,
-          );
+            // "Ignoring expected disconnection/method error:",
+            // reason,
+          // );
           event.preventDefault();
           return;
         }
@@ -579,8 +579,8 @@ export class RPC extends MessageEmitter {
                 );
                 registeredCount++;
                 // console.debug(
-                  `Successfully registered service: ${service.id || "unknown"}`,
-                );
+                  // `Successfully registered service: ${service.id || "unknown"}`,
+                // );
               } catch (serviceError) {
                 failedServices.push(service.id || "unknown");
                 if (
@@ -633,8 +633,8 @@ export class RPC extends MessageEmitter {
                     }
                   } catch (e) {
                     // console.debug(
-                      `Error unsubscribing old client_disconnected: ${e}`,
-                    );
+                      // `Error unsubscribing old client_disconnected: ${e}`,
+                    // );
                   }
                   this._clientDisconnectedSubscription = null;
                 }
@@ -661,13 +661,13 @@ export class RPC extends MessageEmitter {
                     // Construct the full client path with workspace prefix
                     const fullClientId = `${workspace}/${clientId}`;
                     // console.debug(
-                      `Client ${fullClientId} disconnected, cleaning up sessions`,
-                    );
+                      // `Client ${fullClientId} disconnected, cleaning up sessions`,
+                    // );
                     await this._handleClientDisconnected(fullClientId);
                   } else if (clientId) {
                     // console.debug(
-                      `Client ${clientId} disconnected, cleaning up sessions`,
-                    );
+                      // `Client ${clientId} disconnected, cleaning up sessions`,
+                    // );
                     await this._handleClientDisconnected(clientId);
                   }
                 };
@@ -686,18 +686,18 @@ export class RPC extends MessageEmitter {
                 );
 
                 // console.debug(
-                  "Successfully subscribed to client_disconnected events",
-                );
+                  // "Successfully subscribed to client_disconnected events",
+                // );
               } else {
                 // console.debug(
-                  "Manager does not support subscribe method, skipping client_disconnected handling",
-                );
+                  // "Manager does not support subscribe method, skipping client_disconnected handling",
+                // );
                 this._clientDisconnectedSubscription = null;
               }
             } catch (subscribeError) {
               // console.debug(
-                `Failed to subscribe to client_disconnected events: ${subscribeError}`,
-              );
+                // `Failed to subscribe to client_disconnected events: ${subscribeError}`,
+              // );
               this._clientDisconnectedSubscription = null;
             }
           } catch (managerError) {
@@ -1064,8 +1064,8 @@ export class RPC extends MessageEmitter {
 
       if (sessionsCleaned > 0) {
         // console.debug(
-          `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
-        );
+          // `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
+        // );
       }
 
       // Fire an event to notify about the client disconnection
@@ -1768,8 +1768,8 @@ export class RPC extends MessageEmitter {
             }
             should_cleanup = true;
             // console.debug(
-              `Promise session ${session_id} settled and marked for cleanup`,
-            );
+              // `Promise session ${session_id} settled and marked for cleanup`,
+            // );
           }
         } catch (e) {
           console.warn(
@@ -1788,8 +1788,8 @@ export class RPC extends MessageEmitter {
         ) {
           should_cleanup = true;
           // console.debug(
-            `Regular session ${session_id} marked for cleanup after ${callback_name}`,
-          );
+            // `Regular session ${session_id} marked for cleanup after ${callback_name}`,
+          // );
         }
       }
 
@@ -1854,8 +1854,8 @@ export class RPC extends MessageEmitter {
         const level = levels[i];
         if (!current_store[level]) {
           // console.debug(
-            `Session path ${session_id} not found at level ${level}`,
-          );
+            // `Session path ${session_id} not found at level ${level}`,
+          // );
           return;
         }
         current_store = current_store[level];
@@ -1904,8 +1904,8 @@ export class RPC extends MessageEmitter {
         ) {
           delete current_store[container_key];
           // console.debug(
-            `Cleaned up empty container at depth ${depth}: ${path_levels.slice(0, depth + 1).join(".")}`,
-          );
+            // `Cleaned up empty container at depth ${depth}: ${path_levels.slice(0, depth + 1).join(".")}`,
+          // );
         } else {
           // Container is not empty, stop cleanup
           break;
@@ -2340,8 +2340,8 @@ export class RPC extends MessageEmitter {
                 self._removeFromTargetIdIndex(local_session_id);
                 delete self._object_store[local_session_id];
                 // console.debug(
-                  `Cleaned up session ${local_session_id} after timeout`,
-                );
+                  // `Cleaned up session ${local_session_id} after timeout`,
+                // );
               }
             };
 
@@ -2625,8 +2625,8 @@ export class RPC extends MessageEmitter {
         // Clean promise method detection - TYPE-BASED, not string-based
         if (this._is_promise_method_call(data["method"])) {
           // console.debug(
-            `Promise method ${data["method"]} not available (detected by session type), ignoring: ${method_name}`,
-          );
+            // `Promise method ${data["method"]} not available (detected by session type), ignoring: ${method_name}`,
+          // );
           return;
         }
 
@@ -2637,8 +2637,8 @@ export class RPC extends MessageEmitter {
           // Check if the session exists but the specific method doesn't
           if (session_id in this._object_store) {
             // console.debug(
-              `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
-            );
+              // `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
+            // );
             // For expired callbacks, don't throw an exception, just log and return
             if (typeof reject === "function") {
               reject(new Error(`Method expired or not found: ${method_name}`));
@@ -2646,8 +2646,8 @@ export class RPC extends MessageEmitter {
             return;
           } else {
             // console.debug(
-              `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
-            );
+              // `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
+            // );
             // For cleaned up sessions, just log and return without throwing
             if (typeof reject === "function") {
               reject(new Error(`Session not found: ${method_name}`));
@@ -2657,8 +2657,8 @@ export class RPC extends MessageEmitter {
         }
 
         // console.debug(
-          `Failed to find method ${method_name} at ${this._client_id}`,
-        );
+          // `Failed to find method ${method_name} at ${this._client_id}`,
+        // );
         const error = new Error(
           `Method not found: ${method_name} at ${this._client_id}`,
         );
