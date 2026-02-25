@@ -386,7 +386,7 @@ class WebsocketRPCConnection {
 
         // Prevent overlapping reconnection attempts
         if (this._reconnecting) {
-          console.debug("Reconnection already in progress, skipping");
+          // console.debug("Reconnection already in progress, skipping");
           return;
         }
         this._reconnecting = true;
@@ -459,7 +459,7 @@ class WebsocketRPCConnection {
             const jitter = (Math.random() * 2 - 1) * maxJitter * delay;
             const finalDelay = Math.max(100, delay + jitter);
 
-            console.debug(
+            // console.debug(
               `Waiting ${(finalDelay / 1000).toFixed(2)}s before next reconnection attempt`,
             );
 

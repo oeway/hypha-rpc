@@ -299,7 +299,7 @@ export class HTTPStreamingRPCConnection {
         body: body,
       });
       if (response.ok) {
-        console.debug("Token refresh requested successfully");
+        // console.debug("Token refresh requested successfully");
       } else {
         console.warn(`Token refresh request failed: ${response.status}`);
       }

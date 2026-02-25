@@ -481,7 +481,7 @@ export class RPC extends MessageEmitter {
           reasonStr.includes("Client disconnected") ||
           reasonStr.includes("RPC connection closed")
         ) {
-          console.debug(
+          // console.debug(
             "Ignoring expected disconnection/method error:",
             reason,
           );
@@ -553,7 +553,7 @@ export class RPC extends MessageEmitter {
       this._connection = connection;
       const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
-          console.debug("Connection established, reporting services...");
+          // console.debug("Connection established, reporting services...");
           try {
             // Retry getting manager service with exponential backoff
             const manager = await this.get_manager_service({
@@ -578,7 +578,7 @@ export class RPC extends MessageEmitter {
                   `Timeout registering service ${service.id || "unknown"}`,
                 );
                 registeredCount++;
-                console.debug(
+                // console.debug(
                   `Successfully registered service: ${service.id || "unknown"}`,
                 );
               } catch (serviceError) {
@@ -632,7 +632,7 @@ export class RPC extends MessageEmitter {
                       this._clientDisconnectedSubscription.unsubscribe();
                     }
                   } catch (e) {
-                    console.debug(
+                    // console.debug(
                       `Error unsubscribing old client_disconnected: ${e}`,
                     );
                   }
@@ -650,7 +650,7 @@ export class RPC extends MessageEmitter {
                   this._boundHandleClientDisconnected = null;
                 }
 
-                console.debug("Subscribing to client_disconnected events");
+                // console.debug("Subscribing to client_disconnected events");
 
                 // Store handler at instance level so it can be removed later
                 this._boundHandleClientDisconnected = async (event) => {
@@ -660,12 +660,12 @@ export class RPC extends MessageEmitter {
                   if (clientId && workspace) {
                     // Construct the full client path with workspace prefix
                     const fullClientId = `${workspace}/${clientId}`;
-                    console.debug(
+                    // console.debug(
                       `Client ${fullClientId} disconnected, cleaning up sessions`,
                     );
                     await this._handleClientDisconnected(fullClientId);
                   } else if (clientId) {
-                    console.debug(
+                    // console.debug(
                       `Client ${clientId} disconnected, cleaning up sessions`,
                     );
                     await this._handleClientDisconnected(clientId);
@@ -685,17 +685,17 @@ export class RPC extends MessageEmitter {
                   this._boundHandleClientDisconnected,
                 );
 
-                console.debug(
+                // console.debug(
                   "Successfully subscribed to client_disconnected events",
                 );
               } else {
-                console.debug(
+                // console.debug(
                   "Manager does not support subscribe method, skipping client_disconnected handling",
                 );
                 this._clientDisconnectedSubscription = null;
               }
             } catch (subscribeError) {
-              console.debug(
+              // console.debug(
                 `Failed to subscribe to client_disconnected events: ${subscribeError}`,
               );
               this._clientDisconnectedSubscription = null;
@@ -1003,7 +1003,7 @@ export class RPC extends MessageEmitter {
           this._clientDisconnectedSubscription.unsubscribe();
         }
       } catch (e) {
-        console.debug(`Error unsubscribing client_disconnected: ${e}`);
+        // console.debug(`Error unsubscribing client_disconnected: ${e}`);
       }
       this._clientDisconnectedSubscription = null;
     }
@@ -1026,13 +1026,13 @@ export class RPC extends MessageEmitter {
           try {
             task.cancel();
           } catch (e) {
-            console.debug(`Error canceling background task: ${e}`);
+            // console.debug(`Error canceling background task: ${e}`);
           }
         }
       }
       this._background_tasks.clear();
     } catch (e) {
-      console.debug(`Error cleaning up background tasks: ${e}`);
+      // console.debug(`Error cleaning up background tasks: ${e}`);
     }
 
     // Clear session sweep interval
@@ -1045,11 +1045,11 @@ export class RPC extends MessageEmitter {
     try {
       this._connection = null;
       this._emit_message = function () {
-        console.debug("RPC connection closed, ignoring message");
+        // console.debug("RPC connection closed, ignoring message");
         return Promise.reject(new Error("Connection is closed"));
       };
     } catch (e) {
-      console.debug(`Error during connection cleanup: ${e}`);
+      // console.debug(`Error during connection cleanup: ${e}`);
     }
 
     this._fire("disconnected");
@@ -1057,13 +1057,13 @@ export class RPC extends MessageEmitter {
 
   async _handleClientDisconnected(clientId) {
     try {
-      console.debug(`Handling disconnection for client: ${clientId}`);
+      // console.debug(`Handling disconnection for client: ${clientId}`);
 
       // Clean up all sessions for the disconnected client
       const sessionsCleaned = this._cleanupSessionsForClient(clientId);
 
       if (sessionsCleaned > 0) {
-        console.debug(
+        // console.debug(
           `Cleaned up ${sessionsCleaned} sessions for disconnected client: ${clientId}`,
         );
       }
@@ -1091,7 +1091,7 @@ export class RPC extends MessageEmitter {
     const sessionId = data.session;
     const peerId = data.peer_id || data.from || "unknown";
     const errorMsg = data.error || `Peer ${peerId} is not connected`;
-    console.debug(`Peer not found: ${peerId} (session=${sessionId})`);
+    // console.debug(`Peer not found: ${peerId} (session=${sessionId})`);
 
     // Reject the specific pending call identified by sessionId
     if (sessionId) {
@@ -1143,7 +1143,7 @@ export class RPC extends MessageEmitter {
       try {
         session.reject(new Error(rejectReason));
       } catch (e) {
-        console.debug(`Error rejecting session: ${e}`);
+        // console.debug(`Error rejecting session: ${e}`);
       }
     }
     if (session.heartbeat_task) {
@@ -1182,7 +1182,7 @@ export class RPC extends MessageEmitter {
       this._cleanupSessionEntry(session, reason);
       delete this._object_store[sessionKey];
       sessionsCleaned++;
-      console.debug(`Cleaned up session: ${sessionKey}`);
+      // console.debug(`Cleaned up session: ${sessionKey}`);
     }
 
     delete this._targetIdIndex[clientId];
@@ -1218,7 +1218,7 @@ export class RPC extends MessageEmitter {
 
   _cleanupOnDisconnect() {
     try {
-      console.debug("Cleaning up all sessions due to local RPC disconnection");
+      // console.debug("Cleaning up all sessions due to local RPC disconnection");
 
       const keysToDelete = [];
       for (const key of Object.keys(this._object_store)) {
@@ -1248,7 +1248,7 @@ export class RPC extends MessageEmitter {
       try {
         await connection.disconnect();
       } catch (e) {
-        console.debug(`Error disconnecting underlying connection: ${e}`);
+        // console.debug(`Error disconnecting underlying connection: ${e}`);
       }
     }
   }
@@ -1742,14 +1742,14 @@ export class RPC extends MessageEmitter {
      * Clean session management - all logic in one place.
      */
     if (!session_id) {
-      console.debug("Cannot cleanup session: session_id is empty");
+      // console.debug("Cannot cleanup session: session_id is empty");
       return;
     }
 
     try {
       const store = this._get_session_store(session_id, false);
       if (!store) {
-        console.debug(`Session ${session_id} not found for cleanup`);
+        // console.debug(`Session ${session_id} not found for cleanup`);
         return;
       }
 
@@ -1767,7 +1767,7 @@ export class RPC extends MessageEmitter {
               promise_manager.settle();
             }
             should_cleanup = true;
-            console.debug(
+            // console.debug(
               `Promise session ${session_id} settled and marked for cleanup`,
             );
           }
@@ -1787,7 +1787,7 @@ export class RPC extends MessageEmitter {
           Object.keys(store._callbacks).includes(callback_name)
         ) {
           should_cleanup = true;
-          console.debug(
+          // console.debug(
             `Regular session ${session_id} marked for cleanup after ${callback_name}`,
           );
         }
@@ -1811,7 +1811,7 @@ export class RPC extends MessageEmitter {
 
       const store = this._get_session_store(session_id, false);
       if (!store) {
-        console.debug(`Session ${session_id} already cleaned up`);
+        // console.debug(`Session ${session_id} already cleaned up`);
         return;
       }
 
@@ -1853,7 +1853,7 @@ export class RPC extends MessageEmitter {
       for (let i = 0; i < levels.length - 1; i++) {
         const level = levels[i];
         if (!current_store[level]) {
-          console.debug(
+          // console.debug(
             `Session path ${session_id} not found at level ${level}`,
           );
           return;
@@ -1865,7 +1865,7 @@ export class RPC extends MessageEmitter {
       const final_key = levels[levels.length - 1];
       if (current_store[final_key]) {
         delete current_store[final_key];
-        console.debug(`Cleaned up session ${session_id}`);
+        // console.debug(`Cleaned up session ${session_id}`);
 
         // Clean up empty parent containers
         this._cleanup_empty_containers(levels.slice(0, -1));
@@ -1903,7 +1903,7 @@ export class RPC extends MessageEmitter {
           Object.keys(container).length === 0
         ) {
           delete current_store[container_key];
-          console.debug(
+          // console.debug(
             `Cleaned up empty container at depth ${depth}: ${path_levels.slice(0, depth + 1).join(".")}`,
           );
         } else {
@@ -1980,7 +1980,7 @@ export class RPC extends MessageEmitter {
      * Force cleanup all sessions (for testing purposes).
      */
     if (!this._object_store) {
-      console.debug("Force cleaning up 0 sessions");
+      // console.debug("Force cleaning up 0 sessions");
       return;
     }
 
@@ -2010,7 +2010,7 @@ export class RPC extends MessageEmitter {
     // Clear the target_id index since all sessions are removed
     this._targetIdIndex = {};
 
-    console.debug(`Force cleaning up ${cleaned_count} sessions`);
+    // console.debug(`Force cleaning up ${cleaned_count} sessions`);
   }
 
   _sweepStaleSessions() {
@@ -2046,7 +2046,7 @@ export class RPC extends MessageEmitter {
       }
     }
     if (swept > 0) {
-      console.debug(`Swept ${swept} stale session(s)`);
+      // console.debug(`Swept ${swept} stale session(s)`);
     }
   }
 
@@ -2068,7 +2068,7 @@ export class RPC extends MessageEmitter {
       },
       settle: () => {
         // Promise is settled (resolved or rejected)
-        console.debug("Promise settled");
+        // console.debug("Promise settled");
       },
     };
   }
@@ -2339,7 +2339,7 @@ export class RPC extends MessageEmitter {
                 // Clean up target_id index before deleting the session
                 self._removeFromTargetIdIndex(local_session_id);
                 delete self._object_store[local_session_id];
-                console.debug(
+                // console.debug(
                   `Cleaned up session ${local_session_id} after timeout`,
                 );
               }
@@ -2624,7 +2624,7 @@ export class RPC extends MessageEmitter {
       } catch (e) {
         // Clean promise method detection - TYPE-BASED, not string-based
         if (this._is_promise_method_call(data["method"])) {
-          console.debug(
+          // console.debug(
             `Promise method ${data["method"]} not available (detected by session type), ignoring: ${method_name}`,
           );
           return;
@@ -2636,7 +2636,7 @@ export class RPC extends MessageEmitter {
           const session_id = method_parts[0];
           // Check if the session exists but the specific method doesn't
           if (session_id in this._object_store) {
-            console.debug(
+            // console.debug(
               `Session ${session_id} exists but method ${data["method"]} not found, likely expired callback: ${method_name}`,
             );
             // For expired callbacks, don't throw an exception, just log and return
@@ -2645,7 +2645,7 @@ export class RPC extends MessageEmitter {
             }
             return;
           } else {
-            console.debug(
+            // console.debug(
               `Session ${session_id} not found for method ${data["method"]}, likely cleaned up: ${method_name}`,
             );
             // For cleaned up sessions, just log and return without throwing
@@ -2656,7 +2656,7 @@ export class RPC extends MessageEmitter {
           }
         }
 
-        console.debug(
+        // console.debug(
           `Failed to find method ${method_name} at ${this._client_id}`,
         );
         const error = new Error(
