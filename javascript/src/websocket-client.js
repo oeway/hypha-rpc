@@ -462,11 +462,11 @@ class WebsocketRPCConnection {
             }
 
             // Log specific error types for better debugging
-            if (e.name === "NetworkError" || e.message.includes("network")) {
+            if (e.name === "NetworkError" || e.message?.includes("network")) {
               console.error(`Network error during reconnection: ${e.message}`);
             } else if (
               e.name === "TimeoutError" ||
-              e.message.includes("timeout")
+              e.message?.includes("timeout")
             ) {
               console.error(
                 `Connection timeout during reconnection: ${e.message}`,
