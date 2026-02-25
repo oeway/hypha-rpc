@@ -785,6 +785,7 @@ class RPC(MessageEmitter):
             )
             self.on("method", self._handle_method)
             self.on("error", self._error)
+            self.on("peer_not_found", self._handle_peer_not_found)
 
             assert hasattr(connection, "emit_message") and hasattr(
                 connection, "on_message"
@@ -1468,7 +1469,7 @@ class RPC(MessageEmitter):
                 continue
 
             self._cleanup_session_entry(session, reason)
-            del self._object_store[session_key]
+            self._object_store.pop(session_key, None)
             sessions_cleaned += 1
             logger.debug("Cleaned up session: %s", session_key)
 
@@ -1513,7 +1514,7 @@ class RPC(MessageEmitter):
                 keys_to_delete.append(key)
 
             for key in keys_to_delete:
-                del self._object_store[key]
+                self._object_store.pop(key, None)
 
             self._target_id_index.clear()
         except Exception as e:
@@ -2504,6 +2505,32 @@ class RPC(MessageEmitter):
 
     def _error(self, error):
         logger.error("RPC Error: %s", error)
+
+    def _handle_peer_not_found(self, data):
+        """Handle server notification that target peer is not connected.
+
+        When the server detects that an RPC message targets a disconnected
+        client, it sends back a 'peer_not_found' message instead of silently
+        dropping it.  This allows pending calls to fail immediately rather
+        than waiting for the full method timeout.
+        """
+        session_id = data.get("session")
+        peer_id = data.get("peer_id", data.get("from", "unknown"))
+        error_msg = data.get("error", f"Peer {peer_id} is not connected")
+        logger.debug("Peer not found: %s (session=%s)", peer_id, session_id)
+
+        # Reject the specific pending call identified by session_id
+        if session_id:
+            session = self._object_store.get(session_id)
+            if session and isinstance(session, dict):
+                self._cleanup_session_entry(session, error_msg)
+                if session_id in self._object_store:
+                    del self._object_store[session_id]
+                self._remove_from_target_id_index(session_id)
+
+        # Also clean up all other sessions targeting this peer
+        if peer_id:
+            self._cleanup_sessions_for_client(peer_id)
 
     def _call_method(
         self,

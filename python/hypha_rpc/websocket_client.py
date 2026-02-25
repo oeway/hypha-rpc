@@ -437,6 +437,20 @@ class WebsocketRPCConnection:
                                 # which includes re-registering all services to the server
                                 await asyncio.sleep(0.5)
 
+                                # Verify the WebSocket is still alive after the settle period.
+                                # The connection can die during the 0.5s window (e.g. server
+                                # restart mid-handshake) — if so, retry instead of declaring success.
+                                if (
+                                    not self._websocket
+                                    or self._websocket.state != State.OPEN
+                                ):
+                                    logger.warning(
+                                        "WebSocket closed during reconnection settle period, retrying..."
+                                    )
+                                    raise ConnectionError(
+                                        "Connection lost during reconnection settle"
+                                    )
+
                                 logger.warning(
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
