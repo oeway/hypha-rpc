@@ -1427,6 +1427,7 @@ export class RPC extends MessageEmitter {
     visibility,
     authorized_workspaces,
     trusted_keys,
+    rintf_allowed_caller,
   ) {
     if (typeof aObject === "function") {
       // mark the method as a remote method that requires context
@@ -1440,6 +1441,7 @@ export class RPC extends MessageEmitter {
         visibility: visibility,
         authorized_workspaces: authorized_workspaces,
         trusted_keys: trusted_keys,
+        rintf_allowed_caller: rintf_allowed_caller,
       });
     } else if (aObject instanceof Array || aObject instanceof Object) {
       for (let key of Object.keys(aObject)) {
@@ -1473,6 +1475,7 @@ export class RPC extends MessageEmitter {
           visibility,
           authorized_workspaces,
           trusted_keys,
+          rintf_allowed_caller,
         );
       }
     }
@@ -1557,6 +1560,7 @@ export class RPC extends MessageEmitter {
         trusted_keys.add(keyHex);
       }
     }
+    const rintf_allowed_caller = api.config._rintf_allowed_caller || null;
     this._annotate_service_methods(
       api,
       api["id"],
@@ -1565,6 +1569,7 @@ export class RPC extends MessageEmitter {
       visibility,
       authorized_workspaces,
       trusted_keys,
+      rintf_allowed_caller,
     );
 
     if (this._services[api.id]) {
@@ -2724,6 +2729,25 @@ export class RPC extends MessageEmitter {
             remote_client_id === this._connection.manager_id
           ) {
             // Access granted
+          }
+          // Allow _rintf callbacks from the specific client they were sent to
+          else if (
+            this._method_annotations.get(method).rintf_allowed_caller
+          ) {
+            const allowed =
+              this._method_annotations.get(method).rintf_allowed_caller;
+            const caller = data.from || "";
+            if (caller !== allowed) {
+              throw new Error(
+                "Permission denied for _rintf callback " +
+                  method_name +
+                  ", caller " +
+                  caller +
+                  " is not the allowed caller " +
+                  allowed,
+              );
+            }
+            // Access granted — caller matches the _rintf target
           } else {
             throw new Error(
               "Permission denied for invoking protected method " +
@@ -3219,7 +3243,23 @@ export class RPC extends MessageEmitter {
         )
       ) {
         const serviceId = `_rintf_${randId()}`;
+        // Resolve the allowed caller from the session's target_id.
+        // Only the client this _rintf is being sent to can call it back.
+        let allowedCaller = null;
+        if (session_id) {
+          const topKey = session_id.split(".")[0];
+          const sessionStore = this._object_store[topKey];
+          if (sessionStore && sessionStore.target_id) {
+            allowedCaller = sessionStore.target_id;
+          }
+        }
         const serviceApi = { id: serviceId };
+        if (allowedCaller) {
+          serviceApi.config = {
+            visibility: "protected",
+            _rintf_allowed_caller: allowedCaller,
+          };
+        }
         for (const k of Object.keys(aObject)) {
           if (!k.startsWith("_") && typeof aObject[k] === "function") {
             serviceApi[k] = aObject[k];

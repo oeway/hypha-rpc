@@ -1727,6 +1727,7 @@ class RPC(MessageEmitter):
         visibility="protected",
         authorized_workspaces=None,
         trusted_keys=None,
+        rintf_allowed_caller=None,
     ):
         if callable(a_object):
             # mark the method as a remote method that requires context
@@ -1742,6 +1743,7 @@ class RPC(MessageEmitter):
                 "visibility": visibility,
                 "authorized_workspaces": authorized_workspaces,
                 "trusted_keys": trusted_keys,
+                "rintf_allowed_caller": rintf_allowed_caller,
             }
         elif isinstance(a_object, (dict, list, tuple)):
             if isinstance(a_object, ObjectProxy):
@@ -1777,6 +1779,7 @@ class RPC(MessageEmitter):
                     visibility=visibility,
                     authorized_workspaces=authorized_workspaces,
                     trusted_keys=trusted_keys,
+                    rintf_allowed_caller=rintf_allowed_caller,
                 )
 
     def add_service(self, api, overwrite=False):
@@ -1857,6 +1860,7 @@ class RPC(MessageEmitter):
                         f"got: {key_hex!r}"
                     )
                 trusted_keys.add(key_hex)
+        rintf_allowed_caller = api["config"].get("_rintf_allowed_caller")
         self._annotate_service_methods(
             api,
             api["id"],
@@ -1865,6 +1869,7 @@ class RPC(MessageEmitter):
             visibility=visibility,
             authorized_workspaces=authorized_workspaces,
             trusted_keys=trusted_keys,
+            rintf_allowed_caller=rintf_allowed_caller,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -2819,6 +2824,17 @@ class RPC(MessageEmitter):
                         and remote_client_id == self._connection.manager_id
                     ):
                         pass  # Access granted
+                    # Allow _rintf callbacks from the specific client they were sent to
+                    elif self._method_annotations[method].get("rintf_allowed_caller"):
+                        allowed = self._method_annotations[method]["rintf_allowed_caller"]
+                        caller = data.get("from", "")
+                        if caller == allowed:
+                            pass  # Access granted — caller matches the _rintf target
+                        else:
+                            raise PermissionError(
+                                f"Permission denied for _rintf callback {method_name}, "
+                                f"caller {caller} is not the allowed caller {allowed}"
+                            )
                     else:
                         raise PermissionError(
                             f"Permission denied for invoking protected method {method_name}, "
@@ -3293,7 +3309,22 @@ class RPC(MessageEmitter):
                 )
             ):
                 service_id = f"_rintf_{shortuuid.uuid()}"
+                # Resolve the allowed caller from the session's target_id.
+                # The _rintf is being sent to a specific remote client (the
+                # session target), so only that client should be able to
+                # call these callbacks back.
+                allowed_caller = None
+                if session_id:
+                    top_key = session_id.split(".")[0]
+                    session_store = self._object_store.get(top_key)
+                    if isinstance(session_store, dict):
+                        allowed_caller = session_store.get("target_id")
                 service_api = {"id": service_id}
+                if allowed_caller:
+                    service_api["config"] = {
+                        "visibility": "protected",
+                        "_rintf_allowed_caller": allowed_caller,
+                    }
                 for k, v in a_object.items():
                     if not k.startswith("_") and callable(v):
                         service_api[k] = v
