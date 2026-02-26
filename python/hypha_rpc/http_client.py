@@ -655,6 +655,39 @@ async def _connect_to_server_http(config: dict):
     )
     wm.rpc = rpc
 
+    # Auto-refresh workspace manager proxy after reconnection.
+    # See websocket_client.py connect_to_server for detailed explanation.
+    _is_initial_refresh = {"value": True}
+
+    async def _refresh_wm_proxy(event_data):
+        if _is_initial_refresh["value"]:
+            _is_initial_refresh["value"] = False
+            return
+        try:
+            internal_manager = event_data.get("manager") if isinstance(event_data, dict) else None
+            if internal_manager:
+                fresh_wm = internal_manager
+            else:
+                fresh_wm = await rpc.get_manager_service(
+                    {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
+                )
+            for key in dir(fresh_wm):
+                if key.startswith("_"):
+                    continue
+                val = getattr(fresh_wm, key, None)
+                if callable(val):
+                    setattr(wm, key, val)
+            logger.info(
+                "Workspace manager proxy refreshed after reconnection (new manager_id: %s)",
+                getattr(connection, "manager_id", "unknown"),
+            )
+        except Exception as err:
+            logger.warning(
+                "Failed to refresh workspace manager after reconnection: %s", err
+            )
+
+    rpc.on("manager_refreshed", _refresh_wm_proxy)
+
     # Add standard methods
     wm.disconnect = schema_function(
         rpc.disconnect,

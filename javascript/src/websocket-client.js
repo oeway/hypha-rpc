@@ -838,23 +838,36 @@ export async function connectToServer(config) {
   wm.rpc = rpc;
 
   // Auto-refresh workspace manager proxy after reconnection.
-  // When the server restarts, it assigns a new manager_id. The RPC layer
-  // internally uses the updated manager_id for service re-registration
-  // (in the onConnected callback), but the wm proxy returned to the caller
-  // still has methods bound to the old manager_id. This listener refreshes
-  // the wm proxy methods so they target the new manager_id.
-  let isInitialRegistration = true;
-  rpc.on("services_registered", async () => {
-    if (isInitialRegistration) {
-      isInitialRegistration = false;
+  // When the server restarts, it assigns a new manager_id. The wm proxy
+  // returned to the caller has methods bound to the old manager_id.
+  //
+  // The RPC layer fires "manager_refreshed" IMMEDIATELY after getting the
+  // fresh manager service — before service re-registration. This minimizes
+  // the window where stale methods exist (~100ms instead of ~2-3s).
+  //
+  // Combined with the RPC layer's immediate rejection of pending calls to
+  // the old manager_id, recovery is near-instant.
+  let isInitialRefresh = true;
+  rpc.on("manager_refreshed", async ({ manager: internalManager }) => {
+    if (isInitialRefresh) {
+      isInitialRefresh = false;
       return; // Skip the first event (initial connection, wm is already fresh)
     }
     try {
-      const freshWm = await rpc.get_manager_service({
-        timeout: config.method_timeout || 30,
-        case_conversion: "camel",
-        kwargs_expansion: config.kwargs_expansion || false,
-      });
+      let freshWm;
+      if (config.kwargs_expansion) {
+        // kwargs_expansion changes the method signatures, so we need to
+        // fetch a new manager with matching config
+        freshWm = await rpc.get_manager_service({
+          timeout: config.method_timeout || 30,
+          case_conversion: "camel",
+          kwargs_expansion: config.kwargs_expansion,
+        });
+      } else {
+        // The internal manager already uses case_conversion: "camel",
+        // so we can copy directly without an extra RPC call
+        freshWm = internalManager;
+      }
       // Copy all function properties from fresh wm onto existing wm object.
       // This preserves the caller's reference while updating method targets.
       for (const key of Object.keys(freshWm)) {
