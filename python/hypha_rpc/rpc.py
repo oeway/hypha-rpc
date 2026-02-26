@@ -730,6 +730,8 @@ class RPC(MessageEmitter):
         }
         # Index: target_id -> set of top-level session keys for fast cleanup
         self._target_id_index = {}
+        # Track last known manager_id for stale call rejection on reconnection
+        self._last_manager_id = None
 
         # Encryption support (X25519 ECDH + AES-256-GCM)
         self._encryption_enabled = False
@@ -797,12 +799,37 @@ class RPC(MessageEmitter):
 
             async def on_connected(connection_info):
                 if not self._silent and self._connection.manager_id:
+                    # Immediately reject all pending calls targeting the old manager.
+                    # After server restart, the manager_id changes. Any in-flight RPC
+                    # calls to the old manager will never get a response (the server
+                    # silently drops messages to unknown */{id} targets). Rejecting
+                    # them here avoids waiting for the full method timeout (~10-30s).
+                    current_manager_id = self._connection.manager_id
+                    if (
+                        self._last_manager_id
+                        and self._last_manager_id != current_manager_id
+                    ):
+                        old_target = f"*/{self._last_manager_id}"
+                        cleaned = self._cleanup_sessions_for_client(old_target)
+                        if cleaned > 0:
+                            logger.info(
+                                f"Rejected {cleaned} stale call(s) to old manager {self._last_manager_id}"
+                            )
+                    self._last_manager_id = current_manager_id
+
                     logger.info("Connection established, reporting services...")
                     try:
-                        # Retry getting manager service with exponential backoff
+                        # Get fresh manager service (one RPC roundtrip, ~50-100ms)
                         manager = await self.get_manager_service(
                             {"timeout": 20, "case_conversion": "snake"}
                         )
+
+                        # Fire manager_refreshed IMMEDIATELY — before service
+                        # re-registration. This allows connect_to_server's wm proxy
+                        # to be updated as soon as possible, minimizing the window
+                        # where stale methods exist.
+                        self._fire("manager_refreshed", {"manager": manager})
+
                         services_count = len(self._services)
                         registered_count = 0
                         failed_services = []

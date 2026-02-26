@@ -958,21 +958,28 @@ async def _connect_to_server(config):
     wm.rpc = rpc
 
     # Auto-refresh workspace manager proxy after reconnection.
-    # When the server restarts, it assigns a new manager_id. The RPC layer
-    # internally uses the updated manager_id for service re-registration
-    # (in the onConnected callback), but the wm proxy returned to the caller
-    # still has methods bound to the old manager_id. This listener refreshes
-    # the wm proxy methods so they target the new manager_id.
-    _is_initial_registration = {"value": True}
+    # The RPC layer fires "manager_refreshed" IMMEDIATELY after getting the
+    # fresh manager service — before service re-registration. This minimizes
+    # the window where stale methods exist (~100ms instead of ~2-3s).
+    #
+    # Combined with the RPC layer's immediate rejection of pending calls to
+    # the old manager_id, recovery is near-instant.
+    _is_initial_refresh = {"value": True}
 
-    async def _refresh_wm_proxy():
-        if _is_initial_registration["value"]:
-            _is_initial_registration["value"] = False
+    async def _refresh_wm_proxy(event_data):
+        if _is_initial_refresh["value"]:
+            _is_initial_refresh["value"] = False
             return  # Skip the first event (initial connection, wm is already fresh)
         try:
-            fresh_wm = await rpc.get_manager_service(
-                {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
-            )
+            # The internal manager already uses case_conversion: "snake",
+            # so we can copy directly without an extra RPC call
+            internal_manager = event_data.get("manager") if isinstance(event_data, dict) else None
+            if internal_manager:
+                fresh_wm = internal_manager
+            else:
+                fresh_wm = await rpc.get_manager_service(
+                    {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
+                )
             # Copy all callable attributes from fresh wm onto existing wm object.
             # This preserves the caller's reference while updating method targets.
             for key in dir(fresh_wm):
@@ -990,7 +997,7 @@ async def _connect_to_server(config):
                 "Failed to refresh workspace manager after reconnection: %s", err
             )
 
-    rpc.on("services_registered", _refresh_wm_proxy)
+    rpc.on("manager_refreshed", _refresh_wm_proxy)
 
     def export(api: dict):
         """Export the api."""

@@ -435,6 +435,8 @@ export class RPC extends MessageEmitter {
     };
     // Index: target_id -> Set of top-level session keys for fast cleanup
     this._targetIdIndex = {};
+    // Track last known manager_id for stale call rejection on reconnection
+    this._last_manager_id = null;
 
     // Encryption support (X25519 ECDH + AES-256-GCM)
     this._encryption_enabled = false;
@@ -553,13 +555,38 @@ export class RPC extends MessageEmitter {
       this._connection = connection;
       const onConnected = async (connectionInfo) => {
         if (!this._silent && this._connection.manager_id) {
-          // console.debug("Connection established, reporting services...");
+          // Immediately reject all pending calls targeting the old manager.
+          // After server restart, the manager_id changes. Any in-flight RPC
+          // calls to the old manager will never get a response (the server
+          // silently drops messages to unknown */{id} targets). Rejecting
+          // them here avoids waiting for the full method timeout (~10-30s).
+          const currentManagerId = this._connection.manager_id;
+          if (
+            this._last_manager_id &&
+            this._last_manager_id !== currentManagerId
+          ) {
+            const oldTarget = `*/${this._last_manager_id}`;
+            const cleaned = this._cleanupSessionsForClient(oldTarget);
+            if (cleaned > 0) {
+              console.info(
+                `Rejected ${cleaned} stale call(s) to old manager ${this._last_manager_id}`,
+              );
+            }
+          }
+          this._last_manager_id = currentManagerId;
+
           try {
-            // Retry getting manager service with exponential backoff
+            // Get fresh manager service (one RPC roundtrip, ~50-100ms)
             const manager = await this.get_manager_service({
               timeout: 20,
               case_conversion: "camel",
             });
+
+            // Fire manager_refreshed IMMEDIATELY — before service re-registration.
+            // This allows connectToServer's wm proxy to be updated as soon as
+            // possible, minimizing the window where stale methods exist.
+            this._fire("manager_refreshed", { manager });
+
             const services = Object.values(this._services);
             const servicesCount = services.length;
             let registeredCount = 0;
@@ -578,9 +605,6 @@ export class RPC extends MessageEmitter {
                   `Timeout registering service ${service.id || "unknown"}`,
                 );
                 registeredCount++;
-                // console.debug(
-                  // `Successfully registered service: ${service.id || "unknown"}`,
-                // );
               } catch (serviceError) {
                 failedServices.push(service.id || "unknown");
                 if (
