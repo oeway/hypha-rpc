@@ -104,7 +104,7 @@ class MockWebSocket {
                   workspace: parsed.workspace || "test-ws",
                   client_id: parsed.client_id,
                   reconnection_token: "mock-recon-token-" + Date.now(),
-                  manager_id: "mock-manager",
+                  manager_id: MockWebSocket._nextManagerId || "mock-manager-" + MockWebSocket._instances.length,
                   public_base_url: "https://mock.server",
                 }),
               });
@@ -136,10 +136,12 @@ class MockWebSocket {
 
 MockWebSocket._instances = [];
 MockWebSocket._blockConnections = false;
+MockWebSocket._nextManagerId = null;
 
 function resetMock() {
   MockWebSocket._instances = [];
   MockWebSocket._blockConnections = false;
+  MockWebSocket._nextManagerId = null;
 }
 
 function getLastMockWs() {
@@ -506,6 +508,47 @@ await runTest(
       MockWebSocket._instances.length <= wsCountBefore + 1,
       "should not keep trying to reconnect after disconnect",
     );
+  },
+);
+
+// ─── Test 8: wm proxy refreshes after reconnection with new manager_id ───────
+//
+// This is the critical stale-manager_id bug: when the server restarts,
+// it assigns a new manager_id. The wm proxy returned by connectToServer()
+// must be refreshed so calls like echo(), getService(), listServices()
+// target the new manager_id instead of the old one.
+
+await runTest(
+  "should update connection manager_id after reconnection",
+  async () => {
+    resetMock();
+    const conn = await createConnection();
+    const ws1 = conn._websocket;
+
+    // Verify initial manager_id
+    assert(conn.manager_id !== null, "should have a manager_id after connection");
+    const initialManagerId = conn.manager_id;
+
+    // Set a DIFFERENT manager_id for the next connection (simulates server restart)
+    MockWebSocket._nextManagerId = "new-manager-after-restart";
+
+    // Simulate server close
+    ws1.simulateClose(1012, "Server restart (rolling update)");
+
+    // Wait for reconnection to complete
+    await sleep(1500);
+
+    // The connection's manager_id should be updated to the new one
+    assert(
+      conn.manager_id === "new-manager-after-restart",
+      `manager_id should be updated to 'new-manager-after-restart', got '${conn.manager_id}'`,
+    );
+    assert(
+      conn.manager_id !== initialManagerId,
+      "manager_id should differ from initial after server restart",
+    );
+
+    conn.disconnect("test cleanup");
   },
 );
 
