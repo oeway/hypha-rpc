@@ -56,7 +56,7 @@ except ImportError:
 
 CHUNK_SIZE = 1024 * 256
 API_VERSION = 3
-ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__"]
+ALLOWED_MAGIC_METHODS = ["__enter__", "__exit__", "_dispose"]
 IO_PROPS = [
     "name",  # file name
     "size",  # size in bytes
@@ -730,6 +730,8 @@ class RPC(MessageEmitter):
         }
         # Index: target_id -> set of top-level session keys for fast cleanup
         self._target_id_index = {}
+        # Index: allowed_caller -> set of _rintf service IDs for lifecycle cleanup
+        self._rintf_caller_index = {}
         # Track last known manager_id for stale call rejection on reconnection
         self._last_manager_id = None
 
@@ -915,14 +917,23 @@ class RPC(MessageEmitter):
                                 # Store handler at instance level so it can be
                                 # properly removed on reconnection or close
                                 async def handle_client_disconnected(event):
-                                    client_id = event.get("client")
-                                    if client_id:
-                                        logger.debug(
-                                            f"Client {client_id} disconnected, cleaning up sessions"
-                                        )
-                                        await self._handle_client_disconnected(
-                                            client_id
-                                        )
+                                    # Event data: {"id": client_id, "workspace": ws}
+                                    # May arrive as top-level or nested in event.data
+                                    data = event.get("data", event)
+                                    raw_id = data.get("id") or event.get("client")
+                                    workspace = data.get("workspace")
+                                    if raw_id and workspace:
+                                        client_id = f"{workspace}/{raw_id}"
+                                    elif raw_id:
+                                        client_id = raw_id
+                                    else:
+                                        return
+                                    logger.debug(
+                                        f"Client {client_id} disconnected, cleaning up sessions"
+                                    )
+                                    await self._handle_client_disconnected(
+                                        client_id
+                                    )
 
                                 self._bound_handle_client_disconnected = (
                                     handle_client_disconnected
@@ -1360,6 +1371,8 @@ class RPC(MessageEmitter):
         # Clear additional data structures that may hold references
         if hasattr(self, "_target_id_index"):
             self._target_id_index.clear()
+        if hasattr(self, "_rintf_caller_index"):
+            self._rintf_caller_index.clear()
         if hasattr(self, "_chunk_store"):
             self._chunk_store.clear()
         if hasattr(self, "_codecs"):
@@ -1416,6 +1429,38 @@ class RPC(MessageEmitter):
             except Exception as e:
                 logger.debug(f"Error disconnecting underlying connection: {e}")
 
+    def _unregister_rintf_service(self, service_id, allowed_caller=None):
+        """Unregister a single _rintf service and remove it from the caller index.
+
+        Safe to call even if the service was already removed.
+        """
+        if service_id in self._services:
+            self._remove_service_annotations(self._services[service_id])
+            del self._services[service_id]
+        # Remove from caller index
+        if allowed_caller and allowed_caller in self._rintf_caller_index:
+            self._rintf_caller_index[allowed_caller].discard(service_id)
+            if not self._rintf_caller_index[allowed_caller]:
+                del self._rintf_caller_index[allowed_caller]
+
+    def _cleanup_rintf_for_caller(self, client_id):
+        """Remove all _rintf services whose allowed caller is the given client.
+
+        This is the passive lifecycle cleanup: when a client disconnects,
+        any _rintf callbacks that only it could invoke become dead resources.
+        Returns the number of _rintf services cleaned up.
+        """
+        service_ids = self._rintf_caller_index.pop(client_id, None)
+        if not service_ids:
+            return 0
+        cleaned = 0
+        for sid in list(service_ids):
+            if sid in self._services:
+                self._remove_service_annotations(self._services[sid])
+                del self._services[sid]
+                cleaned += 1
+        return cleaned
+
     async def _handle_client_disconnected(self, client_id):
         """Handle cleanup when a remote client disconnects."""
         try:
@@ -1424,15 +1469,23 @@ class RPC(MessageEmitter):
             # Clean up all sessions for the disconnected client
             sessions_cleaned = self._cleanup_sessions_for_client(client_id)
 
-            if sessions_cleaned > 0:
+            # Clean up _rintf services whose allowed caller is the disconnected client
+            rintf_cleaned = self._cleanup_rintf_for_caller(client_id)
+
+            if sessions_cleaned > 0 or rintf_cleaned > 0:
                 logger.debug(
-                    f"Cleaned up {sessions_cleaned} sessions for disconnected client: {client_id}"
+                    f"Cleaned up {sessions_cleaned} sessions and "
+                    f"{rintf_cleaned} _rintf services for disconnected client: {client_id}"
                 )
 
             # Fire an event to notify about the client disconnection
             self._fire(
                 "remote_client_disconnected",
-                {"client_id": client_id, "sessions_cleaned": sessions_cleaned},
+                {
+                    "client_id": client_id,
+                    "sessions_cleaned": sessions_cleaned,
+                    "rintf_cleaned": rintf_cleaned,
+                },
             )
 
         except Exception as e:
@@ -1544,6 +1597,7 @@ class RPC(MessageEmitter):
                 self._object_store.pop(key, None)
 
             self._target_id_index.clear()
+            self._rintf_caller_index.clear()
         except Exception as e:
             logger.error("Error during cleanup on disconnect: %s", e)
 
@@ -1727,6 +1781,7 @@ class RPC(MessageEmitter):
         visibility="protected",
         authorized_workspaces=None,
         trusted_keys=None,
+        rintf_allowed_caller=None,
     ):
         if callable(a_object):
             # mark the method as a remote method that requires context
@@ -1742,6 +1797,7 @@ class RPC(MessageEmitter):
                 "visibility": visibility,
                 "authorized_workspaces": authorized_workspaces,
                 "trusted_keys": trusted_keys,
+                "rintf_allowed_caller": rintf_allowed_caller,
             }
         elif isinstance(a_object, (dict, list, tuple)):
             if isinstance(a_object, ObjectProxy):
@@ -1777,6 +1833,7 @@ class RPC(MessageEmitter):
                     visibility=visibility,
                     authorized_workspaces=authorized_workspaces,
                     trusted_keys=trusted_keys,
+                    rintf_allowed_caller=rintf_allowed_caller,
                 )
 
     def add_service(self, api, overwrite=False):
@@ -1857,6 +1914,7 @@ class RPC(MessageEmitter):
                         f"got: {key_hex!r}"
                     )
                 trusted_keys.add(key_hex)
+        rintf_allowed_caller = api["config"].get("_rintf_allowed_caller")
         self._annotate_service_methods(
             api,
             api["id"],
@@ -1865,6 +1923,7 @@ class RPC(MessageEmitter):
             visibility=visibility,
             authorized_workspaces=authorized_workspaces,
             trusted_keys=trusted_keys,
+            rintf_allowed_caller=rintf_allowed_caller,
         )
         if not overwrite and api["id"] in self._services:
             raise Exception(
@@ -1991,6 +2050,11 @@ class RPC(MessageEmitter):
         # Auto-detect _rintf services (local-only, never registered with server)
         if service_id.startswith("_rintf_"):
             notify = False
+            # Also clean up from the caller index
+            for caller, sids in list(self._rintf_caller_index.items()):
+                sids.discard(service_id)
+                if not sids:
+                    del self._rintf_caller_index[caller]
         if notify:
             manager = await self.get_manager_service(
                 {"timeout": 20, "case_conversion": "snake"}
@@ -2819,6 +2883,17 @@ class RPC(MessageEmitter):
                         and remote_client_id == self._connection.manager_id
                     ):
                         pass  # Access granted
+                    # Allow _rintf callbacks from the specific client they were sent to
+                    elif self._method_annotations[method].get("rintf_allowed_caller"):
+                        allowed = self._method_annotations[method]["rintf_allowed_caller"]
+                        caller = data.get("from", "")
+                        if caller == allowed:
+                            pass  # Access granted — caller matches the _rintf target
+                        else:
+                            raise PermissionError(
+                                f"Permission denied for _rintf callback {method_name}, "
+                                f"caller {caller} is not the allowed caller {allowed}"
+                            )
                     else:
                         raise PermissionError(
                             f"Permission denied for invoking protected method {method_name}, "
@@ -3293,11 +3368,44 @@ class RPC(MessageEmitter):
                 )
             ):
                 service_id = f"_rintf_{shortuuid.uuid()}"
+                # Resolve the allowed caller from the session's target_id.
+                # The _rintf is being sent to a specific remote client (the
+                # session target), so only that client should be able to
+                # call these callbacks back.
+                allowed_caller = None
+                if session_id:
+                    top_key = session_id.split(".")[0]
+                    session_store = self._object_store.get(top_key)
+                    if isinstance(session_store, dict):
+                        allowed_caller = session_store.get("target_id")
                 service_api = {"id": service_id}
+                if allowed_caller:
+                    service_api["config"] = {
+                        "visibility": "protected",
+                        "_rintf_allowed_caller": allowed_caller,
+                    }
+
+                # Add _dispose method for active lifecycle management.
+                # The remote side (allowed caller) can call _dispose() to
+                # actively unregister this _rintf service when it's done.
+                _rpc_ref = self
+                _sid = service_id
+                _caller = allowed_caller
+
+                async def _dispose():
+                    _rpc_ref._unregister_rintf_service(_sid, _caller)
+
+                service_api["_dispose"] = _dispose
+
                 for k, v in a_object.items():
                     if not k.startswith("_") and callable(v):
                         service_api[k] = v
                 self.add_service(service_api, overwrite=True)
+                # Track in caller index for passive cleanup on disconnect
+                if allowed_caller:
+                    if allowed_caller not in self._rintf_caller_index:
+                        self._rintf_caller_index[allowed_caller] = set()
+                    self._rintf_caller_index[allowed_caller].add(service_id)
                 # Store service_id on the original dict (before copy) so the
                 # caller can later call rpc.unregister_service(service_id).
                 if _original_dict is not None:
@@ -3310,6 +3418,12 @@ class RPC(MessageEmitter):
                         session_id=session_id,
                         local_workspace=local_workspace,
                     )
+                # Encode _dispose so the remote side can call it
+                b_object["_dispose"] = self._encode(
+                    service_api["_dispose"],
+                    session_id=session_id,
+                    local_workspace=local_workspace,
+                )
                 b_object["_rintf_service_id"] = service_id
                 return b_object
 
