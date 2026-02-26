@@ -837,6 +837,43 @@ export async function connectToServer(config) {
   });
   wm.rpc = rpc;
 
+  // Auto-refresh workspace manager proxy after reconnection.
+  // When the server restarts, it assigns a new manager_id. The RPC layer
+  // internally uses the updated manager_id for service re-registration
+  // (in the onConnected callback), but the wm proxy returned to the caller
+  // still has methods bound to the old manager_id. This listener refreshes
+  // the wm proxy methods so they target the new manager_id.
+  let isInitialRegistration = true;
+  rpc.on("services_registered", async () => {
+    if (isInitialRegistration) {
+      isInitialRegistration = false;
+      return; // Skip the first event (initial connection, wm is already fresh)
+    }
+    try {
+      const freshWm = await rpc.get_manager_service({
+        timeout: config.method_timeout || 30,
+        case_conversion: "camel",
+        kwargs_expansion: config.kwargs_expansion || false,
+      });
+      // Copy all function properties from fresh wm onto existing wm object.
+      // This preserves the caller's reference while updating method targets.
+      for (const key of Object.keys(freshWm)) {
+        if (typeof freshWm[key] === "function") {
+          wm[key] = freshWm[key];
+        }
+      }
+      console.info(
+        "Workspace manager proxy refreshed after reconnection (new manager_id:",
+        rpc._connection?.manager_id + ")",
+      );
+    } catch (err) {
+      console.warn(
+        "Failed to refresh workspace manager after reconnection:",
+        err,
+      );
+    }
+  });
+
   async function _export(api) {
     api.id = "default";
     api.name = api.name || config.name || api.id;

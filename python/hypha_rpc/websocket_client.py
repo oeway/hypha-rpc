@@ -957,6 +957,41 @@ async def _connect_to_server(config):
     )
     wm.rpc = rpc
 
+    # Auto-refresh workspace manager proxy after reconnection.
+    # When the server restarts, it assigns a new manager_id. The RPC layer
+    # internally uses the updated manager_id for service re-registration
+    # (in the onConnected callback), but the wm proxy returned to the caller
+    # still has methods bound to the old manager_id. This listener refreshes
+    # the wm proxy methods so they target the new manager_id.
+    _is_initial_registration = {"value": True}
+
+    async def _refresh_wm_proxy():
+        if _is_initial_registration["value"]:
+            _is_initial_registration["value"] = False
+            return  # Skip the first event (initial connection, wm is already fresh)
+        try:
+            fresh_wm = await rpc.get_manager_service(
+                {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
+            )
+            # Copy all callable attributes from fresh wm onto existing wm object.
+            # This preserves the caller's reference while updating method targets.
+            for key in dir(fresh_wm):
+                if key.startswith("_"):
+                    continue
+                val = getattr(fresh_wm, key, None)
+                if callable(val):
+                    setattr(wm, key, val)
+            logger.info(
+                "Workspace manager proxy refreshed after reconnection (new manager_id: %s)",
+                getattr(connection, "manager_id", "unknown"),
+            )
+        except Exception as err:
+            logger.warning(
+                "Failed to refresh workspace manager after reconnection: %s", err
+            )
+
+    rpc.on("services_registered", _refresh_wm_proxy)
+
     def export(api: dict):
         """Export the api."""
         # Convert class instance to a dict
