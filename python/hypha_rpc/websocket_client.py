@@ -971,30 +971,27 @@ async def _connect_to_server(config):
             _is_initial_refresh["value"] = False
             return  # Skip the first event (initial connection, wm is already fresh)
         try:
-            # The internal manager already uses case_conversion: "snake",
-            # so we can copy directly without an extra RPC call
-            internal_manager = event_data.get("manager") if isinstance(event_data, dict) else None
-            if internal_manager:
-                fresh_wm = internal_manager
-            else:
-                fresh_wm = await rpc.get_manager_service(
-                    {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
-                )
-            # Copy all callable attributes from fresh wm onto existing wm object.
-            # This preserves the caller's reference while updating method targets.
-            for key in dir(fresh_wm):
+            new_target = f"*/{connection.manager_id}"
+            # Retarget all remote methods on the wm proxy to the new manager.
+            # Remote methods read _encoded_method["_rtarget"] at call time,
+            # so updating _rtarget is sufficient — no need to regenerate
+            # methods or copy from a fresh proxy. This preserves locally-
+            # overridden methods (register_service, unregister_service, etc.).
+            for key in dir(wm):
                 if key.startswith("_"):
                     continue
-                val = getattr(fresh_wm, key, None)
-                if callable(val):
-                    setattr(wm, key, val)
+                val = getattr(wm, key, None)
+                if callable(val) and hasattr(val, "_encoded_method"):
+                    val._encoded_method["_rtarget"] = new_target
+                    if hasattr(val, "__rpc_object__"):
+                        val.__rpc_object__["_rtarget"] = new_target
             logger.info(
-                "Workspace manager proxy refreshed after reconnection (new manager_id: %s)",
+                "Workspace manager proxy retargeted after reconnection (new manager_id: %s)",
                 getattr(connection, "manager_id", "unknown"),
             )
         except Exception as err:
             logger.warning(
-                "Failed to refresh workspace manager after reconnection: %s", err
+                "Failed to retarget workspace manager after reconnection: %s", err
             )
 
     rpc.on("manager_refreshed", _refresh_wm_proxy)

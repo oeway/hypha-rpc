@@ -730,25 +730,25 @@ export async function _connectToServerHTTP(config) {
   // Auto-refresh workspace manager proxy after reconnection.
   // See websocket-client.js for detailed explanation.
   let isInitialRefresh = true;
-  rpc.on("manager_refreshed", async ({ manager: internalManager }) => {
+  rpc.on("manager_refreshed", async () => {
     if (isInitialRefresh) {
       isInitialRefresh = false;
       return;
     }
     try {
-      const freshWm = internalManager;
-      for (const key of Object.keys(freshWm)) {
-        if (typeof freshWm[key] === "function") {
-          wm[key] = freshWm[key];
+      const newTarget = `*/${rpc._connection.manager_id}`;
+      for (const key of Object.keys(wm)) {
+        if (typeof wm[key] === "function" && wm[key].__rpc_object__) {
+          wm[key].__rpc_object__._rtarget = newTarget;
         }
       }
       console.info(
-        "Workspace manager proxy refreshed after reconnection (new manager_id:",
+        "Workspace manager proxy retargeted after reconnection (new manager_id:",
         rpc._connection?.manager_id + ")",
       );
     } catch (err) {
       console.warn(
-        "Failed to refresh workspace manager after reconnection:",
+        "Failed to retarget workspace manager after reconnection:",
         err,
       );
     }
