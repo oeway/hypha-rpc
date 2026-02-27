@@ -2325,6 +2325,10 @@ export class RPC extends MessageEmitter {
     function remote_method() {
       return new Promise(async (resolve, reject) => {
         try {
+          // Read target_id from encoded_method at call time (not captured
+          // at generation time) so that _rtarget can be updated after
+          // reconnection without regenerating the method closures.
+          const target_id = encoded_method._rtarget;
           let local_session_id = randId();
           if (local_parent) {
             // Store the children session under the parent

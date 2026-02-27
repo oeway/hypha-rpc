@@ -664,26 +664,23 @@ async def _connect_to_server_http(config: dict):
             _is_initial_refresh["value"] = False
             return
         try:
-            internal_manager = event_data.get("manager") if isinstance(event_data, dict) else None
-            if internal_manager:
-                fresh_wm = internal_manager
-            else:
-                fresh_wm = await rpc.get_manager_service(
-                    {"timeout": config.get("method_timeout", 30), "case_conversion": "snake"}
-                )
-            for key in dir(fresh_wm):
+            new_target = f"*/{connection.manager_id}"
+            # Retarget remote methods to new manager (see websocket_client.py)
+            for key in dir(wm):
                 if key.startswith("_"):
                     continue
-                val = getattr(fresh_wm, key, None)
-                if callable(val):
-                    setattr(wm, key, val)
+                val = getattr(wm, key, None)
+                if callable(val) and hasattr(val, "_encoded_method"):
+                    val._encoded_method["_rtarget"] = new_target
+                    if hasattr(val, "__rpc_object__"):
+                        val.__rpc_object__["_rtarget"] = new_target
             logger.info(
-                "Workspace manager proxy refreshed after reconnection (new manager_id: %s)",
+                "Workspace manager proxy retargeted after reconnection (new manager_id: %s)",
                 getattr(connection, "manager_id", "unknown"),
             )
         except Exception as err:
             logger.warning(
-                "Failed to refresh workspace manager after reconnection: %s", err
+                "Failed to retarget workspace manager after reconnection: %s", err
             )
 
     rpc.on("manager_refreshed", _refresh_wm_proxy)
