@@ -94,6 +94,27 @@ logger.setLevel(LOGLEVEL)
 
 CONCURRENCY_LIMIT = int(os.environ.get("HYPHA_CONCURRENCY_LIMIT", "30"))
 
+# Sentinel to distinguish "not provided" from None (silent)
+_UNSET = object()
+
+
+def _make_logger(logger_cfg, default_logger):
+    """Create a logger from a config value, matching the JS interface.
+
+    - _UNSET / not provided → use the default module-level logger
+    - None → silent (no output)
+    - custom object → use directly (duck-typed)
+    """
+    if logger_cfg is _UNSET:
+        return default_logger
+    if logger_cfg is None:
+        null_logger = logging.getLogger(default_logger.name + ".null")
+        null_logger.handlers = [logging.NullHandler()]
+        null_logger.propagate = False
+        null_logger.setLevel(logging.CRITICAL + 1)
+        return null_logger
+    return logger_cfg
+
 
 def index_object(obj, ids):
     """Index an object."""
@@ -499,7 +520,7 @@ class RemoteFunction:
                     else:
                         reject(error)
                 except Exception as e:
-                    logger.debug("Error rejecting timed-out call: %s", e)
+                    self._rpc._log.debug("Error rejecting timed-out call: %s", e)
                 # Clean up resources in the session before deleting it
                 session = self._rpc._object_store.get(local_session_id)
                 if isinstance(session, dict):
@@ -514,7 +535,7 @@ class RemoteFunction:
                             pass
                     self._rpc._remove_from_target_id_index(local_session_id)
                     del self._rpc._object_store[local_session_id]
-                    logger.debug(
+                    self._rpc._log.debug(
                         "Cleaned up session %s after timeout", local_session_id
                     )
                 elif local_session_id in self._rpc._object_store:
@@ -606,7 +627,7 @@ class RemoteFunction:
                 if reject:
                     reject(Exception(error_msg))
                 else:
-                    logger.warning("Unhandled RPC method call error: %s", error_msg)
+                    self._rpc._log.warning("Unhandled RPC method call error: %s", error_msg)
                 if timer and timer.started:
                     timer.clear()
             else:
@@ -678,6 +699,7 @@ class RPC(MessageEmitter):
         loop=None,
         workspace=None,
         silent=False,
+        logger=_UNSET,
         app_id=None,
         server_base_url=None,
         long_message_chunk_size=None,
@@ -694,13 +716,18 @@ class RPC(MessageEmitter):
         self._app_id = app_id or "*"
         self._local_workspace = workspace
         self._silent = silent
+        # Configurable logger: None = silent, custom object = use it,
+        # _UNSET/not provided = module-level default logger
+        if silent and logger is _UNSET:
+            logger = None  # silent mode implies no logging
+        self._log = _make_logger(logger, globals()["logger"])
         self.default_context = default_context or {}
         self._method_annotations = weakref.WeakKeyDictionary()
         self._max_message_buffer_size = max_message_buffer_size
         self._chunk_store = {}
         self._method_timeout = 30 if method_timeout is None else method_timeout
         self._rintf_timeout = 10 if rintf_timeout is None else rintf_timeout
-        self._remote_logger = logger
+        self._remote_logger = self._log
         self._server_base_url = server_base_url
         self.loop = loop or asyncio.get_event_loop()
         self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
@@ -719,14 +746,14 @@ class RPC(MessageEmitter):
                 if "Method not found" in str(exception) or "Session not found" in str(
                     exception
                 ):
-                    logger.debug(
+                    self._log.debug(
                         "Ignoring expected method/session not found error: %s",
                         exception,
                     )
                 else:
-                    logger.debug("Unhandled asyncio exception: %s", context)
+                    self._log.debug("Unhandled asyncio exception: %s", context)
             else:
-                logger.debug("Unhandled asyncio exception: %s", context)
+                self._log.debug("Unhandled asyncio exception: %s", context)
 
         # Only set the exception handler if we haven't already set one
         if not hasattr(self.loop, "_hypha_exception_handler_set"):
@@ -762,7 +789,7 @@ class RPC(MessageEmitter):
                     generate_encryption_keypair()
                 )
             self._encryption_enabled = True
-            logger.info("Encryption enabled with X25519 keypair")
+            self._log.info("Encryption enabled with X25519 keypair")
 
         if HAS_PYDANTIC:
             self.register_codec(
@@ -823,12 +850,12 @@ class RPC(MessageEmitter):
                         old_target = f"*/{self._last_manager_id}"
                         cleaned = self._cleanup_sessions_for_client(old_target)
                         if cleaned > 0:
-                            logger.info(
+                            self._log.info(
                                 f"Rejected {cleaned} stale call(s) to old manager {self._last_manager_id}"
                             )
                     self._last_manager_id = current_manager_id
 
-                    logger.info("Connection established, reporting services...")
+                    self._log.info("Connection established, reporting services...")
                     try:
                         # Get fresh manager service (one RPC roundtrip, ~50-100ms)
                         manager = await self.get_manager_service(
@@ -856,26 +883,26 @@ class RPC(MessageEmitter):
                                     timeout=service_registration_timeout,
                                 )
                                 registered_count += 1
-                                logger.debug(
+                                self._log.debug(
                                     f"Successfully registered service: {service.get('id', 'unknown')}"
                                 )
                             except asyncio.TimeoutError:
                                 failed_services.append(service.get("id", "unknown"))
-                                logger.error(
+                                self._log.error(
                                     f"Timeout registering service {service.get('id', 'unknown')}"
                                 )
                             except Exception as service_error:
                                 failed_services.append(service.get("id", "unknown"))
-                                logger.error(
+                                self._log.error(
                                     f"Failed to register service {service.get('id', 'unknown')}: {service_error}"
                                 )
 
                         if registered_count == services_count:
-                            logger.info(
+                            self._log.info(
                                 f"Successfully registered all {registered_count} services with the server"
                             )
                         else:
-                            logger.warning(
+                            self._log.warning(
                                 f"Only registered {registered_count} out of {services_count} services with the server. Failed services: {failed_services}"
                             )
 
@@ -903,7 +930,7 @@ class RPC(MessageEmitter):
                                         ):
                                             self._client_disconnected_subscription.unsubscribe()
                                     except Exception as e:
-                                        logger.debug(
+                                        self._log.debug(
                                             f"Error unsubscribing old client_disconnected: {e}"
                                         )
                                     self._client_disconnected_subscription = None
@@ -919,7 +946,7 @@ class RPC(MessageEmitter):
                                         pass
                                     self._bound_handle_client_disconnected = None
 
-                                logger.debug(
+                                self._log.debug(
                                     "Subscribing to client_disconnected events"
                                 )
 
@@ -937,7 +964,7 @@ class RPC(MessageEmitter):
                                         client_id = raw_id
                                     else:
                                         return
-                                    logger.debug(
+                                    self._log.debug(
                                         f"Client {client_id} disconnected, cleaning up sessions"
                                     )
                                     await self._handle_client_disconnected(
@@ -962,27 +989,27 @@ class RPC(MessageEmitter):
                                     self._bound_handle_client_disconnected,
                                 )
 
-                                logger.debug(
+                                self._log.debug(
                                     "Successfully subscribed to client_disconnected events"
                                 )
                             else:
-                                logger.debug(
+                                self._log.debug(
                                     "Manager does not support subscribe method, skipping client_disconnected handling"
                                 )
                                 self._client_disconnected_subscription = None
                         except asyncio.TimeoutError:
-                            logger.warning(
+                            self._log.warning(
                                 "Timeout subscribing to client_disconnected events"
                             )
                             self._client_disconnected_subscription = None
                         except Exception as subscribe_error:
-                            logger.warning(
+                            self._log.warning(
                                 f"Failed to subscribe to client_disconnected events: {subscribe_error}"
                             )
                             self._client_disconnected_subscription = None
 
                     except Exception as manager_error:
-                        logger.error(
+                        self._log.error(
                             f"Failed to get manager service for registering services: {manager_error}"
                         )
                         # Fire event with error status
@@ -994,7 +1021,7 @@ class RPC(MessageEmitter):
                             },
                         )
                 else:
-                    logger.info("Connection established: %s", connection_info)
+                    self._log.info("Connection established: %s", connection_info)
                 if connection_info:
                     if connection_info.get("public_base_url"):
                         self._server_base_url = connection_info.get("public_base_url")
@@ -1019,12 +1046,12 @@ class RPC(MessageEmitter):
                     # If reconnection is enabled, don't reject pending calls immediately
                     # The timeout mechanism will handle them if reconnection fails
                     if getattr(connection, "_enable_reconnect", False):
-                        logger.info(
+                        self._log.info(
                             "Connection lost (%s), reconnection enabled - pending calls will be handled by timeout",
                             reason,
                         )
                         return
-                    logger.warning(
+                    self._log.warning(
                         "Connection lost (%s), rejecting all pending RPC calls",
                         reason,
                     )
@@ -1040,7 +1067,7 @@ class RPC(MessageEmitter):
         else:
 
             async def _emit_message(_):
-                logger.info("No connection to emit message")
+                self._log.info("No connection to emit message")
 
             self._emit_message = _emit_message
 
@@ -1063,7 +1090,7 @@ class RPC(MessageEmitter):
             for tp in list(self._codecs.keys()):
                 codec = self._codecs[tp]
                 if codec.type == config["type"] or tp == config["name"]:
-                    logger.debug("Removing duplicated codec: " + tp)
+                    self._log.debug("Removing duplicated codec: " + tp)
                     del self._codecs[tp]
 
         self._codecs[config["name"]] = DefaultObjectProxy.fromDict(config)
@@ -1158,7 +1185,7 @@ class RPC(MessageEmitter):
         data = cache[key]
         # concatenate all the chunks efficiently using join (avoids O(n^2) copy)
         data = b"".join(data[i] for i in range(len(data)))
-        logger.debug("Processing message %s (size=%d)", key, len(data))
+        self._log.debug("Processing message %s (size=%d)", key, len(data))
         unpacker = msgpack.Unpacker(
             io.BytesIO(data), max_buffer_size=self._max_message_buffer_size
         )
@@ -1257,13 +1284,13 @@ class RPC(MessageEmitter):
                     ):
                         heartbeat_task.cancel()
                 except Exception as e:
-                    logger.debug("Error cancelling heartbeat task: %s", e)
+                    self._log.debug("Error cancelling heartbeat task: %s", e)
                 try:
                     timer = value.get("timer")
                     if timer and getattr(timer, "started", False):
                         timer.clear()
                 except Exception as e:
-                    logger.debug("Error clearing timer: %s", e)
+                    self._log.debug("Error clearing timer: %s", e)
                 self._close_sessions(value)
 
     def close(self):
@@ -1289,7 +1316,7 @@ class RPC(MessageEmitter):
                 # If loop is not running, we can't force processing
                 # The tasks will be cleaned up when the loop eventually runs
             except Exception as e:
-                logger.debug(f"Error processing loop callbacks during close: {e}")
+                self._log.debug(f"Error processing loop callbacks during close: {e}")
 
         # Clean up all pending sessions before closing
         self._cleanup_on_disconnect()
@@ -1310,7 +1337,7 @@ class RPC(MessageEmitter):
                 ):
                     self._client_disconnected_subscription.unsubscribe()
             except Exception as e:
-                logger.debug(
+                self._log.debug(
                     f"Error unsubscribing client_disconnected: {e}"
                 )
             self._client_disconnected_subscription = None
@@ -1321,7 +1348,7 @@ class RPC(MessageEmitter):
                     self._bound_handle_client_disconnected,
                 )
             except Exception as e:
-                logger.debug(
+                self._log.debug(
                     f"Error removing client_disconnected handler: {e}"
                 )
             self._bound_handle_client_disconnected = None
@@ -1351,7 +1378,7 @@ class RPC(MessageEmitter):
             try:
                 self.loop.set_exception_handler(None)
             except Exception as e:
-                logger.debug(f"Error clearing exception handler: {e}")
+                self._log.debug(f"Error clearing exception handler: {e}")
 
         self._fire("disconnected")
 
@@ -1429,14 +1456,14 @@ class RPC(MessageEmitter):
                 # Most will raise CancelledError, which is expected
                 await asyncio.gather(*tasks_to_cleanup, return_exceptions=True)
             except Exception as e:
-                logger.debug(f"Error awaiting cancelled tasks during disconnect: {e}")
+                self._log.debug(f"Error awaiting cancelled tasks during disconnect: {e}")
 
         # Disconnect the underlying connection if it exists
         if connection:
             try:
                 await connection.disconnect()
             except Exception as e:
-                logger.debug(f"Error disconnecting underlying connection: {e}")
+                self._log.debug(f"Error disconnecting underlying connection: {e}")
 
     def _unregister_rintf_service(self, service_id, allowed_caller=None):
         """Unregister a single _rintf service and remove it from the caller index.
@@ -1473,7 +1500,7 @@ class RPC(MessageEmitter):
     async def _handle_client_disconnected(self, client_id):
         """Handle cleanup when a remote client disconnects."""
         try:
-            logger.debug(f"Handling disconnection for client: {client_id}")
+            self._log.debug(f"Handling disconnection for client: {client_id}")
 
             # Clean up all sessions for the disconnected client
             sessions_cleaned = self._cleanup_sessions_for_client(client_id)
@@ -1482,7 +1509,7 @@ class RPC(MessageEmitter):
             rintf_cleaned = self._cleanup_rintf_for_caller(client_id)
 
             if sessions_cleaned > 0 or rintf_cleaned > 0:
-                logger.debug(
+                self._log.debug(
                     f"Cleaned up {sessions_cleaned} sessions and "
                     f"{rintf_cleaned} _rintf services for disconnected client: {client_id}"
                 )
@@ -1498,7 +1525,7 @@ class RPC(MessageEmitter):
             )
 
         except Exception as e:
-            logger.error(f"Error handling client disconnection for {client_id}: {e}")
+            self._log.error(f"Error handling client disconnection for {client_id}: {e}")
 
     def _remove_from_target_id_index(self, session_id):
         """Remove a session from the target_id index.
@@ -1527,7 +1554,7 @@ class RPC(MessageEmitter):
             try:
                 session["reject"](ConnectionError(reject_reason))
             except Exception as e:
-                logger.debug("Error rejecting session: %s", e)
+                self._log.debug("Error rejecting session: %s", e)
         heartbeat = session.get("heartbeat_task")
         if heartbeat and not getattr(heartbeat, "done", lambda: True)():
             try:
@@ -1560,7 +1587,7 @@ class RPC(MessageEmitter):
             self._cleanup_session_entry(session, reason)
             self._object_store.pop(session_key, None)
             sessions_cleaned += 1
-            logger.debug("Cleaned up session: %s", session_key)
+            self._log.debug("Cleaned up session: %s", session_key)
 
         return sessions_cleaned
 
@@ -1580,18 +1607,18 @@ class RPC(MessageEmitter):
                         rejected_count += 1
                     self._cleanup_session_entry(value, reason)
             if rejected_count > 0:
-                logger.warning(
+                self._log.warning(
                     "Rejected %d pending RPC call(s) due to: %s",
                     rejected_count,
                     reason,
                 )
         except Exception as e:
-            logger.error("Error rejecting pending calls: %s", e)
+            self._log.error("Error rejecting pending calls: %s", e)
 
     def _cleanup_on_disconnect(self):
         """Clean up all pending sessions when the local RPC disconnects."""
         try:
-            logger.debug("Cleaning up all sessions due to local RPC disconnection")
+            self._log.debug("Cleaning up all sessions due to local RPC disconnection")
 
             keys_to_delete = []
             for key in list(self._object_store.keys()):
@@ -1608,7 +1635,7 @@ class RPC(MessageEmitter):
             self._target_id_index.clear()
             self._rintf_caller_index.clear()
         except Exception as e:
-            logger.error("Error during cleanup on disconnect: %s", e)
+            self._log.error("Error during cleanup on disconnect: %s", e)
 
     async def _session_gc_loop(self):
         """Periodically sweep sessions with no activity for longer than _session_ttl."""
@@ -1644,7 +1671,7 @@ class RPC(MessageEmitter):
                     session = self._object_store.get(key)
                     if session is None:
                         continue
-                    logger.debug("Session GC: cleaning up expired session %s", key)
+                    self._log.debug("Session GC: cleaning up expired session %s", key)
                     if "reject" in session and callable(session["reject"]):
                         try:
                             session["reject"](
@@ -1661,13 +1688,13 @@ class RPC(MessageEmitter):
                     except KeyError:
                         pass
                 if keys_to_gc:
-                    logger.debug(
+                    self._log.debug(
                         "Session GC: cleaned up %d expired sessions", len(keys_to_gc)
                     )
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.debug("Session GC loop error: %s", e)
+            self._log.debug("Session GC loop error: %s", e)
 
     async def get_manager_service(self, config=None, max_retries=20):
         """Get remote root service with retry."""
@@ -1686,7 +1713,7 @@ class RPC(MessageEmitter):
                 return svc
             except Exception as e:
                 last_error = e
-                logger.warning(
+                self._log.warning(
                     "Failed to get manager service (attempt %d/%d): %s",
                     attempt + 1,
                     max_retries,
@@ -1778,7 +1805,7 @@ class RPC(MessageEmitter):
             else:
                 return RemoteService.fromDict(svc)
         except Exception as exp:
-            logger.warning("Failed to get remote service: %s: %s", service_id, exp)
+            self._log.warning("Failed to get remote service: %s: %s", service_id, exp)
             raise exp
 
     def _annotate_service_methods(
@@ -2100,13 +2127,13 @@ class RPC(MessageEmitter):
                 callback(*args, **kwargs)
             except asyncio.InvalidStateError:
                 # This probably means the task was cancelled
-                logger.debug(
+                self._log.debug(
                     "Invalid state error in callback: %s (context: %s)",
                     method_id,
                     description,
                 )
             except Exception as exp:
-                logger.error(
+                self._log.error(
                     "Error in callback: %s (context: %s), error: %s",
                     method_id,
                     description,
@@ -2149,13 +2176,13 @@ class RPC(MessageEmitter):
     def _cleanup_session_if_needed(self, session_id, callback_name):
         """Clean session management - all logic in one place."""
         if not session_id:
-            logger.debug("Cannot cleanup session: session_id is empty")
+            self._log.debug("Cannot cleanup session: session_id is empty")
             return
 
         try:
             store = self._get_session_store(session_id, create=False)
             if not store:
-                logger.debug(f"Session {session_id} not found for cleanup")
+                self._log.debug(f"Session {session_id} not found for cleanup")
                 return
 
             should_cleanup = False
@@ -2170,11 +2197,11 @@ class RPC(MessageEmitter):
                         if hasattr(promise_manager, "settle"):
                             promise_manager.settle()
                         should_cleanup = True
-                        logger.debug(
+                        self._log.debug(
                             f"Promise session {session_id} settled and marked for cleanup"
                         )
                 except Exception as e:
-                    logger.warning(
+                    self._log.warning(
                         f"Error in promise manager cleanup for {session_id}: {e}"
                     )
                     # Still try to cleanup if promise manager fails
@@ -2182,18 +2209,18 @@ class RPC(MessageEmitter):
             else:
                 # Regular sessions: cleanup immediately
                 should_cleanup = True
-                logger.debug(f"Regular session {session_id} marked for cleanup")
+                self._log.debug(f"Regular session {session_id} marked for cleanup")
 
             if should_cleanup:
                 self._delete_session_completely(session_id)
 
         except Exception as e:
-            logger.error(f"Unexpected error in session cleanup for {session_id}: {e}")
+            self._log.error(f"Unexpected error in session cleanup for {session_id}: {e}")
             # Try a basic cleanup as fallback
             try:
                 self._delete_session_safely(session_id)
             except Exception as fallback_error:
-                logger.error(
+                self._log.error(
                     f"Fallback cleanup also failed for {session_id}: {fallback_error}"
                 )
 
@@ -2220,9 +2247,9 @@ class RPC(MessageEmitter):
 
                     # Delete the session
                     del self._object_store[session_key]
-                    logger.debug(f"Deleted top-level session: {session_id}")
+                    self._log.debug(f"Deleted top-level session: {session_id}")
                 else:
-                    logger.debug(f"Top-level session {session_id} already deleted")
+                    self._log.debug(f"Top-level session {session_id} already deleted")
             else:
                 # Nested session - navigate and delete safely
                 current_store = self._object_store
@@ -2232,13 +2259,13 @@ class RPC(MessageEmitter):
                 for i, level in enumerate(levels[:-1]):
                     if level not in current_store:
                         path_exists = False
-                        logger.debug(
+                        self._log.debug(
                             f"Parent path broken at level '{level}' for session {session_id}"
                         )
                         break
                     if not isinstance(current_store[level], dict):
                         path_exists = False
-                        logger.debug(
+                        self._log.debug(
                             f"Non-dict container at level '{level}' for session {session_id}"
                         )
                         break
@@ -2253,19 +2280,19 @@ class RPC(MessageEmitter):
 
                     # Delete the session
                     del current_store[levels[-1]]
-                    logger.debug(f"Deleted nested session: {session_id}")
+                    self._log.debug(f"Deleted nested session: {session_id}")
 
                     # Clean up empty parent containers from bottom up
                     self._cleanup_empty_parent_containers(levels[:-1])
                 else:
-                    logger.debug(
+                    self._log.debug(
                         f"Nested session {session_id} already deleted or path invalid"
                     )
 
         except KeyError as e:
-            logger.debug(f"Session {session_id} already deleted: {e}")
+            self._log.debug(f"Session {session_id} already deleted: {e}")
         except Exception as e:
-            logger.warning(f"Error during session cleanup for {session_id}: {e}")
+            self._log.warning(f"Error during session cleanup for {session_id}: {e}")
 
     def _delete_session_safely(self, session_id):
         """Fallback method for basic session deletion without full cleanup."""
@@ -2275,9 +2302,9 @@ class RPC(MessageEmitter):
                 # Clean up target_id index before deleting
                 self._remove_from_target_id_index(session_id)
                 del self._object_store[levels[0]]
-                logger.debug(f"Fallback cleanup: deleted session {session_id}")
+                self._log.debug(f"Fallback cleanup: deleted session {session_id}")
         except Exception as e:
-            logger.error(f"Fallback cleanup failed for {session_id}: {e}")
+            self._log.error(f"Fallback cleanup failed for {session_id}: {e}")
 
     def _cleanup_session_resources(self, session_dict):
         """Clean up resources within a session (timers, heartbeats, tasks) before deletion."""
@@ -2314,12 +2341,12 @@ class RPC(MessageEmitter):
                 # Navigate to the container
                 for level in path[:-1]:
                     if level not in container:
-                        logger.debug(
+                        self._log.debug(
                             f"Parent container path broken at '{level}', stopping cleanup"
                         )
                         return  # Path doesn't exist, nothing to clean
                     if not isinstance(container[level], dict):
-                        logger.debug(
+                        self._log.debug(
                             f"Non-dict parent container at '{level}', stopping cleanup"
                         )
                         return
@@ -2335,18 +2362,18 @@ class RPC(MessageEmitter):
                     ]
                     if not remaining_keys:
                         del container[target_key]
-                        logger.debug(
+                        self._log.debug(
                             f"Cleaned up empty parent container: {'.'.join(path)}"
                         )
                     else:
                         # Container has content, stop cleanup
-                        logger.debug(
+                        self._log.debug(
                             f"Parent container {'.'.join(path)} has content, stopping cleanup"
                         )
                         break
 
         except Exception as e:
-            logger.debug(f"Error cleaning empty parent containers: {e}")
+            self._log.debug(f"Error cleaning empty parent containers: {e}")
 
     def _force_cleanup_all_sessions(self):
         """Emergency cleanup method to remove all sessions (for testing/debugging)."""
@@ -2363,9 +2390,9 @@ class RPC(MessageEmitter):
                 session_data = self._object_store[session_key]
                 self._cleanup_session_resources(session_data)
                 del self._object_store[session_key]
-                logger.debug(f"Force cleaned session: {session_key}")
+                self._log.debug(f"Force cleaned session: {session_key}")
             except Exception as e:
-                logger.warning(f"Error in force cleanup of session {session_key}: {e}")
+                self._log.warning(f"Error in force cleanup of session {session_key}: {e}")
 
     def get_session_stats(self):
         """Get statistics about current sessions (for debugging/monitoring)."""
@@ -2419,7 +2446,7 @@ class RPC(MessageEmitter):
         store = self._get_session_store(session_id, create=True)
         if store is None:
             # Handle the case where session store creation failed gracefully
-            logger.warning(
+            self._log.warning(
                 f"Failed to create session store {session_id}, session management may be impaired"
             )
             # Create a minimal fallback store
@@ -2483,7 +2510,7 @@ class RPC(MessageEmitter):
                 # Acquire the semaphore
                 async with semaphore:
                     await message_cache.set(message_id, idx, chunk, bool(session_id))
-                    logger.debug(
+                    self._log.debug(
                         "Sending chunk %d/%d (total=%d bytes)",
                         idx + 1,
                         chunk_num,
@@ -2511,7 +2538,7 @@ class RPC(MessageEmitter):
                 try:
                     await message_cache.remove(message_id)
                 except Exception as cleanup_error:
-                    logger.error(
+                    self._log.error(
                         f"Failed to clean up message cache after error: {cleanup_error}"
                     )
                 raise error
@@ -2524,14 +2551,14 @@ class RPC(MessageEmitter):
                     package[start_byte : start_byte + self._long_message_chunk_size],
                     bool(session_id),
                 )
-                logger.debug(
+                self._log.debug(
                     "Sending chunk %d/%d (%d bytes)",
                     idx + 1,
                     chunk_num,
                     total_size,
                 )
         await message_cache.process(message_id, bool(session_id))
-        logger.debug(
+        self._log.debug(
             "All chunks (%d bytes) sent in %d s", total_size, time.time() - start_time
         )
 
@@ -2569,7 +2596,7 @@ class RPC(MessageEmitter):
 
         total_size = len(message_package)
         if total_size > self._long_message_chunk_size + 1024:
-            logger.warning(f"Sending large message (size={total_size})")
+            self._log.warning(f"Sending large message (size={total_size})")
         return self.loop.create_task(self._emit_message(message_package))
 
     def _generate_remote_method(
@@ -2601,10 +2628,10 @@ class RPC(MessageEmitter):
         )
 
     def _log(self, info):
-        logger.info("RPC Info: %s", info)
+        self._log.info("RPC Info: %s", info)
 
     def _error(self, error):
-        logger.error("RPC Error: %s", error)
+        self._log.error("RPC Error: %s", error)
 
     def _handle_peer_not_found(self, data):
         """Handle server notification that target peer is not connected.
@@ -2617,7 +2644,7 @@ class RPC(MessageEmitter):
         session_id = data.get("session")
         peer_id = data.get("peer_id", data.get("from", "unknown"))
         error_msg = data.get("error", f"Peer {peer_id} is not connected")
-        logger.debug("Peer not found: %s (session=%s)", peer_id, session_id)
+        self._log.debug("Peer not found: %s (session=%s)", peer_id, session_id)
 
         # Reject the specific pending call identified by session_id
         if session_id:
@@ -2657,13 +2684,13 @@ class RPC(MessageEmitter):
                     if resolve is not None:
                         return resolve(result)
                     elif result is not None:
-                        logger.debug("Returned value (%s): %s", method_name, result)
+                        self._log.debug("Returned value (%s): %s", method_name, result)
                 except Exception as err:
                     traceback_error = traceback.format_exc()
                     if reject is not None:
                         return reject(Exception(format_traceback(traceback_error)))
                     else:
-                        logger.error(
+                        self._log.error(
                             "Error in method (%s): %s", method_name, traceback_error
                         )
 
@@ -2767,7 +2794,7 @@ class RPC(MessageEmitter):
                     async def heartbeat(interval):
                         while True:
                             try:
-                                logger.debug(
+                                self._log.debug(
                                     "Reset heartbeat timer: %s", data["method"]
                                 )
                                 await promise["heartbeat"]()
@@ -2776,7 +2803,7 @@ class RPC(MessageEmitter):
                                     method_task.cancel()
                                 break
                             except Exception as exp:
-                                logger.error(
+                                self._log.error(
                                     "Failed to reset the heartbeat timer: %s, error: %s",
                                     data["method"],
                                     exp,
@@ -2785,7 +2812,7 @@ class RPC(MessageEmitter):
                                     method_task.cancel()
                                 break
                             if method_task and method_task.done():
-                                logger.debug(
+                                self._log.debug(
                                     "Stopping heartbeat as the method task is done"
                                 )
                                 break  # Stop the heartbeat if the task is done
@@ -2818,7 +2845,7 @@ class RPC(MessageEmitter):
             except Exception:
                 # Clean promise method detection - NO STRING MATCHING!
                 if self._is_promise_method_call(data["method"]):
-                    logger.debug(
+                    self._log.debug(
                         "Promise method %s not available (detected by session type), ignoring: %s",
                         data["method"],
                         method_name,
@@ -2831,7 +2858,7 @@ class RPC(MessageEmitter):
                     session_id = method_parts[0]
                     # Check if the session exists but the specific method doesn't
                     if session_id in self._object_store:
-                        logger.debug(
+                        self._log.debug(
                             "Session %s exists but method %s not found, likely expired callback: %s",
                             session_id,
                             data["method"],
@@ -2844,7 +2871,7 @@ class RPC(MessageEmitter):
                             )
                         return
                     else:
-                        logger.debug(
+                        self._log.debug(
                             "Session %s not found for method %s, likely cleaned up: %s",
                             session_id,
                             data["method"],
@@ -2855,7 +2882,7 @@ class RPC(MessageEmitter):
                             reject(Exception(f"Session not found: {method_name}"))
                         return
 
-                logger.debug(
+                self._log.debug(
                     "Failed to find method %s at %s", method_name, self._client_id
                 )
                 error = Exception(
@@ -2865,7 +2892,7 @@ class RPC(MessageEmitter):
                     reject(error)
                 else:
                     # Log the error instead of raising to prevent unhandled exceptions
-                    logger.warning("Method not found and no reject callback: %s", error)
+                    self._log.warning("Method not found and no reject callback: %s", error)
                 return
             assert callable(method), f"Invalid method: {method_name}"
 
@@ -2974,7 +3001,7 @@ class RPC(MessageEmitter):
                 method in self._method_annotations
                 and self._method_annotations[method].get("run_in_executor")
             )
-            logger.debug("Executing method: %s (%s)", method_name, data["method"])
+            self._log.debug("Executing method: %s (%s)", method_name, data["method"])
             method_task = self._call_method(
                 method,
                 args,
@@ -2999,7 +3026,7 @@ class RPC(MessageEmitter):
                 heartbeat_task.cancel()
             if callable(reject):
                 reject(err)
-            logger.debug("Error during calling method: %s", err)
+            self._log.debug("Error during calling method: %s", err)
 
     def encode(self, a_object, session_id=None):
         """Encode object."""
@@ -3525,12 +3552,12 @@ class RPC(MessageEmitter):
 
                     else:
                         b_object = a_object
-                        logger.warning(
+                        self._log.warning(
                             "numpy is not available, failed to decode ndarray"
                         )
 
                 except Exception as exc:
-                    logger.debug("Error in converting: %s", exc)
+                    self._log.debug("Error in converting: %s", exc)
                     b_object = a_object
                     raise exc
             elif a_object["_rtype"] == "memoryview":
@@ -3642,7 +3669,7 @@ class RPC(MessageEmitter):
                         completed_normally = True
                     except Exception as e:
                         # Properly propagate exceptions
-                        logger.error(f"Error in generator: {e}")
+                        self._log.error(f"Error in generator: {e}")
                         raise
                     finally:
                         # If not completed normally, send close signal to clean up remote generator
