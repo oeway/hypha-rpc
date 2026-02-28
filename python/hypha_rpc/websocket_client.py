@@ -86,6 +86,7 @@ class WebsocketRPCConnection:
         self.connection_info = None
         self._enable_reconnect = False
         self._refresh_token_task = None
+        self._ping_task = None
         self._listen_task = None
         self._token_refresh_interval = token_refresh_interval
         self._ping_interval = ping_interval
@@ -204,6 +205,39 @@ class WebsocketRPCConnection:
         except Exception as exp:
             self._log.error(f"Failed to send refresh token: {exp}")
 
+    async def _send_ping(self):
+        """Send application-level ping messages to keep the connection alive.
+
+        Protocol-level WebSocket ping/pong (handled by the websockets library)
+        are control frames invisible to HTTP proxies (Nginx, load balancers).
+        This method sends {"type": "ping"} data frames that traverse proxies
+        and reset the Hypha server's HYPHA_WS_IDLE_TIMEOUT (default 600s).
+        """
+        try:
+            while (
+                not self._closed
+                and self._websocket
+                and self._websocket.state != State.CLOSED
+            ):
+                await asyncio.sleep(self._ping_interval)
+                if (
+                    not self._closed
+                    and self._websocket
+                    and self._websocket.state != State.CLOSED
+                ):
+                    await self._websocket.send(json.dumps({"type": "ping"}))
+        except asyncio.CancelledError:
+            pass
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e) or "cannot schedule new futures" in str(
+                e
+            ):
+                pass
+            else:
+                self._log.debug(f"RuntimeError in ping task: {e}")
+        except Exception as exp:
+            self._log.debug(f"Ping task stopped: {exp}")
+
     async def open(self):
         """Open the connection with fallback logic for backward compatibility."""
         async with self._connecting_lock:
@@ -293,6 +327,9 @@ class WebsocketRPCConnection:
                 self._refresh_token_task = asyncio.create_task(
                     self._send_refresh_token(self._token_refresh_interval)
                 )
+            # Start application-level ping to keep proxies/LBs alive
+            if self._ping_interval > 0:
+                self._ping_task = asyncio.create_task(self._send_ping())
             self._listen_task = asyncio.ensure_future(self._listen())
             if self._handle_connected:
                 await self._handle_connected(self.connection_info)
@@ -341,6 +378,9 @@ class WebsocketRPCConnection:
                     if data.get("type") == "reconnection_token":
                         self._reconnection_token = data.get("reconnection_token")
                         # logger.info("Reconnection token received")
+                    elif data.get("type") == "pong":
+                        # Keepalive response, no action needed
+                        pass
                     else:
                         self._log.info("Received message from the server: %s", data)
                 elif self._handle_message:
@@ -657,6 +697,7 @@ class WebsocketRPCConnection:
             if loop.is_closed():
                 self._log.debug("Event loop is closed, performing minimal cleanup")
                 self._refresh_token_task = None
+                self._ping_task = None
                 self._listen_task = None
                 self._reconnect_tasks.clear()
                 return
@@ -672,6 +713,17 @@ class WebsocketRPCConnection:
                 except Exception as e:
                     self._log.debug(f"Error waiting for refresh token task: {e}")
                 self._refresh_token_task = None
+
+            # Cancel ping keepalive task
+            if self._ping_task and not self._ping_task.done():
+                self._ping_task.cancel()
+                try:
+                    await asyncio.wait_for(self._ping_task, timeout=1.0)
+                except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
+                    pass
+                except Exception as e:
+                    self._log.debug(f"Error waiting for ping task: {e}")
+                self._ping_task = None
 
             # Cancel listen task
             if self._listen_task and not self._listen_task.done():
