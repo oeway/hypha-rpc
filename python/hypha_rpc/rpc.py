@@ -521,8 +521,15 @@ class RemoteFunction:
                     self._rpc._remove_from_target_id_index(local_session_id)
                     del self._rpc._object_store[local_session_id]
 
+            # Use shorter timeout for _rintf_ callbacks to fail fast
+            # when the peer holding the callback has disconnected
+            effective_timeout = (
+                self._rpc._rintf_timeout
+                if "_rintf_" in self._encoded_method["_rmethod"]
+                else self._rpc._method_timeout
+            )
             timer = Timer(
-                self._rpc._method_timeout,
+                effective_timeout,
                 timeout_callback,
                 f"Method call timed out: {method_name}, context: {self._description}",
                 label=method_name,
@@ -543,7 +550,7 @@ class RemoteFunction:
                 extra_data["promise"] = promise_data
             elif self._with_promise == "*":
                 extra_data["promise"] = "*"
-                extra_data["t"] = self._rpc._method_timeout / 2
+                extra_data["t"] = effective_timeout / 2
             else:
                 raise RuntimeError(f"Unsupported promise type: {self._with_promise}")
 
@@ -666,6 +673,7 @@ class RPC(MessageEmitter):
         name=None,
         codecs=None,
         method_timeout=None,
+        rintf_timeout=None,
         max_message_buffer_size=0,
         loop=None,
         workspace=None,
@@ -691,6 +699,7 @@ class RPC(MessageEmitter):
         self._max_message_buffer_size = max_message_buffer_size
         self._chunk_store = {}
         self._method_timeout = 30 if method_timeout is None else method_timeout
+        self._rintf_timeout = 10 if rintf_timeout is None else rintf_timeout
         self._remote_logger = logger
         self._server_base_url = server_base_url
         self.loop = loop or asyncio.get_event_loop()

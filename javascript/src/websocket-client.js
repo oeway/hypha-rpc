@@ -51,8 +51,18 @@ class WebsocketRPCConnection {
     token_refresh_interval = 2 * 60 * 60,
     additional_headers = null,
     ping_interval = 30,
+    logger = undefined,
   ) {
     assert(server_url && client_id, "server_url and client_id are required");
+    // Configurable logger (same as RPC class)
+    if (logger === null) {
+      const noop = () => {};
+      this._logger = { debug: noop, info: noop, warn: noop, error: noop, log: noop };
+    } else if (logger) {
+      this._logger = logger;
+    } else {
+      this._logger = console;
+    }
     this._server_url = server_url;
     this._client_id = client_id;
     this._workspace = workspace;
@@ -129,18 +139,18 @@ class WebsocketRPCConnection {
       websocket.binaryType = "arraybuffer";
 
       websocket.onopen = () => {
-        console.info("WebSocket connection established");
+        this._logger.info("WebSocket connection established");
         resolve(websocket);
       };
 
       websocket.onerror = (event) => {
-        console.error("WebSocket connection error:", event);
+        this._logger.error("WebSocket connection error:", event);
         reject(new Error(`WebSocket connection error: ${event}`));
       };
 
       websocket.onclose = (event) => {
         if (event.code === 1003 && attempt_fallback) {
-          console.info(
+          this._logger.info(
             "Received 1003 error, attempting connection with query parameters.",
           );
           this._legacy_auth = true;
@@ -182,6 +192,37 @@ class WebsocketRPCConnection {
 
   _establish_connection() {
     return new Promise((resolve, reject) => {
+      let settled = false;
+
+      // Handle WebSocket closing before connection_info is received.
+      // Without this, the promise hangs until the outer waitFor timeout (60s).
+      const prevOnClose = this._websocket.onclose;
+      this._websocket.onclose = (event) => {
+        if (!settled) {
+          settled = true;
+          reject(
+            new Error(
+              `ConnectionAbortedError: WebSocket closed during handshake (code=${event.code}, reason=${event.reason || "unknown"})`,
+            ),
+          );
+        }
+        // Delegate to any previously-set onclose handler
+        if (prevOnClose) prevOnClose.call(this._websocket, event);
+      };
+
+      const prevOnError = this._websocket.onerror;
+      this._websocket.onerror = (event) => {
+        if (!settled) {
+          settled = true;
+          reject(
+            new Error(
+              `ConnectionAbortedError: WebSocket error during handshake`,
+            ),
+          );
+        }
+        if (prevOnError) prevOnError.call(this._websocket, event);
+      };
+
       this._websocket.onmessage = (event) => {
         const data = event.data;
         if (typeof data !== "string") {
@@ -190,6 +231,7 @@ class WebsocketRPCConnection {
         }
         const first_message = JSON.parse(data);
         if (first_message.type == "connection_info") {
+          settled = true;
           this.connection_info = first_message;
           if (this._workspace) {
             assert(
@@ -206,7 +248,7 @@ class WebsocketRPCConnection {
               this._token_refresh_interval >
               this.connection_info.reconnection_token_life_time / 1.5
             ) {
-              console.warn(
+              this._logger.warn(
                 `Token refresh interval is too long (${this._token_refresh_interval}), setting it to 1.5 times of the token life time(${this.connection_info.reconnection_token_life_time}).`,
               );
               this._token_refresh_interval =
@@ -214,20 +256,22 @@ class WebsocketRPCConnection {
             }
           }
           this.manager_id = this.connection_info.manager_id || null;
-          console.log(
+          this._logger.log(
             `Successfully connected to the server, workspace: ${this.connection_info.workspace}, manager_id: ${this.manager_id}`,
           );
           if (this.connection_info.announcement) {
-            console.log(`${this.connection_info.announcement}`);
+            this._logger.log(`${this.connection_info.announcement}`);
           }
           resolve(this.connection_info);
         } else if (first_message.type == "error") {
+          settled = true;
           const error = "ConnectionAbortedError: " + first_message.message;
-          console.error("Failed to connect, " + error);
+          this._logger.error("Failed to connect, " + error);
           reject(new Error(error));
           return;
         } else {
-          console.error(
+          settled = true;
+          this._logger.error(
             "ConnectionAbortedError: Unexpected message received from the server:",
             data,
           );
@@ -243,7 +287,7 @@ class WebsocketRPCConnection {
   }
 
   async open() {
-    console.log(
+    this._logger.log(
       "Creating a new websocket connection to",
       this._server_url.split("?")[0],
     );
@@ -303,7 +347,7 @@ class WebsocketRPCConnection {
           } else if (parsedData.type === "pong") {
             // Keepalive response, no action needed
           } else {
-            console.log("Received message from the server:", parsedData);
+            this._logger.log("Received message from the server:", parsedData);
           }
         } else {
           this._handle_message(event.data);
@@ -311,7 +355,7 @@ class WebsocketRPCConnection {
       };
 
       this._websocket.onerror = (event) => {
-        console.error("WebSocket connection error:", event);
+        this._logger.error("WebSocket connection error:", event);
         // Clean up timers on error
         this._cleanup();
       };
@@ -327,7 +371,7 @@ class WebsocketRPCConnection {
     } catch (error) {
       // Clean up any timers that might have been set up before the error
       this._cleanup();
-      console.error(
+      this._logger.error(
         "Failed to connect to",
         this._server_url.split("?")[0],
         error,
@@ -373,11 +417,11 @@ class WebsocketRPCConnection {
       // we should attempt to reconnect (e.g., server restart, k8s upgrade)
       if (this._enable_reconnect) {
         if ([1000, 1001].includes(event.code)) {
-          console.warn(
+          this._logger.warn(
             `Websocket connection closed gracefully by server (code: ${event.code}): ${event.reason} - attempting reconnect`,
           );
         } else {
-          console.warn(
+          this._logger.warn(
             "Websocket connection closed unexpectedly (code: %s): %s",
             event.code,
             event.reason,
@@ -403,13 +447,13 @@ class WebsocketRPCConnection {
         const reconnect = async () => {
           // Check if we were explicitly closed
           if (this._closed) {
-            console.info("Connection was closed, stopping reconnection");
+            this._logger.info("Connection was closed, stopping reconnection");
             this._reconnecting = false;
             return;
           }
 
           try {
-            console.warn(
+            this._logger.warn(
               `Reconnecting to ${this._server_url.split("?")[0]} (attempt #${retry})`,
             );
             // Reset the flag before each attempt so we can detect new close
@@ -432,7 +476,7 @@ class WebsocketRPCConnection {
               !this._websocket ||
               this._websocket.readyState !== WebSocket.OPEN
             ) {
-              console.warn(
+              this._logger.warn(
                 "WebSocket closed during reconnection settle period, retrying...",
               );
               this._closedDuringReconnect = false;
@@ -440,19 +484,19 @@ class WebsocketRPCConnection {
               throw new Error("Connection lost during reconnection settle");
             }
 
-            console.warn(
+            this._logger.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
             this._reconnecting = false;
           } catch (e) {
             if (`${e}`.includes("ConnectionAbortedError:")) {
-              console.warn("Server refused to reconnect:", e);
+              this._logger.warn("Server refused to reconnect:", e);
               this._closed = true;
               this._reconnecting = false;
               this._notifyDisconnected(`Server refused reconnection: ${e}`);
               return;
             } else if (`${e}`.includes("NotImplementedError:")) {
-              console.error(
+              this._logger.error(
                 `${e}\nIt appears that you are trying to connect to a hypha server that is older than 0.20.0, please upgrade the hypha server or use the websocket client in imjoy-rpc(https://www.npmjs.com/package/imjoy-rpc) instead`,
               );
               this._closed = true;
@@ -465,15 +509,15 @@ class WebsocketRPCConnection {
             // Convert to string first to safely handle non-standard error objects
             const errStr = `${e}`;
             if (errStr.includes("NetworkError") || errStr.includes("network")) {
-              console.error(`Network error during reconnection: ${errStr}`);
+              this._logger.error(`Network error during reconnection: ${errStr}`);
             } else if (
               errStr.includes("TimeoutError") || errStr.includes("timeout")
             ) {
-              console.error(
+              this._logger.error(
                 `Connection timeout during reconnection: ${errStr}`,
               );
             } else {
-              console.error(
+              this._logger.error(
                 `Unexpected error during reconnection: ${errStr}`,
               );
             }
@@ -495,14 +539,14 @@ class WebsocketRPCConnection {
                 this._websocket &&
                 this._websocket.readyState === WebSocket.OPEN
               ) {
-                console.info("Connection restored externally");
+                this._logger.info("Connection restored externally");
                 this._reconnecting = false;
                 return;
               }
 
               // Check if we were explicitly closed
               if (this._closed) {
-                console.info("Connection was closed, stopping reconnection");
+                this._logger.info("Connection was closed, stopping reconnection");
                 this._reconnecting = false;
                 return;
               }
@@ -511,7 +555,7 @@ class WebsocketRPCConnection {
               if (retry < MAX_RETRY) {
                 await reconnect();
               } else {
-                console.error(
+                this._logger.error(
                   `Failed to reconnect after ${MAX_RETRY} attempts, giving up.`,
                 );
                 this._closed = true;
@@ -541,7 +585,7 @@ class WebsocketRPCConnection {
     try {
       this._websocket.send(data);
     } catch (exp) {
-      console.error(`Failed to send data, error: ${exp}`);
+      this._logger.error(`Failed to send data, error: ${exp}`);
       throw exp;
     }
   }
@@ -560,7 +604,7 @@ class WebsocketRPCConnection {
     }
     // Use centralized cleanup to clear all timers
     this._cleanup();
-    console.info(`WebSocket connection disconnected (${reason})`);
+    this._logger.info(`WebSocket connection disconnected (${reason})`);
   }
 }
 
@@ -591,6 +635,7 @@ function normalizeServerUrl(server_url) {
  *   transport: Transport type - "websocket" (default) or "http"
  */
 export async function login(config) {
+  const _logger = config.logger === null ? { log() {}, warn() {}, error() {}, info() {} } : (config.logger || console);
   const service_id = config.login_service_id || "public/hypha-login";
   const workspace = config.workspace;
   const expires_in = config.expires_in;
@@ -618,7 +663,7 @@ export async function login(config) {
     if (callback) {
       await callback(context);
     } else {
-      console.log(`Please open your browser and login at ${context.login_url}`);
+      _logger.log(`Please open your browser and login at ${context.login_url}`);
     }
     return await svc.check(context.key, { timeout, profile, _rkwargs: true });
   } catch (error) {
@@ -639,6 +684,7 @@ export async function login(config) {
  *   transport: Transport type - "websocket" (default) or "http"
  */
 export async function logout(config) {
+  const _logger = config.logger === null ? { log() {}, warn() {}, error() {}, info() {} } : (config.logger || console);
   const service_id = config.login_service_id || "public/hypha-login";
   const callback = config.logout_callback;
   const additional_headers = config.additional_headers;
@@ -666,7 +712,7 @@ export async function logout(config) {
     if (callback) {
       await callback(context);
     } else {
-      console.log(
+      _logger.log(
         `Please open your browser to logout at ${context.logout_url}`,
       );
     }
@@ -678,8 +724,9 @@ export async function logout(config) {
   }
 }
 
-async function webrtcGetService(wm, query, config) {
+async function webrtcGetService(wm, query, config, logger) {
   config = config || {};
+  const _logger = logger === null ? { log() {}, warn() {}, error() {}, info() {}, debug() {} } : (logger || console);
   // Default to "auto" since this wrapper is only used when connection was
   // established with webrtc: true
   const webrtc = config.webrtc !== undefined ? config.webrtc : "auto";
@@ -715,7 +762,7 @@ async function webrtcGetService(wm, query, config) {
         rtcSvc._service = svc;
         return rtcSvc;
       } catch (e) {
-        console.warn(
+        _logger.warn(
           "Failed to get webrtc service, using websocket connection",
           e,
         );
@@ -729,6 +776,7 @@ async function webrtcGetService(wm, query, config) {
 }
 
 export async function connectToServer(config) {
+  const _logger = config.logger === null ? { log() {}, warn() {}, error() {}, info() {}, debug() {} } : (config.logger || console);
   // Support HTTP transport via transport option
   const transport = config.transport || "websocket";
   if (transport === "http") {
@@ -780,6 +828,7 @@ export async function connectToServer(config) {
     config.token_refresh_interval,
     config.additional_headers,
     config.ping_interval,
+    config.logger,
   );
   const connection_info = await connection.open();
   assert(
@@ -790,7 +839,7 @@ export async function connectToServer(config) {
   await new Promise((resolve) => setTimeout(resolve, 100));
   // Ensure manager_id is set before proceeding
   if (!connection.manager_id) {
-    console.warn("Manager ID not set immediately, waiting...");
+    _logger.warn("Manager ID not set immediately, waiting...");
 
     // Wait for manager_id to be set with timeout
     const maxWaitTime = 5000; // 5 seconds
@@ -802,10 +851,10 @@ export async function connectToServer(config) {
     }
 
     if (!connection.manager_id) {
-      console.error("Manager ID still not set after waiting");
+      _logger.error("Manager ID still not set after waiting");
       throw new Error("Failed to get manager ID from server");
     } else {
-      console.info(`Manager ID set after waiting: ${connection.manager_id}`);
+      _logger.info(`Manager ID set after waiting: ${connection.manager_id}`);
     }
   }
   if (config.workspace && connection_info.workspace !== config.workspace) {
@@ -820,8 +869,10 @@ export async function connectToServer(config) {
     workspace,
     default_context: { connection_type: "websocket" },
     silent: config.silent || false,
+    logger: config.logger,
     name: config.name,
     method_timeout: config.method_timeout,
+    rintf_timeout: config.rintf_timeout,
     app_id: config.app_id,
     server_base_url: connection_info.public_base_url,
     long_message_chunk_size: config.long_message_chunk_size,
@@ -859,12 +910,12 @@ export async function connectToServer(config) {
           wm[key].__rpc_object__._rtarget = newTarget;
         }
       }
-      console.info(
+      _logger.info(
         "Workspace manager proxy retargeted after reconnection (new manager_id:",
         rpc._connection?.manager_id + ")",
       );
     } catch (err) {
-      console.warn(
+      _logger.warn(
         "Failed to retarget workspace manager after reconnection:",
         err,
       );
@@ -1062,7 +1113,7 @@ export async function connectToServer(config) {
   if (connection.manager_id) {
     rpc.on("force-exit", async (message) => {
       if (message.from === "*/" + connection.manager_id) {
-        console.log("Disconnecting from server, reason:", message.reason);
+        _logger.log("Disconnecting from server, reason:", message.reason);
         await rpc.disconnect();
       }
     });
@@ -1074,7 +1125,7 @@ export async function connectToServer(config) {
     const description = _wm.getService.__schema__.description;
     // TODO: Fix the schema for adding options for webrtc
     const parameters = _wm.getService.__schema__.parameters;
-    wm.getService = schemaFunction(webrtcGetService.bind(null, _wm), {
+    wm.getService = schemaFunction(function(query, cfg) { return webrtcGetService(_wm, query, cfg, config.logger); }, {
       name: "getService",
       description,
       parameters,
@@ -1302,12 +1353,12 @@ export function setupLocalClient({
 
         if (type === "initializeHyphaClient") {
           if (!server_url || !workspace || !client_id) {
-            console.error("server_url, workspace, and client_id are required.");
+            _logger.error("server_url, workspace, and client_id are required.");
             return;
           }
 
           if (!server_url.startsWith("https://local-hypha-server:")) {
-            console.error(
+            _logger.error(
               "server_url should start with https://local-hypha-server:",
             );
             return;

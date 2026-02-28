@@ -943,6 +943,7 @@ async def _connect_to_server(config):
         silent=config.get("silent", False),
         name=config.get("name"),
         method_timeout=config.get("method_timeout"),
+        rintf_timeout=config.get("rintf_timeout"),
         loop=config.get("loop"),
         app_id=config.get("app_id"),
         server_base_url=connection_info.get("public_base_url"),
