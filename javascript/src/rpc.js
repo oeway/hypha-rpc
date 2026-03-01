@@ -382,6 +382,21 @@ class Timer {
 
 class RemoteService extends Object {}
 
+// Error patterns indicating a stale service reference that can be retried
+const STALE_SERVICE_ERROR_PATTERNS = [
+  "Method expired or not found",
+  "Session not found",
+  "Peer",  // "Peer X is not connected"
+  "Method not found",
+  "Connection was closed",
+  "Connection is closed",
+];
+
+function isStaleServiceError(error) {
+  const msg = String(error && error.message ? error.message : error);
+  return STALE_SERVICE_ERROR_PATTERNS.some((pattern) => msg.includes(pattern));
+}
+
 /**
  * RPC object represents a single site in the
  * communication protocol between the application and the plugin
@@ -1415,8 +1430,13 @@ export class RPC extends MessageEmitter {
     );
   }
   async get_remote_service(service_uri, config) {
-    let { timeout, case_conversion, kwargs_expansion, encryption_public_key } =
-      config || {};
+    let {
+      timeout,
+      case_conversion,
+      kwargs_expansion,
+      encryption_public_key,
+      _no_retry,
+    } = config || {};
     timeout = timeout === undefined ? this._method_timeout : timeout;
     if (!service_uri && this._connection.manager_id) {
       service_uri = "*/" + this._connection.manager_id;
@@ -1457,15 +1477,56 @@ export class RPC extends MessageEmitter {
       if (kwargs_expansion) {
         svc = expandKwargs(svc);
       }
-      if (case_conversion)
-        return Object.assign(
-          new RemoteService(),
-          convertCase(svc, case_conversion),
-        );
-      else return Object.assign(new RemoteService(), svc);
+      if (case_conversion) {
+        svc = convertCase(svc, case_conversion);
+      }
+      const result = Object.assign(new RemoteService(), svc);
+      if (!_no_retry) {
+        this._wrapServiceMethodsWithRetry(result, service_uri, config || {});
+      }
+      return result;
     } catch (e) {
       this._logger.warn("Failed to get remote service: " + service_uri, e);
       throw e;
+    }
+  }
+
+  _wrapServiceMethodsWithRetry(svc, serviceUri, config) {
+    const rpc = this;
+    for (const key of Object.keys(svc)) {
+      const val = svc[key];
+      if (typeof val !== "function") continue;
+      const methodName = key;
+      const originalMethod = val;
+
+      const retryWrapper = async function (...args) {
+        try {
+          return await originalMethod(...args);
+        } catch (e) {
+          if (isStaleServiceError(e)) {
+            console.info(
+              `Stale service error on ${serviceUri}:${methodName}, refreshing and retrying:`,
+              e.message || e,
+            );
+            const retryConfig = { ...config, _no_retry: true };
+            const refreshed = await rpc.get_remote_service(
+              serviceUri,
+              retryConfig,
+            );
+            const newMethod = refreshed[methodName];
+            if (!newMethod) throw e;
+            return await newMethod(...args);
+          }
+          throw e;
+        }
+      };
+
+      // Preserve metadata from the original method
+      retryWrapper.__rpc_object__ = originalMethod.__rpc_object__;
+      retryWrapper.__name__ = originalMethod.__name__ || methodName;
+      retryWrapper.__doc__ = originalMethod.__doc__;
+      retryWrapper.__schema__ = originalMethod.__schema__;
+      svc[key] = retryWrapper;
     }
   }
   _annotate_service_methods(

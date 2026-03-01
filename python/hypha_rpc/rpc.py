@@ -369,6 +369,23 @@ class RemoteService(ObjectProxy):
     pass
 
 
+# Error patterns indicating a stale service reference that can be retried
+_STALE_SERVICE_ERROR_PATTERNS = (
+    "Method expired or not found",
+    "Session not found",
+    "Peer",  # "Peer X is not connected"
+    "Method not found",
+    "Connection was closed",
+    "Connection is closed",
+)
+
+
+def _is_stale_service_error(error):
+    """Check if an error indicates a stale service reference."""
+    msg = str(error)
+    return any(pattern in msg for pattern in _STALE_SERVICE_ERROR_PATTERNS)
+
+
 class Timer:
     """Represent a timer."""
 
@@ -1766,6 +1783,7 @@ class RPC(MessageEmitter):
         config.update(kwargs)
         timeout = config.get("timeout", self._method_timeout)
         case_conversion = config.get("case_conversion")
+        no_retry = config.pop("_no_retry", False)
         encryption_public_key_hex = config.pop("encryption_public_key", None)
         if service_uri is None and self._connection.manager_id:
             service_uri = "*/" + self._connection.manager_id
@@ -1801,12 +1819,70 @@ class RPC(MessageEmitter):
                 enc_pub_bytes = bytes.fromhex(encryption_public_key_hex)
                 _apply_encryption_key_to_service(svc, enc_pub_bytes)
             if case_conversion:
-                return RemoteService.fromDict(convert_case(svc, case_conversion))
-            else:
-                return RemoteService.fromDict(svc)
+                svc = convert_case(svc, case_conversion)
+            result = RemoteService.fromDict(svc)
+            if not no_retry:
+                self._wrap_service_methods_with_retry(result, service_uri, config)
+            return result
         except Exception as exp:
             self._log.warning("Failed to get remote service: %s: %s", service_id, exp)
             raise exp
+
+    def _wrap_service_methods_with_retry(self, svc, service_uri, config):
+        """Wrap each callable method on a RemoteService with transparent retry.
+
+        When a method call fails with a stale service error (e.g. "Method expired
+        or not found" after provider reconnection), the wrapper automatically
+        re-fetches the service and retries the call once.
+        """
+        rpc = self
+        # Use dict.keys() directly to avoid shadowing by service methods
+        # named "keys", "items", etc. (RemoteService extends dict)
+        for key in list(dict.keys(svc)):
+            val = dict.__getitem__(svc, key)
+            if not callable(val):
+                continue
+            method_name = key
+            original_method = val
+
+            async def _retry_wrapper(
+                *args,
+                _original=original_method,
+                _name=method_name,
+                **kwargs,
+            ):
+                try:
+                    return await _original(*args, **kwargs)
+                except Exception as e:
+                    if _is_stale_service_error(e):
+                        logger.info(
+                            "Stale service error on %s:%s, refreshing and retrying: %s",
+                            service_uri,
+                            _name,
+                            e,
+                        )
+                        retry_config = {**config, "_no_retry": True}
+                        refreshed = await rpc.get_remote_service(
+                            service_uri, retry_config
+                        )
+                        new_method = getattr(refreshed, _name, None)
+                        if new_method is None:
+                            raise
+                        return await new_method(*args, **kwargs)
+                    raise
+
+            # Preserve metadata from the original method
+            _retry_wrapper.__rpc_object__ = getattr(
+                original_method, "__rpc_object__", None
+            )
+            _retry_wrapper.__name__ = getattr(
+                original_method, "__name__", method_name
+            )
+            _retry_wrapper.__doc__ = getattr(original_method, "__doc__", None)
+            _retry_wrapper.__schema__ = getattr(
+                original_method, "__schema__", None
+            )
+            dict.__setitem__(svc, key, _retry_wrapper)
 
     def _annotate_service_methods(
         self,
