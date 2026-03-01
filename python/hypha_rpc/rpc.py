@@ -893,6 +893,13 @@ class RPC(MessageEmitter):
                         service_registration_timeout = self._method_timeout or 30
 
                         for service in list(self._services.values()):
+                            # Skip local-only services (e.g. _rintf_ callback
+                            # proxies) — they must never be registered with the
+                            # server; doing so creates zombie entries in Redis.
+                            svc_cfg = service.get("config") or {}
+                            if isinstance(svc_cfg, dict) and svc_cfg.get("_local_only"):
+                                services_count -= 1
+                                continue
                             try:
                                 service_info = self._extract_service_info(service)
                                 await asyncio.wait_for(
@@ -2784,6 +2791,7 @@ class RPC(MessageEmitter):
             "services": [
                 self._extract_service_info(service)
                 for service in self._services.values()
+                if not (service.get("config") or {}).get("_local_only")
             ],
         }
 
@@ -3491,11 +3499,12 @@ class RPC(MessageEmitter):
                     if isinstance(session_store, dict):
                         allowed_caller = session_store.get("target_id")
                 service_api = {"id": service_id}
+                service_api["config"] = {
+                    "visibility": "protected",
+                    "_local_only": True,
+                }
                 if allowed_caller:
-                    service_api["config"] = {
-                        "visibility": "protected",
-                        "_rintf_allowed_caller": allowed_caller,
-                    }
+                    service_api["config"]["_rintf_allowed_caller"] = allowed_caller
 
                 # Add _dispose method for active lifecycle management.
                 # The remote side (allowed caller) can call _dispose() to
