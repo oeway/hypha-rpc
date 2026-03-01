@@ -414,10 +414,12 @@ export class RPC extends MessageEmitter {
       name = null,
       codecs = null,
       method_timeout = null,
+      rintf_timeout = null,
       max_message_buffer_size = 0,
       debug = false,
       workspace = null,
       silent = false,
+      logger = undefined,
       app_id = null,
       server_base_url = null,
       long_message_chunk_size = null,
@@ -435,11 +437,23 @@ export class RPC extends MessageEmitter {
     this._app_id = app_id || "*";
     this._local_workspace = workspace;
     this._silent = silent;
+    // Configurable logger: pass `logger: null` to suppress all output,
+    // or `logger: customObj` with {debug,info,warn,error} methods.
+    // Default uses console when not silent.
+    if (logger === null || silent) {
+      const noop = () => {};
+      this._logger = { debug: noop, info: noop, warn: noop, error: noop, log: noop };
+    } else if (logger) {
+      this._logger = logger;
+    } else {
+      this._logger = console;
+    }
     this.default_context = default_context || {};
     this._method_annotations = new WeakMap();
     this._max_message_buffer_size = max_message_buffer_size;
     this._chunk_store = {};
     this._method_timeout = method_timeout || 30;
+    this._rintf_timeout = rintf_timeout || 10;
     this._server_base_url = server_base_url;
     this._long_message_chunk_size = long_message_chunk_size || CHUNK_SIZE;
 
@@ -508,7 +522,7 @@ export class RPC extends MessageEmitter {
           return;
         }
       }
-      console.warn("Unhandled RPC promise rejection:", reason);
+      this._logger.warn("Unhandled RPC promise rejection:", reason);
     };
 
     this._unhandledRejectionNodeHandler = null;
@@ -585,7 +599,7 @@ export class RPC extends MessageEmitter {
             const oldTarget = `*/${this._last_manager_id}`;
             const cleaned = this._cleanupSessionsForClient(oldTarget);
             if (cleaned > 0) {
-              console.info(
+              this._logger.info(
                 `Rejected ${cleaned} stale call(s) to old manager ${this._last_manager_id}`,
               );
             }
@@ -628,11 +642,11 @@ export class RPC extends MessageEmitter {
                   serviceError.message &&
                   serviceError.message.includes("TimeoutError")
                 ) {
-                  console.error(
+                  this._logger.error(
                     `Timeout registering service ${service.id || "unknown"}`,
                   );
                 } else {
-                  console.error(
+                  this._logger.error(
                     `Failed to register service ${service.id || "unknown"}: ${serviceError}`,
                   );
                 }
@@ -640,11 +654,11 @@ export class RPC extends MessageEmitter {
             }
 
             if (registeredCount === servicesCount) {
-              console.info(
+              this._logger.info(
                 `Successfully registered all ${registeredCount} services with the server`,
               );
             } else {
-              console.warn(
+              this._logger.warn(
                 `Only registered ${registeredCount} out of ${servicesCount} services with the server. Failed services: ${failedServices.join(", ")}`,
               );
             }
@@ -740,7 +754,7 @@ export class RPC extends MessageEmitter {
               this._clientDisconnectedSubscription = null;
             }
           } catch (managerError) {
-            console.error(
+            this._logger.error(
               `Failed to get manager service for registering services: ${managerError}`,
             );
             // Fire event with error status
@@ -769,12 +783,12 @@ export class RPC extends MessageEmitter {
           // The timeout mechanism will handle them if reconnection fails,
           // allowing calls to succeed after a successful reconnection.
           if (connection._enable_reconnect) {
-            console.info(
+            this._logger.info(
               `Connection lost (${reason}), reconnection enabled - pending calls will be handled by timeout`,
             );
             return;
           }
-          console.warn(
+          this._logger.warn(
             `Connection lost (${reason}), rejecting all pending RPC calls`,
           );
           this._rejectPendingCalls(
@@ -786,7 +800,7 @@ export class RPC extends MessageEmitter {
       onConnected();
     } else {
       this._emit_message = function () {
-        console.log("No connection to emit message");
+        this._logger.log("No connection to emit message");
       };
     }
   }
@@ -810,7 +824,7 @@ export class RPC extends MessageEmitter {
         for (let k of Object.keys(this._codecs)) {
           if (this._codecs[k].type === config.type || k === config.name) {
             delete this._codecs[k];
-            console.warn("Remove duplicated codec: " + k);
+            this._logger.warn("Remove duplicated codec: " + k);
           }
         }
       }
@@ -1145,7 +1159,7 @@ export class RPC extends MessageEmitter {
         rintf_cleaned: rintfCleaned,
       });
     } catch (e) {
-      console.error(
+      this._logger.error(
         `Error handling client disconnection for ${clientId}: ${e}`,
       );
     }
@@ -1278,12 +1292,12 @@ export class RPC extends MessageEmitter {
         }
       }
       if (rejectedCount > 0) {
-        console.warn(
+        this._logger.warn(
           `Rejected ${rejectedCount} pending RPC call(s) due to: ${reason}`,
         );
       }
     } catch (e) {
-      console.error(`Error rejecting pending calls: ${e}`);
+      this._logger.error(`Error rejecting pending calls: ${e}`);
     }
   }
 
@@ -1306,7 +1320,7 @@ export class RPC extends MessageEmitter {
       this._targetIdIndex = {};
       this._rintfCallerIndex = {};
     } catch (e) {
-      console.error(`Error during cleanup on disconnect: ${e}`);
+      this._logger.error(`Error during cleanup on disconnect: ${e}`);
     }
   }
 
@@ -1336,7 +1350,7 @@ export class RPC extends MessageEmitter {
 
       if (!this._connection.manager_id) {
         if (attempt < maxRetries - 1) {
-          console.warn(
+          this._logger.warn(
             `Manager ID not set, retrying in ${retryDelay}ms (attempt ${attempt + 1}/${maxRetries})`,
           );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
@@ -1354,7 +1368,7 @@ export class RPC extends MessageEmitter {
         return svc;
       } catch (e) {
         lastError = e;
-        console.warn(
+        this._logger.warn(
           `Failed to get manager service (attempt ${attempt + 1}/${maxRetries}): ${e.message}`,
         );
         if (attempt < maxRetries - 1) {
@@ -1472,7 +1486,7 @@ export class RPC extends MessageEmitter {
       }
       return result;
     } catch (e) {
-      console.warn("Failed to get remote service: " + service_uri, e);
+      this._logger.warn("Failed to get remote service: " + service_uri, e);
       throw e;
     }
   }
@@ -1843,7 +1857,7 @@ export class RPC extends MessageEmitter {
       try {
         callback.apply(null, Array.prototype.slice.call(arguments));
       } catch (error) {
-        console.error(
+        self._logger.error(
           `Error in callback(${method_id}, ${description}): ${error}`,
         );
       } finally {
@@ -1902,7 +1916,7 @@ export class RPC extends MessageEmitter {
             // );
           }
         } catch (e) {
-          console.warn(
+          this._logger.warn(
             `Error in promise manager cleanup for session ${session_id}:`,
             e,
           );
@@ -1927,7 +1941,7 @@ export class RPC extends MessageEmitter {
         this._cleanup_session_completely(session_id);
       }
     } catch (error) {
-      console.warn(`Error during session cleanup for ${session_id}:`, error);
+      this._logger.warn(`Error during session cleanup for ${session_id}:`, error);
     }
   }
 
@@ -1954,7 +1968,7 @@ export class RPC extends MessageEmitter {
         try {
           store.timer.clear();
         } catch (error) {
-          console.warn(
+          this._logger.warn(
             `Error clearing timer for session ${session_id}:`,
             error,
           );
@@ -1968,7 +1982,7 @@ export class RPC extends MessageEmitter {
         try {
           store.heartbeat_task.cancel();
         } catch (error) {
-          console.warn(
+          this._logger.warn(
             `Error canceling heartbeat for session ${session_id}:`,
             error,
           );
@@ -2001,7 +2015,7 @@ export class RPC extends MessageEmitter {
         this._cleanup_empty_containers(levels.slice(0, -1));
       }
     } catch (error) {
-      console.warn(
+      this._logger.warn(
         `Error in complete session cleanup for ${session_id}:`,
         error,
       );
@@ -2042,7 +2056,7 @@ export class RPC extends MessageEmitter {
         }
       }
     } catch (error) {
-      console.warn("Error cleaning up empty containers:", error);
+      this._logger.warn("Error cleaning up empty containers:", error);
     }
   }
 
@@ -2215,7 +2229,7 @@ export class RPC extends MessageEmitter {
   ) {
     let store = this._get_session_store(session_id, true);
     if (!store) {
-      console.warn(
+      this._logger.warn(
         `Failed to create session store ${session_id}, session management may be impaired`,
       );
       store = {};
@@ -2309,7 +2323,7 @@ export class RPC extends MessageEmitter {
         try {
           await message_cache.remove(message_id);
         } catch (cleanupError) {
-          console.error(
+          this._logger.error(
             `Failed to clean up message cache after error: ${cleanupError}`,
           );
         }
@@ -2355,7 +2369,7 @@ export class RPC extends MessageEmitter {
     }
     const total_size = message_package.length;
     if (total_size > this._long_message_chunk_size + 1024) {
-      console.warn(`Sending large message (size=${total_size})`);
+      this._logger.warn(`Sending large message (size=${total_size})`);
     }
     return this._emit_message(message_package);
   }
@@ -2480,8 +2494,13 @@ export class RPC extends MessageEmitter {
               }
             };
 
+            // Use shorter timeout for _rintf_ callbacks to fail fast
+            // when the peer holding the callback has disconnected
+            const effectiveTimeout = method_id.includes("_rintf_")
+              ? self._rintf_timeout
+              : self._method_timeout;
             timer = new Timer(
-              self._method_timeout,
+              effectiveTimeout,
               timeoutCallback,
               [
                 `Method call timed out: ${method_name}, context: ${description}`,
@@ -2504,7 +2523,7 @@ export class RPC extends MessageEmitter {
               extra_data["promise"] = promiseData;
             } else if (with_promise === "*") {
               extra_data["promise"] = "*";
-              extra_data["t"] = self._method_timeout / 2;
+              extra_data["t"] = effectiveTimeout / 2;
             } else {
               throw new Error(`Unsupported promise type: ${with_promise}`);
             }
@@ -2571,7 +2590,7 @@ export class RPC extends MessageEmitter {
                   reject(new Error(error_msg));
                 } else {
                   // No reject callback available, log the error to prevent unhandled promise rejections
-                  console.warn("Unhandled RPC method call error:", error_msg);
+                  self._logger.warn("Unhandled RPC method call error:", error_msg);
                 }
                 if (timer && timer.started) {
                   timer.clear();
@@ -2597,7 +2616,7 @@ export class RPC extends MessageEmitter {
                   reject(new Error(error_msg));
                 } else {
                   // No reject callback available, log the error to prevent unhandled promise rejections
-                  console.warn("Unhandled RPC method call error:", error_msg);
+                  self._logger.warn("Unhandled RPC method call error:", error_msg);
                 }
                 if (timer && timer.started) {
                   timer.clear();
@@ -2721,12 +2740,13 @@ export class RPC extends MessageEmitter {
         resolve = promise.resolve;
         reject = promise.reject;
         if (promise.heartbeat && promise.interval) {
+          const _self = this;
           async function heartbeat() {
             try {
               // console.debug("Reset heartbeat timer: " + data.method);
               await promise.heartbeat();
             } catch (err) {
-              console.error(err);
+              _self._logger.error(err);
             }
           }
           heartbeat_task = setInterval(heartbeat, promise.interval * 1000);
@@ -2801,7 +2821,7 @@ export class RPC extends MessageEmitter {
           reject(error);
         } else {
           // Log the error instead of throwing to prevent unhandled exceptions
-          console.warn(
+          this._logger.warn(
             "Method not found and no reject callback:",
             error.message,
           );
@@ -2973,7 +2993,7 @@ export class RPC extends MessageEmitter {
       if (reject) {
         reject(err);
       } else {
-        console.error("Error during calling method: ", err);
+        this._logger.error("Error during calling method: ", err);
       }
       clearInterval(heartbeat_task);
     }
@@ -3193,7 +3213,7 @@ export class RPC extends MessageEmitter {
             bObject._rdoc = `${funcInfo.doc}`;
           }
         } catch (e) {
-          console.error("Failed to extract function docstring:", aObject);
+          this._logger.error("Failed to extract function docstring:", aObject);
         }
       }
       bObject._rschema = aObject.__schema__;
@@ -3253,7 +3273,7 @@ export class RPC extends MessageEmitter {
         _rdtype: dtype,
       };
     } else if (aObject instanceof Error) {
-      console.error(aObject);
+      this._logger.error(aObject);
       bObject = {
         _rtype: "error",
         _rvalue: aObject.toString(),
@@ -3483,6 +3503,8 @@ export class RPC extends MessageEmitter {
           local_workspace,
         );
       } else if (aObject._rtype === "generator") {
+        // Capture logger for use in async generator proxy (function scope)
+        const _genLogger = this._logger;
         // Create a method to fetch next items from the remote generator
         const gen_method = this._generate_remote_method(
           aObject,
@@ -3525,7 +3547,7 @@ export class RPC extends MessageEmitter {
               yield next_item;
             }
           } catch (error) {
-            console.error("Error in generator:", error);
+            _genLogger.error("Error in generator:", error);
             throw error;
           } finally {
             // If not completed normally, send close signal to clean up remote generator
