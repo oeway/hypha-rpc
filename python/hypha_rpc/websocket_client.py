@@ -87,6 +87,7 @@ class WebsocketRPCConnection:
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
         self._additional_headers = additional_headers
+        self._app_ping_task = None  # Application-level keepalive task
         self._reconnect_tasks = set()  # Track reconnection tasks
         self._connecting_lock = asyncio.Lock()  # Prevent concurrent open() calls
         self._reconnected_event = None  # Event set when reconnection completes
@@ -200,6 +201,34 @@ class WebsocketRPCConnection:
         except Exception as exp:
             logger.error(f"Failed to send refresh token: {exp}")
 
+    async def _send_app_ping(self):
+        """Send periodic application-level ping messages.
+
+        The websockets library sends protocol-level PING frames, but
+        the Hypha server's idle timeout (asyncio.wait_for on receive)
+        only resets on data frames, not PING/PONG.  Sending {"type": "ping"}
+        as a JSON text frame ensures the server's receive() returns,
+        preventing idle-timeout disconnects during long-running RPC calls.
+        """
+        try:
+            await asyncio.sleep(2)  # Initial delay before first ping
+            while (
+                not self._closed
+                and self._websocket
+                and self._websocket.state != State.CLOSED
+            ):
+                try:
+                    await self._websocket.send(json.dumps({"type": "ping"}))
+                except Exception:
+                    # Connection may be closing; the listen task will handle it
+                    break
+                await asyncio.sleep(self._ping_interval)
+        except asyncio.CancelledError:
+            pass
+        except RuntimeError as e:
+            if "Event loop is closed" not in str(e):
+                logger.debug("RuntimeError in app ping task: %s", e)
+
     async def open(self):
         """Open the connection with fallback logic for backward compatibility."""
         async with self._connecting_lock:
@@ -289,6 +318,11 @@ class WebsocketRPCConnection:
                 self._refresh_token_task = asyncio.create_task(
                     self._send_refresh_token(self._token_refresh_interval)
                 )
+            # Start application-level keepalive to prevent server idle timeout.
+            # Protocol-level PINGs from the websockets library don't reset the
+            # server's asyncio.wait_for(receive()) timeout.
+            if self._ping_interval > 0:
+                self._app_ping_task = asyncio.create_task(self._send_app_ping())
             self._listen_task = asyncio.ensure_future(self._listen())
             if self._handle_connected:
                 await self._handle_connected(self.connection_info)
@@ -653,6 +687,7 @@ class WebsocketRPCConnection:
             if loop.is_closed():
                 logger.debug("Event loop is closed, performing minimal cleanup")
                 self._refresh_token_task = None
+                self._app_ping_task = None
                 self._listen_task = None
                 self._reconnect_tasks.clear()
                 return
@@ -668,6 +703,17 @@ class WebsocketRPCConnection:
                 except Exception as e:
                     logger.debug(f"Error waiting for refresh token task: {e}")
                 self._refresh_token_task = None
+
+            # Cancel application-level ping task
+            if self._app_ping_task and not self._app_ping_task.done():
+                self._app_ping_task.cancel()
+                try:
+                    await asyncio.wait_for(self._app_ping_task, timeout=1.0)
+                except (asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
+                    pass
+                except Exception as e:
+                    logger.debug(f"Error waiting for app ping task: {e}")
+                self._app_ping_task = None
 
             # Cancel listen task
             if self._listen_task and not self._listen_task.done():
@@ -703,6 +749,7 @@ class WebsocketRPCConnection:
                     "Event loop closed during cleanup, performing minimal cleanup"
                 )
                 self._refresh_token_task = None
+                self._app_ping_task = None
                 self._listen_task = None
                 self._reconnect_tasks.clear()
             else:
@@ -712,6 +759,7 @@ class WebsocketRPCConnection:
         finally:
             # Ensure tasks are marked as None even if cleanup fails
             self._refresh_token_task = None
+            self._app_ping_task = None
             self._listen_task = None
             self._reconnect_tasks.clear()
 
