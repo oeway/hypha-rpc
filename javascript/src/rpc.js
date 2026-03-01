@@ -628,6 +628,13 @@ export class RPC extends MessageEmitter {
             const serviceRegistrationTimeout = (this._method_timeout || 30) * 1000;
 
             for (let service of services) {
+              // Skip local-only services (e.g. _rintf_ callback proxies) —
+              // they must never be registered with the server; doing so
+              // creates zombie entries in Redis.
+              if (service.config && service.config._local_only) {
+                servicesCount--;
+                continue;
+              }
               try {
                 const serviceInfo = this._extract_service_info(service);
                 await withTimeout(
@@ -2649,6 +2656,8 @@ export class RPC extends MessageEmitter {
   get_client_info() {
     const services = [];
     for (let service of Object.values(this._services)) {
+      // Exclude local-only services (e.g. _rintf_ callback proxies)
+      if (service.config && service.config._local_only) continue;
       services.push(this._extract_service_info(service));
     }
 
@@ -3382,11 +3391,12 @@ export class RPC extends MessageEmitter {
           }
         }
         const serviceApi = { id: serviceId };
+        serviceApi.config = {
+          visibility: "protected",
+          _local_only: true,
+        };
         if (allowedCaller) {
-          serviceApi.config = {
-            visibility: "protected",
-            _rintf_allowed_caller: allowedCaller,
-          };
+          serviceApi.config._rintf_allowed_caller = allowedCaller;
         }
 
         // Add _dispose method for active lifecycle management.
