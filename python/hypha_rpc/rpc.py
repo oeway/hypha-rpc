@@ -1067,9 +1067,15 @@ class RPC(MessageEmitter):
             if hasattr(connection, "on_disconnected"):
 
                 def on_connection_lost(reason=None):
-                    # If reconnection is enabled, don't reject pending calls immediately
-                    # The timeout mechanism will handle them if reconnection fails
-                    if getattr(connection, "_enable_reconnect", False):
+                    # If reconnection is enabled AND the connection is not permanently
+                    # closed, don't reject pending calls immediately — they may
+                    # succeed after reconnection.  But if _closed is True (all
+                    # retries exhausted or server refused reconnect) we must reject
+                    # them now, otherwise callers hang forever and timers leak.
+                    reconnecting = getattr(
+                        connection, "_enable_reconnect", False
+                    ) and not getattr(connection, "_closed", False)
+                    if reconnecting:
                         self._log.info(
                             "Connection lost (%s), reconnection enabled - pending calls will be handled by timeout",
                             reason,
