@@ -1521,8 +1521,17 @@ class RPC(MessageEmitter):
             return 0
         cleaned = 0
         for sid in list(service_ids):
-            if sid in self._services:
-                self._remove_service_annotations(self._services[sid])
+            svc = self._services.get(sid)
+            if svc is not None:
+                dispose = svc.get("_dispose")
+                if callable(dispose):
+                    try:
+                        result = dispose()
+                        if asyncio.iscoroutine(result):
+                            asyncio.ensure_future(result)
+                    except Exception:
+                        pass
+                self._remove_service_annotations(svc)
                 del self._services[sid]
                 cleaned += 1
         return cleaned
