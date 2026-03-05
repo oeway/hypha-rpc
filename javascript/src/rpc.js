@@ -1144,7 +1144,15 @@ export class RPC extends MessageEmitter {
     delete this._rintfCallerIndex[clientId];
     let cleaned = 0;
     for (const sid of serviceIds) {
-      if (this._services[sid]) {
+      const svc = this._services[sid];
+      if (svc) {
+        if (typeof svc._dispose === "function") {
+          try {
+            svc._dispose();
+          } catch (e) {
+            /* ignore errors from dispose handlers */
+          }
+        }
         delete this._services[sid];
         cleaned++;
       }

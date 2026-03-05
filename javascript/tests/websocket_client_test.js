@@ -3436,6 +3436,68 @@ describe("RPC", async () => {
     await client.disconnect();
     await server.disconnect();
   }).timeout(30000);
+
+  it("should call _dispose on _rintf services when their allowed caller disconnects", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rintf-dispose-provider",
+    });
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+
+    await server.registerService({
+      name: "RIntf Dispose Service",
+      id: "rintf-dispose-svc",
+      config: { visibility: "protected" },
+      register_listener: async (interfaceObj) => {
+        return "registered";
+      },
+    });
+
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "rintf-dispose-consumer",
+      workspace: workspace,
+      token: token,
+    });
+
+    const svc = await client.getService("rintf-dispose-svc");
+
+    const listenerObj = {
+      _rintf: true,
+      onUpdate: (data) => data,
+    };
+
+    await svc.register_listener(listenerObj);
+    const rintfServiceId = listenerObj._rintf_service_id;
+    expect(rintfServiceId).to.match(/^_rintf_/);
+
+    const rintfSvc = client.rpc._services[rintfServiceId];
+    expect(rintfSvc).to.not.be.undefined;
+
+    // Spy on the _dispose method to verify it is called during cleanup
+    let disposeWasCalled = false;
+    const originalDispose = rintfSvc._dispose;
+    rintfSvc._dispose = () => {
+      disposeWasCalled = true;
+      if (typeof originalDispose === "function") {
+        originalDispose();
+      }
+    };
+
+    // Disconnect the server (allowed caller) so _cleanupRintfForCaller fires on client
+    await server.disconnect();
+
+    // Give the client time to process the disconnect and clean up
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // _dispose should have been called during cleanup
+    expect(disposeWasCalled).to.be.true;
+    // The _rintf service should have been removed
+    expect(client.rpc._services[rintfServiceId]).to.be.undefined;
+
+    await client.disconnect();
+  }).timeout(30000);
 });
 
 describe("E2E Encrypted Service Calls", () => {
