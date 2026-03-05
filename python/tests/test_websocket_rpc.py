@@ -4863,6 +4863,106 @@ async def test_rintf_session_lifecycle(websocket_server):
 
 
 @pytest.mark.asyncio
+async def test_rintf_dispose_called_on_caller_disconnect(websocket_server):
+    """Test that _dispose() is called on _rintf services when their allowed caller disconnects.
+
+    When the allowed_caller of a _rintf service disconnects, _cleanup_rintf_for_caller
+    should call _dispose() on each affected service before removing it, giving
+    application code an eager cleanup signal instead of waiting for _rintf_timeout.
+
+    Setup:
+      - manager  : owns the workspace (stays connected to keep workspace alive)
+      - provider : registers a service that accepts _rintf callbacks (the allowed_caller)
+      - consumer : sends an _rintf callback to provider
+    When provider disconnects, consumer should eagerly call _dispose() on its _rintf service.
+    """
+    # Workspace owner — keeps the workspace alive when provider disconnects
+    manager = await connect_to_server(
+        {
+            "name": "rintf dispose manager",
+            "server_url": WS_SERVER_URL,
+            "client_id": "rintf-dispose-manager",
+        }
+    )
+    workspace = manager.config.workspace
+    token = await manager.generate_token()
+
+    # Provider registers a service that accepts _rintf callbacks
+    provider = await connect_to_server(
+        {
+            "name": "rintf dispose provider",
+            "server_url": WS_SERVER_URL,
+            "client_id": "rintf-dispose-provider",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    async def register_listener(interface_obj):
+        return "registered"
+
+    await provider.register_service(
+        {
+            "name": "RIntf Dispose Service",
+            "id": "rintf-dispose-svc",
+            "config": {"visibility": "protected"},
+            "register_listener": register_listener,
+        }
+    )
+
+    # Consumer sends an _rintf callback to provider
+    consumer = await connect_to_server(
+        {
+            "name": "rintf dispose consumer",
+            "server_url": WS_SERVER_URL,
+            "client_id": "rintf-dispose-consumer",
+            "workspace": workspace,
+            "token": token,
+        }
+    )
+
+    svc = await consumer.get_service("rintf-dispose-svc")
+
+    listener_obj = {"_rintf": True, "on_update": lambda data: data}
+    await svc.register_listener(listener_obj)
+
+    rintf_service_id = listener_obj.get("_rintf_service_id")
+    assert rintf_service_id is not None
+    assert rintf_service_id.startswith("_rintf_")
+
+    rintf_svc = consumer.rpc._services.get(rintf_service_id)
+    assert rintf_svc is not None
+
+    # Spy on _dispose to verify it is called during caller-disconnect cleanup
+    dispose_was_called = False
+    original_dispose = rintf_svc.get("_dispose")
+
+    async def spying_dispose():
+        nonlocal dispose_was_called
+        dispose_was_called = True
+        if callable(original_dispose):
+            result = original_dispose()
+            if asyncio.iscoroutine(result):
+                await result
+
+    rintf_svc["_dispose"] = spying_dispose
+
+    # Disconnect provider (the allowed_caller) — consumer should call _dispose() on its _rintf
+    await provider.disconnect()
+
+    # Give consumer time to process the client_disconnected event and run cleanup
+    await asyncio.sleep(1.0)
+
+    assert dispose_was_called, "_dispose() should have been called during cleanup"
+    assert (
+        rintf_service_id not in consumer.rpc._services
+    ), "_rintf service should have been removed"
+
+    await consumer.disconnect()
+    await manager.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_encrypted_service_calls(websocket_server):
     """Test E2E encrypted service calls between two clients."""
     # Service provider with encryption
