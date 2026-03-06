@@ -2783,7 +2783,13 @@ class RPC(MessageEmitter):
                         return resolve(result)
                     elif result is not None:
                         self._log.debug("Returned value (%s): %s", method_name, result)
+                except asyncio.CancelledError:
+                    if heartbeat_task and not heartbeat_task.done():
+                        heartbeat_task.cancel()
+                    raise
                 except Exception as err:
+                    if heartbeat_task and not heartbeat_task.done():
+                        heartbeat_task.cancel()
                     traceback_error = traceback.format_exc()
                     if reject is not None:
                         return reject(Exception(format_traceback(traceback_error)))
