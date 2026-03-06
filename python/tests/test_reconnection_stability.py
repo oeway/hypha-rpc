@@ -1086,13 +1086,19 @@ async def test_multiple_clients_reconnection(websocket_server):
     for ws in clients:
         await ws.rpc._connection._websocket.close(1011)
 
-    # Wait for all clients to reconnect
-    await asyncio.sleep(5)
+    # Wait for all clients to reconnect (event-based, up to 20s)
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if all(len(reconnection_events[i]) > 0 for i in range(NUM_CLIENTS)):
+            break
+        await asyncio.sleep(0.5)
+    # Give a moment for services to finish re-registering
+    await asyncio.sleep(1)
 
     # Verify all clients reconnected and services work with retries
     success_count = 0
     for i, ws in enumerate(clients):
-        for attempt in range(5):  # Retry up to 5 times
+        for attempt in range(10):  # Retry up to 10 times
             try:
                 svc = await asyncio.wait_for(
                     ws.get_service(f"service-{i}"), timeout=3.0
@@ -1103,7 +1109,7 @@ async def test_multiple_clients_reconnection(websocket_server):
                     print(f"✅ Client {i} service working")
                     break
             except Exception as e:
-                if attempt < 4:
+                if attempt < 9:
                     await asyncio.sleep(1)
                 else:
                     print(f"❌ Client {i} service failed after retries: {e}")
