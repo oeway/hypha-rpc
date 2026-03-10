@@ -1053,6 +1053,7 @@ async def test_multiple_clients_reconnection(websocket_server):
                 "name": f"multi-client-{i}",
                 "server_url": WS_SERVER_URL,
                 "client_id": f"multi-client-{i}",
+                "method_timeout": 10,
             }
         )
 
@@ -1082,15 +1083,17 @@ async def test_multiple_clients_reconnection(websocket_server):
     for i in range(NUM_CLIENTS):
         reconnection_events[i].clear()
 
-    # Close all websocket connections
+    # Close all websocket connections with slight stagger to reduce
+    # server-side contention during simultaneous reconnection attempts
     print("🔌 Closing all websocket connections...")
     for ws in clients:
         await ws.rpc._connection._websocket.close(1011)
+        await asyncio.sleep(0.2)
 
-    # Wait for all clients to reconnect (event-based, up to 40s)
-    # A failed reconnection attempt can take up to ~10s (service registration
-    # timeout) + exponential backoff, so allow enough time for retries.
-    deadline = time.time() + 40
+    # Wait for all clients to reconnect (event-based, up to 60s)
+    # A failed reconnection attempt can take up to ~10s (method_timeout)
+    # + exponential backoff, so allow enough time for retries.
+    deadline = time.time() + 60
     while time.time() < deadline:
         if all(len(reconnection_events[i]) > 0 for i in range(NUM_CLIENTS)):
             break

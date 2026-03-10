@@ -889,13 +889,8 @@ class RPC(MessageEmitter):
                         registered_count = 0
                         failed_services = []
 
-                        # Use a shorter timeout for service registration during
-                        # reconnection to avoid blocking for the full method_timeout
-                        # (default 30s). If registration hangs, we want to fail fast
-                        # so the reconnection loop can retry.
-                        service_registration_timeout = min(
-                            self._method_timeout or 30, 10
-                        )
+                        # Use timeout for service registration to prevent hanging
+                        service_registration_timeout = self._method_timeout or 30
 
                         for service in list(self._services.values()):
                             # Skip local-only services (e.g. _rintf_ callback
