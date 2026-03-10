@@ -623,9 +623,13 @@ export class RPC extends MessageEmitter {
             let registeredCount = 0;
             const failedServices = [];
 
-            // Use timeout for service registration to prevent hanging
+            // Use a shorter timeout for service registration during
+            // reconnection to avoid blocking for the full method_timeout.
+            // If registration hangs, we want to fail fast so the
+            // reconnection loop can retry.
             // _method_timeout is in seconds, withTimeout expects milliseconds
-            const serviceRegistrationTimeout = (this._method_timeout || 30) * 1000;
+            const serviceRegistrationTimeout =
+              Math.min(this._method_timeout || 30, 10) * 1000;
 
             for (let service of services) {
               // Skip local-only services (e.g. _rintf_ callback proxies) —
