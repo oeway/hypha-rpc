@@ -677,6 +677,11 @@ export class RPC extends MessageEmitter {
               failed: failedServices,
             });
 
+            // Track whether all services were registered so the
+            // reconnection loop can detect partial failures and retry.
+            this._connection._services_registered_ok =
+              failedServices.length === 0;
+
             // Subscribe to client_disconnected events if the manager supports it
             try {
               if (
@@ -769,6 +774,9 @@ export class RPC extends MessageEmitter {
               error: managerError.toString(),
               total_services: Object.keys(this._services).length,
             });
+            // Mark registration as failed so the reconnection loop
+            // can detect and retry
+            this._connection._services_registered_ok = false;
           }
         } else {
           // console.debug("Connection established", connectionInfo);

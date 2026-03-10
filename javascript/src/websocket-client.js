@@ -484,6 +484,19 @@ class WebsocketRPCConnection {
               throw new Error("Connection lost during reconnection settle");
             }
 
+            // Check if service re-registration succeeded.
+            // The on_connected callback sets this flag; if any
+            // services failed to register, retry instead of
+            // declaring success with missing services.
+            if (this._services_registered_ok === false) {
+              this._logger.warn(
+                "Service re-registration failed, retrying...",
+              );
+              throw new Error(
+                "Service re-registration failed after reconnection",
+              );
+            }
+
             this._logger.warn(
               `Successfully reconnected to server ${this._server_url} (services re-registered)`,
             );
