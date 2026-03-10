@@ -428,15 +428,47 @@ export class HTTPStreamingRPCConnection {
 
   /**
    * Process msgpack stream with 4-byte length prefix.
+   *
+   * Includes a read timeout to detect dead connections. The Hypha server
+   * sends pings every ~30s, so if no data arrives within READ_TIMEOUT_MS,
+   * the connection is considered dead and the stream is cancelled to
+   * trigger reconnection.
    */
   async _processMsgpackStream(response) {
     const reader = response.body.getReader();
+    // Expose the reader so external code (e.g. daemon heartbeat) can cancel it
+    this._reader = reader;
     // Growing buffer to avoid O(n^2) re-allocation on every chunk
     let buffer = new Uint8Array(4096);
     let bufferLen = 0;
 
+    // Read timeout: server sends pings every ~30s, so 120s = 4 missed pings = dead
+    const READ_TIMEOUT_MS = 120_000;
+
     while (!this._closed) {
-      const { done, value } = await reader.read();
+      let readResult;
+      let timeoutId;
+      try {
+        readResult = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error("Stream read timeout (no data for 120s)")),
+              READ_TIMEOUT_MS,
+            );
+          }),
+        ]);
+        clearTimeout(timeoutId);
+      } catch (error) {
+        clearTimeout(timeoutId);
+        console.warn(`Stream read error: ${error.message}`);
+        try {
+          reader.cancel();
+        } catch {}
+        break;
+      }
+
+      const { done, value } = readResult;
 
       if (done) break;
 
@@ -516,6 +548,8 @@ export class HTTPStreamingRPCConnection {
         bufferLen = remaining;
       }
     }
+
+    this._reader = null;
   }
 
   /**
