@@ -619,7 +619,7 @@ export class RPC extends MessageEmitter {
             this._fire("manager_refreshed", { manager });
 
             const services = Object.values(this._services);
-            const servicesCount = services.length;
+            let servicesCount = services.length;
             let registeredCount = 0;
             const failedServices = [];
 
