@@ -940,6 +940,12 @@ class RPC(MessageEmitter):
                             },
                         )
 
+                        # Track whether all services were registered
+                        if failed_services:
+                            self._connection._services_registered_ok = False
+                        else:
+                            self._connection._services_registered_ok = True
+
                         # Subscribe to client_disconnected events if the manager supports it
                         try:
                             manager_dict = ObjectProxy.toDict(manager)
@@ -1044,6 +1050,9 @@ class RPC(MessageEmitter):
                                 "total_services": len(self._services),
                             },
                         )
+                        # Mark registration as failed so the reconnection loop
+                        # can detect and retry
+                        self._connection._services_registered_ok = False
                 else:
                     self._log.info("Connection established: %s", connection_info)
                 if connection_info:

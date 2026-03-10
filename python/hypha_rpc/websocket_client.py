@@ -526,6 +526,18 @@ class WebsocketRPCConnection:
                                         "Connection lost during reconnection settle"
                                     )
 
+                                # Check if service re-registration succeeded.
+                                # The on_connected callback sets this flag; if any
+                                # services failed to register, retry instead of
+                                # declaring success with missing services.
+                                if not getattr(self, "_services_registered_ok", True):
+                                    self._log.warning(
+                                        "Service re-registration failed, retrying..."
+                                    )
+                                    raise ConnectionError(
+                                        "Service re-registration failed after reconnection"
+                                    )
+
                                 self._log.warning(
                                     "Successfully reconnected to %s (services re-registered)",
                                     self._server_url.split("?")[0],
