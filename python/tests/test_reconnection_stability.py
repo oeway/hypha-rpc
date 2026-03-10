@@ -1032,6 +1032,7 @@ async def test_event_loop_blocking_detection(restartable_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(60)
 async def test_multiple_clients_reconnection(websocket_server):
     """Test that multiple clients can reconnect independently.
 
