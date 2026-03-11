@@ -11,6 +11,7 @@ import {
 } from "../src/websocket-client.js";
 import { registerRTCService, getRTCService } from "../src/webrtc-client.js";
 import { assert } from "../src/utils";
+import { getParamNames } from "../src/rpc.js";
 const SERVER_URL = "http://127.0.0.1:9394";
 
 class ImJoyPlugin {
@@ -3996,4 +3997,148 @@ describe("E2E Encryption Edge Cases", () => {
     await clientB.disconnect();
     await server.disconnect();
   });
+
+  // =========================================================================
+  // getParamNames unit tests
+  // =========================================================================
+  it("getParamNames should parse function signatures", () => {
+    expect(getParamNames(function (a, b, c) {})).to.deep.equal([
+      "a",
+      "b",
+      "c",
+    ]);
+    expect(getParamNames(async function (a, b) {})).to.deep.equal(["a", "b"]);
+    expect(getParamNames((a, b) => {})).to.deep.equal(["a", "b"]);
+    expect(
+      getParamNames((a, b = 5) => {
+        return a + b;
+      }),
+    ).to.deep.equal(["a", "b"]);
+    expect(getParamNames(async (a, ...rest) => {})).to.deep.equal([
+      "a",
+      "rest",
+    ]);
+    expect(getParamNames(() => {})).to.deep.equal([]);
+    expect(getParamNames(function named(x, y) {})).to.deep.equal(["x", "y"]);
+    // single param arrow without parens
+    expect(getParamNames((x) => x)).to.deep.equal(["x"]);
+  });
+
+  // =========================================================================
+  // kwargs unpacking tests (JS→JS via _rkwargs)
+  // =========================================================================
+  it("should unpack kwargs on JS receive side", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "kwargs-server",
+    });
+
+    await server.registerService({
+      id: "kwargs-svc",
+      config: { visibility: "protected" },
+      greet: (name, greeting) => `${greeting}, ${name}!`,
+      add: (a, b, c) => (a || 0) + (b || 0) + (c || 0),
+      noArgs: () => "ok",
+      process: (data) => typeof data,
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+      client_id: "kwargs-client",
+    });
+
+    const svc = await client.getService("kwargs-svc");
+
+    // Test 1: Basic kwargs unpacking
+    const result1 = await svc.greet({ name: "Alice", greeting: "Hi", _rkwargs: true });
+    expect(result1).to.equal("Hi, Alice!");
+
+    // Test 2: Positional still works (regression test)
+    const result2 = await svc.greet("Bob", "Hello");
+    expect(result2).to.equal("Hello, Bob!");
+
+    // Test 3: Partial params (some kwargs missing)
+    const result3 = await svc.add({ a: 1, c: 3, _rkwargs: true });
+    expect(result3).to.equal(4); // a=1, b=undefined→0, c=3
+
+    // Test 4: Extra unknown kwargs are silently ignored
+    const result4 = await svc.greet({
+      name: "Carol",
+      greeting: "Hey",
+      extra: "ignored",
+      _rkwargs: true,
+    });
+    expect(result4).to.equal("Hey, Carol!");
+
+    // Test 5: Empty kwargs
+    const result5 = await svc.noArgs({ _rkwargs: true });
+    expect(result5).to.equal("ok");
+
+    // Test 6: Object without _rkwargs should NOT unpack
+    const result6 = await svc.process({ a: 1, b: 2 });
+    expect(result6).to.equal("object");
+
+    console.log("✓ kwargs unpacking works correctly");
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(20000);
+
+  it("should unpack kwargs with require_context", async () => {
+    const server = await connectToServer({
+      server_url: SERVER_URL,
+      client_id: "kwargs-ctx-server",
+    });
+
+    let receivedContext = null;
+    await server.registerService({
+      id: "kwargs-ctx-svc",
+      config: { visibility: "protected", require_context: true },
+      greet: (name, greeting, context) => {
+        receivedContext = context;
+        return `${greeting}, ${name}!`;
+      },
+    });
+
+    const workspace = server.config.workspace;
+    const token = await server.generateToken();
+    const client = await connectToServer({
+      server_url: SERVER_URL,
+      workspace: workspace,
+      token: token,
+      client_id: "kwargs-ctx-client",
+    });
+
+    const svc = await client.getService("kwargs-ctx-svc");
+
+    // kwargs with context injection
+    const result = await svc.greet({
+      name: "Alice",
+      greeting: "Hi",
+      _rkwargs: true,
+    });
+    expect(result).to.equal("Hi, Alice!");
+    // Context should be a real HyphaUserContext, not null/undefined
+    expect(receivedContext).to.not.be.null;
+    expect(receivedContext).to.have.property("user");
+
+    // Security: context kwarg should NOT override the real context
+    receivedContext = null;
+    const result2 = await svc.greet({
+      name: "Bob",
+      greeting: "Hey",
+      context: "fake",
+      _rkwargs: true,
+    });
+    expect(result2).to.equal("Hey, Bob!");
+    expect(receivedContext).to.not.equal("fake");
+    expect(receivedContext).to.have.property("user");
+
+    console.log("✓ kwargs unpacking with require_context works correctly");
+    await client.disconnect();
+    await server.disconnect();
+  }).timeout(20000);
 });
