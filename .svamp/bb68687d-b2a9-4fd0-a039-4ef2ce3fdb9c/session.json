@@ -1,0 +1,21 @@
+{
+  "sessionId": "bb68687d-b2a9-4fd0-a039-4ef2ce3fdb9c",
+  "directory": "/Users/weio/workspace/hypha-rpc",
+  "claudeResumeId": "de2e0eaf-55ab-41d7-9d2a-4fef1b846911",
+  "permissionMode": "bypassPermissions",
+  "metadata": {
+    "path": "/Users/weio/workspace/hypha-rpc",
+    "host": "WeiOMacMini",
+    "version": "0.1.0",
+    "machineId": "machine-WeiOMacMini-fb9cfb45",
+    "homeDir": "/Users/weio",
+    "svampHomeDir": "/Users/weio/.svamp",
+    "svampLibDir": "/Users/weio/workspace/hypha-cloud/packages/svamp-cli",
+    "svampToolsDir": "/Users/weio/workspace/hypha-cloud/packages/svamp-cli/tools",
+    "startedFromDaemon": true,
+    "startedBy": "daemon",
+    "lifecycleState": "starting"
+  },
+  "createdAt": 1771922865437,
+  "machineId": "machine-WeiOMacMini-fb9cfb45"
+}
