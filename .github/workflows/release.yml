@@ -112,6 +112,9 @@ jobs:
     name: Release Javascript
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     defaults:
       run:
         working-directory: javascript
@@ -131,10 +134,12 @@ jobs:
           create-tag: false
           version-command: |
             bash -o pipefail -c "cat javascript/package.json | jq -r '.version'"
-      - uses: actions/setup-node@v3.6.0
+      - uses: actions/setup-node@v4
         with:
-          node-version: 15.5.0
+          node-version: 20
           registry-url: "https://registry.npmjs.org"
+      - name: Upgrade npm for Trusted Publisher (OIDC) support
+        run: npm install -g npm@latest
       - run: npm ci
       - name: Set up Python 3.11
         uses: actions/setup-python@v4.5.0
@@ -149,5 +154,4 @@ jobs:
           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
           steps.check-version.outputs.previous-version != steps.check-version.outputs.current-version
         run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
