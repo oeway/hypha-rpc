@@ -1161,9 +1161,16 @@ class RPC(MessageEmitter):
     ):
         """Create a message."""
         if heartbeat:
-            if key not in self._object_store:
+            session = self._object_store.get(key)
+            if session is None:
                 raise Exception(f"session does not exist anymore: {key}")
-            self._object_store[key]["timer"].reset()
+            # Sessions created without a promise/timeout have no timer entry.
+            # A chunked message still arrives with heartbeat=True because the
+            # sender sets it based on whether session_id is truthy, not on
+            # whether the receiver's session owns a timer. Skip defensively.
+            timer = session.get("timer")
+            if timer is not None and hasattr(timer, "reset"):
+                timer.reset()
 
         if "message_cache" not in self._object_store:
             self._object_store["message_cache"] = {}
@@ -1180,9 +1187,16 @@ class RPC(MessageEmitter):
     ):
         """Append a message."""
         if heartbeat:
-            if key not in self._object_store:
+            session = self._object_store.get(key)
+            if session is None:
                 raise Exception(f"session does not exist anymore: {key}")
-            self._object_store[key]["timer"].reset()
+            # Sessions created without a promise/timeout have no timer entry.
+            # A chunked message still arrives with heartbeat=True because the
+            # sender sets it based on whether session_id is truthy, not on
+            # whether the receiver's session owns a timer. Skip defensively.
+            timer = session.get("timer")
+            if timer is not None and hasattr(timer, "reset"):
+                timer.reset()
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
@@ -1194,9 +1208,16 @@ class RPC(MessageEmitter):
     ):
         """Append a message."""
         if heartbeat:
-            if key not in self._object_store:
+            session = self._object_store.get(key)
+            if session is None:
                 raise Exception(f"session does not exist anymore: {key}")
-            self._object_store[key]["timer"].reset()
+            # Sessions created without a promise/timeout have no timer entry.
+            # A chunked message still arrives with heartbeat=True because the
+            # sender sets it based on whether session_id is truthy, not on
+            # whether the receiver's session owns a timer. Skip defensively.
+            timer = session.get("timer")
+            if timer is not None and hasattr(timer, "reset"):
+                timer.reset()
         cache = self._object_store["message_cache"]
         if key not in cache:
             raise KeyError(f"Message with key {key} does not exists.")
@@ -1214,9 +1235,16 @@ class RPC(MessageEmitter):
     def _process_message(self, key: str, heartbeat: bool = False, context=None):
         """Process a message."""
         if heartbeat:
-            if key not in self._object_store:
+            session = self._object_store.get(key)
+            if session is None:
                 raise Exception(f"session does not exist anymore: {key}")
-            self._object_store[key]["timer"].reset()
+            # Sessions created without a promise/timeout have no timer entry.
+            # A chunked message still arrives with heartbeat=True because the
+            # sender sets it based on whether session_id is truthy, not on
+            # whether the receiver's session owns a timer. Skip defensively.
+            timer = session.get("timer")
+            if timer is not None and hasattr(timer, "reset"):
+                timer.reset()
         cache = self._object_store["message_cache"]
         assert context is not None, "Context is required"
         if key not in cache:

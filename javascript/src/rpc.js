@@ -904,10 +904,21 @@ export class RPC extends MessageEmitter {
 
   _create_message(key, heartbeat, overwrite, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
 
     if (!this._object_store["message_cache"]) {
@@ -956,10 +967,21 @@ export class RPC extends MessageEmitter {
 
   _append_message(key, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
@@ -971,10 +993,21 @@ export class RPC extends MessageEmitter {
 
   _set_message(key, index, data, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
     const cache = this._object_store["message_cache"];
     if (!cache[key]) {
@@ -994,10 +1027,21 @@ export class RPC extends MessageEmitter {
 
   _process_message(key, heartbeat, context) {
     if (heartbeat) {
-      if (!this._object_store[key]) {
+      const session = this._object_store[key];
+      if (!session) {
         throw new Error(`session does not exist anymore: ${key}`);
       }
-      this._object_store[key]["timer"].reset();
+      // Sessions created without a promise/timeout (e.g. _get_session_store
+      // calls where timer && reject && _method_timeout was false) have no
+      // timer. A chunked message still arrives with heartbeat=true because
+      // the sender sets it based on whether session_id is truthy (rpc.js
+      // ~L2358), not on whether the receiver's session owns a timer. Without
+      // this guard, every chunk of such a session throws "Cannot read
+      // properties of undefined (reading 'reset')", which cascades and
+      // silently breaks the RPC message pipeline for the client.
+      if (session.timer && typeof session.timer.reset === "function") {
+        session.timer.reset();
+      }
     }
     const cache = this._object_store["message_cache"];
     assert(!!context, "Context is required");
