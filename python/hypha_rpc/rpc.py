@@ -1934,6 +1934,16 @@ class RPC(MessageEmitter):
             _retry_wrapper.__rpc_object__ = getattr(
                 original_method, "__rpc_object__", None
             )
+            # Expose the underlying RemoteFunction's encoded method so the
+            # wm-proxy retarget loop (manager_refreshed) can update the target
+            # in place after reconnection. This dict is read at call time by
+            # the wrapped method, so mutating its "_rtarget" retargets the call
+            # without re-wrapping. Without this, the retarget loop (which gates
+            # on hasattr(_encoded_method)) skips every retry-wrapped manager
+            # method and the wm proxy keeps a stale "*/<old_manager_id>".
+            _retry_wrapper._encoded_method = getattr(
+                original_method, "_encoded_method", None
+            )
             _retry_wrapper.__name__ = getattr(
                 original_method, "__name__", method_name
             )

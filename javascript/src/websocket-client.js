@@ -1143,6 +1143,13 @@ export async function connectToServer(config) {
       description,
       parameters,
     });
+    // webrtcGetService routes through _wm.getService (the original
+    // RemoteFunction captured in the shallow copy). Share its encoded object
+    // so the manager_refreshed retarget loop updates the manager target it
+    // uses after reconnection, instead of leaving a stale "*/<old_manager_id>".
+    if (_wm.getService && _wm.getService.__rpc_object__) {
+      wm.getService.__rpc_object__ = _wm.getService.__rpc_object__;
+    }
 
     wm.getRTCService = schemaFunction(getRTCService.bind(null, wm), {
       name: "getRTCService",
@@ -1171,6 +1178,12 @@ export async function connectToServer(config) {
       return svc;
     };
     wm.getService.__schema__ = _getService.__schema__;
+    // Share the underlying RemoteFunction's encoded object so the
+    // manager_refreshed retarget loop can update getService's _rtarget after
+    // reconnection (otherwise the wrapper retains a stale manager target).
+    if (_getService.__rpc_object__) {
+      wm.getService.__rpc_object__ = _getService.__rpc_object__;
+    }
   }
 
   async function registerProbes(probes) {

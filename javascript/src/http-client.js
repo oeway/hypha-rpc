@@ -814,6 +814,14 @@ export async function _connectToServerHTTP(config) {
   if (_getService.__schema__) {
     wm.getService.__schema__ = _getService.__schema__;
   }
+  // Share the underlying RemoteFunction's encoded object so the
+  // manager_refreshed retarget loop (which iterates wm[key].__rpc_object__)
+  // can update getService's _rtarget after reconnection. Without this the
+  // wrapper hides the original method and getService keeps a stale
+  // "*/<old_manager_id>" target, causing a 400 on the next call.
+  if (_getService.__rpc_object__) {
+    wm.getService.__rpc_object__ = _getService.__rpc_object__;
+  }
 
   async function serve() {
     await new Promise(() => {}); // Wait forever

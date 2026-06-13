@@ -279,6 +279,51 @@ describeHttp("HTTP Streaming RPC Client", () => {
       await server.disconnect();
     }
   });
+
+  it("should retarget getService after manager refresh (stale manager_id regression)", async function () {
+    this.timeout(30000);
+
+    // Regression test for the stale manager target bug: the getService wrapper
+    // installed in connectToServerHTTP must carry __rpc_object__ so the
+    // manager_refreshed retarget loop can update its _rtarget after a
+    // reconnection. Without it, getService() keeps targeting the old
+    // "*/<old_manager_id>" and the server rejects the call (400).
+    const server = await connectToServerHTTP({
+      server_url: SERVER_URL,
+      client_id: `http-retarget-test-${SUFFIX}`,
+      method_timeout: 10,
+    });
+
+    try {
+      // The wrapper must expose the underlying RemoteFunction's encoded object.
+      expect(
+        server.getService.__rpc_object__,
+        "getService wrapper must carry __rpc_object__ for retargeting",
+      ).to.exist;
+
+      const rpc = server.rpc;
+      const conn = rpc._connection;
+      const oldManagerId = conn.manager_id;
+      expect(server.getService.__rpc_object__._rtarget).to.equal(
+        `*/${oldManagerId}`,
+      );
+
+      // Simulate a server restart assigning a fresh manager_id, then drive the
+      // manager_refreshed event. Fire twice so the retarget happens regardless
+      // of whether the initial (no-op) refresh was already consumed at setup.
+      conn.manager_id = "regression-new-manager-id";
+      rpc._fire("manager_refreshed", {});
+      rpc._fire("manager_refreshed", {});
+
+      expect(server.getService.__rpc_object__._rtarget).to.equal(
+        "*/regression-new-manager-id",
+      );
+
+      console.log("✓ getService retargeted to new manager_id after refresh");
+    } finally {
+      await server.disconnect();
+    }
+  });
 });
 
 describeHttp("HTTP Manager Service Interaction", () => {
