@@ -715,6 +715,12 @@ async def _connect_to_server_http(config: dict):
 
     if hasattr(wm.get_service, "__schema__"):
         get_service.__schema__ = wm.get_service.__schema__
+    # Share the underlying method's encoded method so the manager_refreshed
+    # retarget loop can update get_service's _rtarget after reconnection
+    # (otherwise the wrapper hides it and get_service keeps a stale manager
+    # target, failing the next call against the old manager).
+    if getattr(_get_service, "_encoded_method", None) is not None:
+        get_service._encoded_method = _get_service._encoded_method
     wm.get_service = get_service
 
     async def serve():

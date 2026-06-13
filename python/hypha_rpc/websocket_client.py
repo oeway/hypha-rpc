@@ -1339,6 +1339,12 @@ async def _connect_to_server(config):
             description=description,
             parameters=parameters,
         )
+        # webrtc_get_service routes through _wm.get_service to reach the
+        # manager. Share its encoded method so the manager_refreshed retarget
+        # loop updates the manager target after reconnection instead of
+        # leaving a stale "*/<old_manager_id>".
+        if getattr(_wm.get_service, "_encoded_method", None) is not None:
+            wm.get_service._encoded_method = _wm.get_service._encoded_method
 
         wm.get_rtc_service = schema_function(
             partial(get_rtc_service, wm, client_id + "-rtc"),
@@ -1370,6 +1376,12 @@ async def _connect_to_server(config):
             return svc
 
         get_service.__schema__ = wm.get_service.__schema__
+        # Share the underlying method's encoded method so the manager_refreshed
+        # retarget loop can update get_service's _rtarget after reconnection
+        # (otherwise the wrapper hides it and get_service keeps a stale manager
+        # target, failing the next call against the old manager).
+        if getattr(_get_service, "_encoded_method", None) is not None:
+            get_service._encoded_method = _get_service._encoded_method
         wm.get_service = get_service
 
     async def serve():
