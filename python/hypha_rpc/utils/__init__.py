@@ -26,11 +26,13 @@ def ensure_event_loop():
 
     This is useful for preventing RuntimeError when calling asyncio.Future()
     or other asyncio operations from threads without event loops.
+
+    Returns the event loop (running or current/created) for the caller's
+    convenience; callers may ignore the return value.
     """
     try:
         # First check if there's a running loop
-        asyncio.get_running_loop()
-        return  # Running loop exists, nothing to do
+        return asyncio.get_running_loop()
     except RuntimeError:
         pass
 
@@ -42,9 +44,11 @@ def ensure_event_loop():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
     except RuntimeError:
-        # No event loop exists, create one
+        # No event loop exists (or it was set to None by a prior test/runner),
+        # create one
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+    return loop
 
 
 def safe_create_future():

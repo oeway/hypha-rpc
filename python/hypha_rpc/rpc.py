@@ -746,7 +746,11 @@ class RPC(MessageEmitter):
         self._rintf_timeout = 10 if rintf_timeout is None else rintf_timeout
         self._remote_logger = self._log
         self._server_base_url = server_base_url
-        self.loop = loop or asyncio.get_event_loop()
+        # Use ensure_event_loop() rather than a bare asyncio.get_event_loop():
+        # the latter raises "no current event loop" when no loop is set for the
+        # thread (e.g. a sync caller, or after a test runner closed/cleared the
+        # loop). ensure_event_loop() creates one when needed.
+        self.loop = loop or ensure_event_loop()
         self._long_message_chunk_size = long_message_chunk_size or CHUNK_SIZE
         self._session_gc_task = None
         self._session_ttl = 10 * 60  # 10 minutes default TTL for interface sessions
