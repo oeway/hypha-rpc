@@ -473,3 +473,83 @@ class TestEncodeFastPath:
         encoded = rpc._encode(payload, session_id="test-session")
 
         assert encoded["data"]["_rtype"] == "ndarray"
+
+
+# ─── Test in-flight emit after disconnect (reject-storm regression) ────
+
+
+class TestEmitAfterDisconnect:
+    """Regression for the N>=2 reject-storm.
+
+    When a connection is torn down, disconnect cleanup sets
+    rpc._emit_message = None. An in-flight method completion that calls
+    resolve()/reject() then hits RemoteFunction.__call__ -> _emit_message,
+    which used to raise "'NoneType' object is not callable" for every pending
+    call (a storm that churns clients into reconnect loops). The guard must
+    instead settle the call cleanly and release its session.
+    """
+
+    def _make_method(self, rpc, promise=True):
+        return rpc._generate_remote_method(
+            {
+                "_rserver": "http://localhost",
+                "_rtarget": "client-A",
+                "_rmethod": "services.svc.foo",
+                "_rpromise": promise,
+                "_rdoc": "test method",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_promise_call_rejects_with_connection_error(self):
+        rpc = create_rpc()
+        method = self._make_method(rpc, promise=True)
+
+        # Simulate disconnect cleanup tearing down the connection.
+        rpc._emit_message = None
+
+        fut = method("arg")
+        with pytest.raises(ConnectionError):
+            await fut
+
+    @pytest.mark.asyncio
+    async def test_promise_call_does_not_raise_type_error(self):
+        rpc = create_rpc()
+        method = self._make_method(rpc, promise=True)
+        rpc._emit_message = None
+
+        # The bug raised TypeError("'NoneType' object is not callable") for
+        # every in-flight call; the guard must turn it into a clean rejection.
+        fut = method("arg")
+        try:
+            await fut
+        except ConnectionError:
+            pass
+        except TypeError as e:  # pragma: no cover - regression guard
+            pytest.fail(f"reject-storm regression: got TypeError instead of "
+                        f"clean ConnectionError: {e}")
+
+    @pytest.mark.asyncio
+    async def test_session_cleaned_up_after_drop(self):
+        rpc = create_rpc()
+        before = _count_sessions(rpc)
+        method = self._make_method(rpc, promise=True)
+        rpc._emit_message = None
+
+        fut = method("arg")
+        with pytest.raises(ConnectionError):
+            await fut
+
+        # No leaked session in the store or the target-id index.
+        assert _count_sessions(rpc) == before, "session store leaked after drop"
+        assert "client-A" not in rpc._target_id_index, "index leaked after drop"
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_resolves_to_none(self):
+        rpc = create_rpc()
+        method = self._make_method(rpc, promise=False)
+        rpc._emit_message = None
+
+        # Fire-and-forget calls must settle to None (not raise) when dropped.
+        result = await method("arg")
+        assert result is None
