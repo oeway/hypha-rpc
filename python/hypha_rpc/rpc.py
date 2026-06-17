@@ -621,6 +621,27 @@ class RemoteFunction:
             # Concatenate two msgpack objects: [msgpack(main)][msgpack(extra)]
             message_package = message_package + msgpack.packb(extra_data)
 
+        # If the connection has been torn down, _emit_message is None (the
+        # disconnect cleanup sets self._emit_message = None). An in-flight method
+        # completion that calls resolve()/reject() AFTER its peer/connection
+        # disconnected would otherwise hit "'NoneType' object is not callable"
+        # here — a storm of TypeErrors that, at N>=2, churns clients into a
+        # reconnect loop. The message is genuinely undeliverable post-disconnect,
+        # so drop it cleanly: settle this call's future and release its session.
+        if self._rpc._emit_message is None:
+            self._rpc._log.debug(
+                "Dropping outbound RPC message (connection closed): %s",
+                self._encoded_method.get("_rmethod"),
+            )
+            if not fut.done():
+                if self._with_promise:
+                    fut.set_exception(ConnectionError("Connection is closed"))
+                else:
+                    fut.set_result(None)
+            self._rpc._remove_from_target_id_index(local_session_id)
+            self._rpc._object_store.pop(local_session_id, None)
+            return fut
+
         total_size = len(message_package)
         if total_size <= self._rpc._long_message_chunk_size + 1024 or self.__no_chunk__:
             emit_task = asyncio.create_task(self._rpc._emit_message(message_package))
