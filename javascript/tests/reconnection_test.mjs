@@ -552,6 +552,90 @@ await runTest(
   },
 );
 
+// ─── Test 9: handshake surfaces the server's error reason ────────────────────
+//
+// The server sends a descriptive {type:"error"} message (e.g. token/workspace
+// mismatch) just before closing. On some runtimes the close is surfaced as
+// onerror/onclose BEFORE that message reaches onmessage. The generic rejection
+// must not win the race and hide the real reason.
+
+function newBareConnection() {
+  return new WebsocketRPCConnection(
+    "ws://mock.server/ws",
+    "test-client",
+    "test-ws",
+    "test-token",
+    null, // reconnection_token
+    5, // timeout (s)
+    MockWebSocket,
+    0, // token_refresh_interval (disable)
+    null, // additional_headers
+    0, // ping_interval (disable)
+    null, // logger (silent)
+  );
+}
+
+await runTest(
+  "handshake surfaces server error reason over a generic onerror",
+  async () => {
+    const conn = newBareConnection();
+    const fakeWs = {};
+    conn._websocket = fakeWs;
+    const p = conn._establish_connection();
+
+    // undici surfaces the close as an empty ErrorEvent FIRST...
+    fakeWs.onerror({});
+    // ...then the server's descriptive error message arrives.
+    fakeWs.onmessage({
+      data: JSON.stringify({
+        type: "error",
+        message: "workspace does not match",
+      }),
+    });
+
+    let err;
+    try {
+      await p;
+    } catch (e) {
+      err = e;
+    }
+    assert(err, "handshake should reject");
+    assert(
+      /workspace does not match/.test(err.message),
+      `should surface the server reason, got: ${err.message}`,
+    );
+    assert(
+      !/error during handshake/.test(err.message),
+      `should not be the generic message, got: ${err.message}`,
+    );
+  },
+);
+
+await runTest(
+  "handshake falls back to generic error when no server reason arrives",
+  async () => {
+    const conn = newBareConnection();
+    const fakeWs = {};
+    conn._websocket = fakeWs;
+    const p = conn._establish_connection();
+
+    // Only a transport error, no descriptive server message.
+    fakeWs.onerror({});
+
+    let err;
+    try {
+      await p;
+    } catch (e) {
+      err = e;
+    }
+    assert(err, "handshake should reject");
+    assert(
+      /error during handshake/.test(err.message),
+      `should fall back to the generic message, got: ${err.message}`,
+    );
+  },
+);
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 
 console.log(`\n${passCount}/${testCount} tests passed, ${failCount} failed\n`);

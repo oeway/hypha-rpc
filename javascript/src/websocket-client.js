@@ -39,6 +39,14 @@ export {
 
 const MAX_RETRY = 1000000;
 
+// When the socket errors/closes during the handshake, wait briefly before
+// rejecting with the generic reason: the server usually sends a descriptive
+// {type:"error"} message (e.g. token/workspace mismatch) just before closing,
+// and on some runtimes (undici's native WebSocket on Node) the close is
+// surfaced BEFORE that message reaches onmessage. This grace lets the real
+// server reason win the race instead of a generic "error during handshake".
+const HANDSHAKE_ERROR_GRACE_MS = 100;
+
 class WebsocketRPCConnection {
   constructor(
     server_url,
@@ -196,30 +204,38 @@ class WebsocketRPCConnection {
 
       // Handle WebSocket closing before connection_info is received.
       // Without this, the promise hangs until the outer waitFor timeout (60s).
+      // Defer the generic error/close rejection so a pending server
+      // {type:"error"} message (handled in onmessage below) can settle first
+      // with the actual reason. Without this, an undici close-as-error would
+      // reject with "error during handshake" and hide the server's reason
+      // (e.g. "workspace does not match"). If no descriptive message arrives
+      // within the grace window, the generic rejection fires as a fallback.
+      const rejectAfterGrace = (err) => {
+        if (settled) return;
+        setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            reject(err);
+          }
+        }, HANDSHAKE_ERROR_GRACE_MS);
+      };
+
       const prevOnClose = this._websocket.onclose;
       this._websocket.onclose = (event) => {
-        if (!settled) {
-          settled = true;
-          reject(
-            new Error(
-              `ConnectionAbortedError: WebSocket closed during handshake (code=${event.code}, reason=${event.reason || "unknown"})`,
-            ),
-          );
-        }
+        rejectAfterGrace(
+          new Error(
+            `ConnectionAbortedError: WebSocket closed during handshake (code=${event.code}, reason=${event.reason || "unknown"})`,
+          ),
+        );
         // Delegate to any previously-set onclose handler
         if (prevOnClose) prevOnClose.call(this._websocket, event);
       };
 
       const prevOnError = this._websocket.onerror;
       this._websocket.onerror = (event) => {
-        if (!settled) {
-          settled = true;
-          reject(
-            new Error(
-              `ConnectionAbortedError: WebSocket error during handshake`,
-            ),
-          );
-        }
+        rejectAfterGrace(
+          new Error(`ConnectionAbortedError: WebSocket error during handshake`),
+        );
         if (prevOnError) prevOnError.call(this._websocket, event);
       };
 
