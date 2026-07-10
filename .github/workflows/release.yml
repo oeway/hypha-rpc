@@ -136,10 +136,13 @@ jobs:
             bash -o pipefail -c "cat javascript/package.json | jq -r '.version'"
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: "https://registry.npmjs.org"
       - name: Upgrade npm for Trusted Publisher (OIDC) support
-        run: npm install -g npm@latest
+        # npm@latest (>=12) now requires node >=22.22.2; pin to npm@11, which
+        # supports OIDC trusted publishing and runs on any node 22.x (>=22.9),
+        # so the release job stops breaking as npm@latest raises its node floor.
+        run: npm install -g npm@11
       - run: npm ci
       - name: Set up Python 3.11
         uses: actions/setup-python@v4.5.0
