@@ -650,6 +650,89 @@ function normalizeServerUrl(server_url) {
 }
 
 /**
+ * Validate a window "message" event as a hypha login-complete signal.
+ *
+ * Exported so it can be unit-tested without a browser. The completion message
+ * carries ONLY the public session key (never a token); a valid message merely
+ * decides when to tear down the inline login modal — the token itself is always
+ * fetched over the trusted check() RPC, so a forged message cannot inject one.
+ */
+export function isLoginCompleteMessage(event, expectedOrigin, expectedKey) {
+  if (!event || event.origin !== expectedOrigin) return false;
+  const data = event.data;
+  if (!data || typeof data !== "object") return false;
+  return data.type === "hypha-login-complete" && data.key === expectedKey;
+}
+
+/**
+ * Render the login page in an in-page modal iframe (browser only). This is the
+ * no-popup alternative to opening login_url in a popup window. Returns
+ * { teardown } to remove the modal; the close button invokes onCancel.
+ */
+function openLoginModal(loginUrl, { container, onCancel } = {}) {
+  const doc = window.document;
+  const overlay = doc.createElement("div");
+  overlay.setAttribute("data-hypha-login-modal", "");
+  if (!container) {
+    Object.assign(overlay.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "2147483647",
+      background: "rgba(0,0,0,0.5)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+    });
+  }
+  const frame = doc.createElement("div");
+  Object.assign(frame.style, {
+    position: "relative",
+    width: "min(480px, 92vw)",
+    height: "min(640px, 90vh)",
+    background: "#fff",
+    borderRadius: "10px",
+    overflow: "hidden",
+    boxShadow: "0 10px 40px rgba(0,0,0,0.3)",
+  });
+  const closeBtn = doc.createElement("button");
+  closeBtn.setAttribute("aria-label", "Close login");
+  closeBtn.textContent = "×";
+  Object.assign(closeBtn.style, {
+    position: "absolute",
+    top: "6px",
+    right: "10px",
+    zIndex: "1",
+    border: "none",
+    background: "transparent",
+    fontSize: "24px",
+    lineHeight: "1",
+    cursor: "pointer",
+    color: "#555",
+  });
+  const iframe = doc.createElement("iframe");
+  iframe.src = loginUrl;
+  iframe.setAttribute("title", "Hypha login");
+  Object.assign(iframe.style, { width: "100%", height: "100%", border: "none" });
+
+  frame.appendChild(closeBtn);
+  frame.appendChild(iframe);
+  overlay.appendChild(frame);
+  (container || doc.body).appendChild(overlay);
+
+  let torn = false;
+  const teardown = () => {
+    if (torn) return;
+    torn = true;
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  };
+  closeBtn.addEventListener("click", () => {
+    teardown();
+    if (onCancel) onCancel();
+  });
+  return { teardown };
+}
+
+/**
  * Login to the hypha server.
  *
  * Configuration options:
@@ -659,6 +742,13 @@ function normalizeServerUrl(server_url) {
  *   expires_in: Token expiration time (optional)
  *   login_timeout: Timeout for login process (default: 60)
  *   login_callback: Callback function for login URL (optional)
+ *   mode: "popup" (default) or "inline". In "inline" mode (browser only, and only
+ *         when no login_callback is given) the login page is rendered in an in-page
+ *         modal iframe instead of a popup window — for host apps that block popups.
+ *         Works with local-auth and custom-auth providers whose login page is
+ *         iframe-embeddable; does NOT apply to Auth0 (keep the popup for it).
+ *   container: optional DOM element to mount the inline login modal into
+ *              (default: a full-screen overlay on document.body)
  *   profile: Whether to return user profile (optional)
  *   additional_headers: Additional HTTP headers (optional)
  *   transport: Transport type - "websocket" (default) or "http"
@@ -673,6 +763,7 @@ export async function login(config) {
   const profile = config.profile;
   const additional_headers = config.additional_headers;
   const transport = config.transport || "websocket";
+  const mode = config.mode || "popup";
 
   const server = await connectToServer({
     name: "initial login client",
@@ -689,8 +780,58 @@ export async function login(config) {
     } else {
       context = await svc.start();
     }
+    const canInline =
+      mode === "inline" &&
+      !callback &&
+      typeof window !== "undefined" &&
+      window.document;
+
     if (callback) {
+      if (mode === "inline") {
+        _logger.warn(
+          "login: both login_callback and mode:'inline' were given; using login_callback.",
+        );
+      }
       await callback(context);
+    } else if (canInline) {
+      // No-popup mode: render the login page in an in-page modal iframe and wait
+      // for its 'hypha-login-complete' postMessage. The token is NOT taken from
+      // the message — it is always fetched over the trusted check() RPC (which is
+      // also the real timeout authority and covers a dropped/early message).
+      const origin = new URL(config.server_url).origin;
+      const loginUrl = new URL(context.login_url, config.server_url).href;
+      return await new Promise((resolve, reject) => {
+        let modal = null;
+        let msgListener = null;
+        let done = false;
+        const cleanup = () => {
+          if (msgListener) window.removeEventListener("message", msgListener);
+          if (modal) modal.teardown();
+        };
+        const finish = (fn, arg) => {
+          if (done) return;
+          done = true;
+          cleanup();
+          fn(arg);
+        };
+        const fetchToken = () =>
+          svc
+            .check(context.key, { timeout, profile, _rkwargs: true })
+            .then((r) => finish(resolve, r))
+            .catch((e) => finish(reject, e));
+        msgListener = (event) => {
+          if (!isLoginCompleteMessage(event, origin, context.key)) return;
+          fetchToken();
+        };
+        window.addEventListener("message", msgListener);
+        modal = openLoginModal(loginUrl, {
+          container: config.container,
+          onCancel: () => finish(reject, new Error("Login cancelled by user")),
+        });
+        // Safety net: resolves when the user completes login even if the
+        // postMessage is missed, and enforces the login timeout server-side.
+        fetchToken();
+      });
     } else {
       _logger.log(`Please open your browser and login at ${context.login_url}`);
     }
@@ -1359,6 +1500,7 @@ export const hyphaWebsocketClient = {
   schemaFunction,
   loadRequirements,
   login,
+  isLoginCompleteMessage,
   logout,
   connectToServer,
   connectToServerHTTP,
