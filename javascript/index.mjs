@@ -20,6 +20,7 @@ export {
   connectToServer,
   getRemoteService,
   login,
+  isLoginCompleteMessage,
   logout,
   setupLocalClient,
   LocalWebSocket,
