@@ -7,6 +7,7 @@ import sys
 import os
 import io
 import random
+import time
 
 import shortuuid
 import json
@@ -47,6 +48,14 @@ logger.setLevel(LOGLEVEL)
 
 MAX_RETRY = 1000000
 
+# Reconnect flap control (see the JS client for the full rationale): a
+# connection alive for less than RECONNECT_FLAP_WINDOW seconds after connecting
+# is a "flap". Repeated flaps escalate the backoff and never reconnect faster
+# than RECONNECT_MIN_DELAY seconds, preventing a succeed→superseded storm. The
+# first flap is free so a genuine quick disconnect still recovers immediately.
+RECONNECT_FLAP_WINDOW = 5.0
+RECONNECT_MIN_DELAY = 1.0
+
 
 class WebsocketRPCConnection:
     """Represent a websocket connection."""
@@ -83,6 +92,8 @@ class WebsocketRPCConnection:
         self._timeout = timeout
         self._closed = False
         self._legacy_auth = None
+        self._last_connected_time = 0.0  # monotonic ts of last connection_info
+        self._reconnect_flap_count = 0  # consecutive short-lived connections
         self.connection_info = None
         self._enable_reconnect = False
         self._refresh_token_task = None
@@ -314,6 +325,9 @@ class WebsocketRPCConnection:
                 first_message = json.loads(first_message)
                 break
             if first_message.get("type") == "connection_info":
+                # Mark when a connection is fully established; used for flap
+                # detection when the connection later closes.
+                self._last_connected_time = time.monotonic()
                 self.connection_info = first_message
                 if self._workspace:
                     assert (
@@ -370,6 +384,27 @@ class WebsocketRPCConnection:
             await self._cleanup()
             self._log.error("Failed to connect to %s", self._server_url.split("?")[0])
             raise exp
+
+    def _next_reconnect_retry(self):
+        """Update the flap count from the last connection's lifetime and return
+        the seeded retry counter for the reconnect loop.
+
+        A connection alive for less than RECONNECT_FLAP_WINDOW seconds after
+        connecting is a "flap". The first flap returns retry 0 (immediate
+        reconnect — fast recovery for a genuine quick disconnect); each further
+        consecutive flap increments the count and returns a higher retry so the
+        backoff escalates. A healthy long-lived connection resets the count.
+        """
+        alive = (
+            time.monotonic() - self._last_connected_time
+            if self._last_connected_time
+            else float("inf")
+        )
+        if alive < RECONNECT_FLAP_WINDOW:
+            self._reconnect_flap_count += 1
+        else:
+            self._reconnect_flap_count = 0
+        return max(0, self._reconnect_flap_count - 1)
 
     async def emit_message(self, data):
         """Emit a message."""
@@ -492,10 +527,47 @@ class WebsocketRPCConnection:
                     self._reconnected_event = asyncio.Event()
 
                     async def reconnect_with_retry():
-                        retry = 0
                         base_delay = 1.0  # Start with 1 second
                         max_delay = 60.0  # Maximum delay of 60 seconds
                         max_jitter = 0.1  # Maximum jitter factor
+
+                        # Flap detection (see _next_reconnect_retry): repeated
+                        # short-lived connections escalate the backoff; the
+                        # first flap is free so a genuine quick disconnect still
+                        # recovers immediately.
+                        retry = self._next_reconnect_retry()
+
+                        # Delay the first attempt when flapping (retry seeded
+                        # > 0); genuine disconnects attempt immediately.
+                        if retry > 0 and not self._closed:
+                            delay = min(base_delay * (2 ** (retry - 1)), max_delay)
+                            jitter = random.uniform(-max_jitter, max_jitter) * delay
+                            final_delay = max(RECONNECT_MIN_DELAY, delay + jitter)
+                            sleep_task = asyncio.create_task(
+                                asyncio.sleep(final_delay)
+                            )
+                            self._reconnect_tasks.add(sleep_task)
+                            try:
+                                await sleep_task
+                            except asyncio.CancelledError:
+                                if self._reconnected_event:
+                                    self._reconnected_event.set()
+                                    self._reconnected_event = None
+                                return
+                            finally:
+                                self._reconnect_tasks.discard(sleep_task)
+                            # Connection may have been restored or closed while
+                            # we waited.
+                            if self._closed:
+                                return
+                            if (
+                                self._websocket
+                                and self._websocket.state == State.OPEN
+                            ):
+                                if self._reconnected_event:
+                                    self._reconnected_event.set()
+                                    self._reconnected_event = None
+                                return
 
                         while retry < MAX_RETRY and not self._closed:
                             try:

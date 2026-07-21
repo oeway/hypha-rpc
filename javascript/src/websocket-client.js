@@ -39,6 +39,16 @@ export {
 
 const MAX_RETRY = 1000000;
 
+// Reconnect flap control: a connection that stays up for less than
+// RECONNECT_FLAP_WINDOW_MS after connecting is treated as a "flap" (e.g. the
+// server accepts the reconnect then immediately supersedes/closes it because a
+// prior session with the same client_id is still active). Flaps escalate the
+// backoff across reconnect cycles — instead of resetting to an immediate retry
+// each time — and never reconnect faster than RECONNECT_MIN_DELAY_MS while
+// flapping. This prevents a tight succeed→superseded→succeed reconnect storm.
+const RECONNECT_FLAP_WINDOW_MS = 5000;
+const RECONNECT_MIN_DELAY_MS = 1000;
+
 // When the socket errors/closes during the handshake, wait briefly before
 // rejecting with the generic reason: the server usually sends a descriptive
 // {type:"error"} message (e.g. token/workspace mismatch) just before closing,
@@ -96,6 +106,8 @@ class WebsocketRPCConnection {
     this._reconnecting = false; // Mutex to prevent overlapping reconnection attempts
     this._closedDuringReconnect = false; // Flag for close events during reconnection
     this._disconnectedNotified = false;
+    this._lastConnectedTime = 0; // ms timestamp of last successful connection_info
+    this._reconnectFlapCount = 0; // consecutive short-lived (flapping) connections
   }
 
   /**
@@ -248,6 +260,9 @@ class WebsocketRPCConnection {
         const first_message = JSON.parse(data);
         if (first_message.type == "connection_info") {
           settled = true;
+          // Mark when a connection is fully established; used for flap
+          // detection when the connection later closes.
+          this._lastConnectedTime = Date.now();
           this.connection_info = first_message;
           if (this._workspace) {
             assert(
@@ -455,7 +470,25 @@ class WebsocketRPCConnection {
         }
         this._reconnecting = true;
 
-        let retry = 0;
+        // Flap detection: if the connection that just closed was short-lived,
+        // escalate the backoff across reconnect cycles instead of resetting to
+        // an immediate retry. A healthy long-lived connection resets the count
+        // so genuine disconnects still recover fast.
+        const aliveMs = this._lastConnectedTime
+          ? Date.now() - this._lastConnectedTime
+          : Infinity;
+        if (aliveMs < RECONNECT_FLAP_WINDOW_MS) {
+          this._reconnectFlapCount += 1;
+        } else {
+          this._reconnectFlapCount = 0;
+        }
+
+        // Seed the retry counter from the flap history so a REPEATED flap
+        // escalates the backoff. The first flap is free (retry 0 → immediate)
+        // so a genuine single quick disconnect still recovers fast; only the
+        // 2nd+ consecutive short-lived connection is delayed, which is the
+        // succeed→superseded storm signature.
+        let retry = Math.max(0, this._reconnectFlapCount - 1);
         const baseDelay = 1000; // Start with 1 second
         const maxDelay = 60000; // Maximum delay of 60 seconds
         const maxJitter = 0.1; // Maximum jitter factor
@@ -595,7 +628,35 @@ class WebsocketRPCConnection {
             this._reconnect_timeouts.add(timeoutId);
           }
         };
-        reconnect();
+
+        // Kick off the reconnect loop. When flapping (retry seeded > 0), delay
+        // the first attempt with the same exponential backoff + jitter and a
+        // minimum floor, so a succeed→superseded loop cannot hammer the server.
+        // A genuine disconnect after a healthy connection (retry === 0) still
+        // reconnects immediately.
+        if (retry > 0) {
+          const delay = Math.min(baseDelay * Math.pow(2, retry - 1), maxDelay);
+          const jitter = (Math.random() * 2 - 1) * maxJitter * delay;
+          const finalDelay = Math.max(RECONNECT_MIN_DELAY_MS, delay + jitter);
+          const timeoutId = setTimeout(() => {
+            this._reconnect_timeouts.delete(timeoutId);
+            if (this._closed) {
+              this._reconnecting = false;
+              return;
+            }
+            if (
+              this._websocket &&
+              this._websocket.readyState === WebSocket.OPEN
+            ) {
+              this._reconnecting = false;
+              return;
+            }
+            reconnect();
+          }, finalDelay);
+          this._reconnect_timeouts.add(timeoutId);
+        } else {
+          reconnect();
+        }
       }
     } else {
       // Clean up timers in all cases

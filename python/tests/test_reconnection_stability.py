@@ -19,7 +19,11 @@ import weakref
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from hypha_rpc.websocket_client import connect_to_server, WebsocketRPCConnection
+from hypha_rpc.websocket_client import (
+    connect_to_server,
+    WebsocketRPCConnection,
+    RECONNECT_FLAP_WINDOW,
+)
 from hypha_rpc.rpc import RPC, RemoteException
 from . import WS_SERVER_URL, WS_PORT
 
@@ -1222,3 +1226,86 @@ async def test_os_exit_not_called_on_graceful_operations(websocket_server):
         os._exit = original_exit
 
     print("✅ OS._EXIT PREVENTION TEST PASSED!")
+
+
+# =============================================================================
+# Test: reconnect flap-backoff escalation (anti-storm)
+# =============================================================================
+#
+# Parity with the JS suite (reconnection_test.mjs "reconnect flap-backoff").
+# Motivated by a real-world thrash repro: after a server pod OOM-restart, the
+# server repeatedly re-closed a freshly reconnected+re-registered client with
+# code 1000 every ~100-300ms (stale server-side session lingering / supersede-
+# orphan). Each cycle is a "flap" (connection alive << RECONNECT_FLAP_WINDOW).
+#
+# _next_reconnect_retry() is the client-side dampener: the FIRST flap still
+# returns retry 0 (immediate reconnect — fast recovery for a genuine blip), but
+# REPEATED consecutive flaps escalate the seeded retry so the reconnect loop
+# backs off instead of hammering the server. A healthy long-lived connection
+# resets the count.
+
+
+def _make_bare_connection():
+    """A WebsocketRPCConnection with no network activity (constructor only sets
+    attributes; _next_reconnect_retry reads/writes plain instance state)."""
+    return WebsocketRPCConnection(
+        server_url="wss://example.invalid/ws",
+        client_id="flap-test-client",
+        logger=None,
+    )
+
+
+def test_next_reconnect_retry_first_flap_is_free():
+    """A single short-lived connection reconnects immediately (retry 0), and the
+    flap count advances to 1 so a *second* flap will be penalized."""
+    conn = _make_bare_connection()
+    conn._reconnect_flap_count = 0
+    conn._last_connected_time = time.monotonic()  # alive ~= 0 < window -> flap
+
+    retry = conn._next_reconnect_retry()
+
+    assert retry == 0, f"first flap should reconnect immediately, got retry={retry}"
+    assert conn._reconnect_flap_count == 1
+
+
+def test_next_reconnect_retry_repeated_flaps_escalate():
+    """Consecutive flaps escalate the seeded retry (0 -> 1 -> 2 -> 3), which the
+    reconnect loop turns into an exponentially growing pre-attempt delay."""
+    conn = _make_bare_connection()
+    conn._reconnect_flap_count = 0
+
+    seeded = []
+    for _ in range(4):
+        conn._last_connected_time = time.monotonic()  # each cycle is short-lived
+        seeded.append(conn._next_reconnect_retry())
+
+    assert seeded == [0, 1, 2, 3], f"flaps should escalate, got {seeded}"
+    assert conn._reconnect_flap_count == 4
+
+
+def test_next_reconnect_retry_healthy_connection_resets():
+    """A connection that stayed up longer than RECONNECT_FLAP_WINDOW resets the
+    flap count, so a genuine disconnect after healthy uptime recovers fast."""
+    conn = _make_bare_connection()
+    # Pretend we've been flapping.
+    conn._reconnect_flap_count = 5
+    # Last connection lived well beyond the flap window.
+    conn._last_connected_time = time.monotonic() - (RECONNECT_FLAP_WINDOW + 1.0)
+
+    retry = conn._next_reconnect_retry()
+
+    assert retry == 0, f"healthy connection should reset to retry 0, got {retry}"
+    assert conn._reconnect_flap_count == 0
+
+
+def test_next_reconnect_retry_no_prior_connection_not_a_flap():
+    """Before any connection is established (_last_connected_time == 0), the
+    first reconnect must not be treated as a flap."""
+    conn = _make_bare_connection()
+    assert conn._last_connected_time == 0.0
+    assert conn._reconnect_flap_count == 0
+
+    retry = conn._next_reconnect_retry()
+
+    assert retry == 0
+    assert conn._reconnect_flap_count == 0

@@ -636,6 +636,67 @@ await runTest(
   },
 );
 
+// ─── Test 10: reconnect flap-backoff (anti-storm) ────────────────────────────
+//
+// A succeed→superseded reconnect storm happens when the server accepts a
+// reconnect then immediately closes it (duplicate client_id still active),
+// firing a fresh reconnect each time. The FIRST short-lived connection must
+// still reconnect immediately (fast recovery for a genuine blip), but REPEATED
+// flaps must escalate the backoff instead of tight-looping.
+
+await runTest(
+  "single quick disconnect reconnects immediately (no flap penalty)",
+  async () => {
+    resetMock();
+    const conn = await createConnection();
+    const before = MockWebSocket._instances.length;
+
+    // First flap: freshly connected, then a reconnectable close.
+    conn._reconnectFlapCount = 0;
+    conn._lastConnectedTime = Date.now();
+    conn._websocket.simulateClose(1012, "blip");
+
+    // flapCount 0 → 1 → retry 0 → immediate reconnect attempt.
+    await sleep(300);
+    assert(
+      MockWebSocket._instances.length > before,
+      "first flap should reconnect immediately",
+    );
+    assert(
+      conn._reconnectFlapCount === 1,
+      `flap count should be 1, got ${conn._reconnectFlapCount}`,
+    );
+    conn.disconnect("test cleanup");
+  },
+);
+
+await runTest(
+  "repeated flaps escalate backoff (delayed, not a tight loop)",
+  async () => {
+    resetMock();
+    const conn = await createConnection();
+    const before = MockWebSocket._instances.length;
+
+    // Simulate that we've already flapped twice; a third short-lived close
+    // should escalate to a delayed reconnect (retry = max(0, 3-1) = 2 ≈ 2s),
+    // so NO new socket is opened within a short window.
+    conn._reconnectFlapCount = 2;
+    conn._lastConnectedTime = Date.now();
+    conn._websocket.simulateClose(1012, "superseded");
+
+    await sleep(300);
+    assert(
+      MockWebSocket._instances.length === before,
+      "repeated flap reconnect should be delayed, not immediate",
+    );
+    assert(
+      conn._reconnectFlapCount === 3,
+      `flap count should escalate to 3, got ${conn._reconnectFlapCount}`,
+    );
+    conn.disconnect("test cleanup");
+  },
+);
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 
 console.log(`\n${passCount}/${testCount} tests passed, ${failCount} failed\n`);
