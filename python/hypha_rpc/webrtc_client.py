@@ -219,7 +219,9 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
         @dc.on("open")
         async def on_open():
             config["channel"] = dc
-            config["workspace"] = server.config["workspace"]
+            # config["workspace"] is set from the answer just before
+            # setRemoteDescription opens this channel (see below, issue #166);
+            # do NOT overwrite it with the caller's workspace here.
             rpc = await _setup_rpc(config)
             pc.rpc = rpc
 
@@ -312,6 +314,15 @@ async def get_rtc_service(server, service_id, config=None, **kwargs):
                 "type": pc.localDescription.type,
             }
         )
+        # Address requests over the data channel with the workspace the ANSWERER
+        # built its half of the channel in (it reports this in the answer), not
+        # the caller's. When the two differ (cross-workspace, issue #166), the
+        # caller's workspace targets a peer the answerer is not in, and the first
+        # call hangs forever. Fall back to the caller's workspace for older peers
+        # that don't report one, keeping same-workspace behaviour unchanged.
+        # Set here, before setRemoteDescription opens the channel and fires
+        # on_open (where the RPC is built from this config).
+        config["workspace"] = answer.get("workspace") or server.config["workspace"]
         await pc.setRemoteDescription(
             RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
         )

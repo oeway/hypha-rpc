@@ -863,6 +863,60 @@ def test_rtc_service_sync(websocket_server):
     pc.close()
 
 
+@pytest.mark.asyncio
+async def test_rtc_service_cross_workspace(websocket_server):
+    """Regression for #166: a caller in a DIFFERENT workspace from the RTC peer.
+
+    The answerer builds its half of the data channel in its own workspace and
+    reports it in the answer. Before the fix, get_rtc_service addressed every
+    request with the *caller's* workspace, so when the two differed the first
+    call over the channel targeted a workspace the answerer was not in and hung
+    forever. Each call is wrapped in a timeout so a re-introduced bug fails fast
+    instead of hanging the suite.
+    """
+    from hypha_rpc import connect_to_server
+
+    # --- Provider (answerer) in workspace A ---
+    ws_a = await connect_to_server({"server_url": WS_SERVER_URL})
+    workspace_a = ws_a.config["workspace"]
+    client_id_a = ws_a.config["client_id"]
+    await ws_a.register_service(
+        {
+            "id": "echo-service",
+            "config": {"visibility": "public"},
+            "type": "echo",
+            "echo": lambda x: x,
+        }
+    )
+    # RTC signaling (offer) happens over the websocket, so it must be reachable
+    # cross-workspace -> register it public.
+    await register_rtc_service(
+        ws_a,
+        "test-rtc-cross-ws",
+        config={"visibility": "public", "require_context": True},
+    )
+
+    # --- Caller in a DIFFERENT workspace B ---
+    ws_b = await connect_to_server({"server_url": WS_SERVER_URL})
+    workspace_b = ws_b.config["workspace"]
+    assert workspace_a != workspace_b, (
+        f"clients must be in different workspaces: {workspace_a} vs {workspace_b}"
+    )
+
+    peer_service_id = f"{workspace_a}/{client_id_a}:test-rtc-cross-ws"
+    pc = await asyncio.wait_for(
+        get_rtc_service(ws_b, peer_service_id), timeout=30
+    )
+    try:
+        svc = await asyncio.wait_for(pc.get_service("echo-service"), timeout=20)
+        result = await asyncio.wait_for(svc.echo("hello"), timeout=20)
+        assert result == "hello", "cross-workspace echo over webrtc failed"
+    finally:
+        await pc.close()
+        await ws_a.disconnect()
+        await ws_b.disconnect()
+
+
 def test_rtc_service_auto(websocket_server):
     """Test RTC service."""
     from hypha_rpc import connect_to_server_sync
@@ -2199,6 +2253,18 @@ async def test_graceful_vs_ungraceful_disconnection_handling(restartable_server)
         }
     )
 
+    async def get_service_after_reconnect(name):
+        # Flap-control intentionally escalates reconnect backoff on rapid
+        # repeated reconnects, so re-registration can take longer than the
+        # fixed sleep below. Poll instead of assuming a fixed window — this
+        # test targets reconnection behaviour, not reconnect latency.
+        for _ in range(60):  # up to ~30s
+            try:
+                return await ws.get_service(name)
+            except Exception:
+                await asyncio.sleep(0.5)
+        raise AssertionError(f"service {name!r} did not re-register after reconnect")
+
     # Track disconnection handling
     disconnection_events = []
 
@@ -2226,7 +2292,7 @@ async def test_graceful_vs_ungraceful_disconnection_handling(restartable_server)
         await asyncio.sleep(2)
 
         # Verify service works
-        svc = await ws.get_service("test-service")
+        svc = await get_service_after_reconnect("test-service")
         result = await svc.echo(f"after-{code}")
         assert result == f"echo: after-{code}"
 
@@ -2256,7 +2322,7 @@ async def test_graceful_vs_ungraceful_disconnection_handling(restartable_server)
         await asyncio.sleep(2)
 
         # Verify service works
-        svc = await ws.get_service("test-service")
+        svc = await get_service_after_reconnect("test-service")
         result = await svc.echo(f"after-{code}")
         assert result == f"echo: after-{code}"
 
@@ -2495,8 +2561,20 @@ async def test_memory_cleanup_during_reconnections(restartable_server):
     for cycle in range(5):
         print(f"\n--- Memory test cycle {cycle + 1} ---")
 
-        # Perform some operations
-        svc = await ws.get_service("memory-test-service")
+        # Perform some operations. After a forced reconnect the client
+        # transparently re-registers its services, but flap-control
+        # intentionally escalates reconnect backoff on rapid repeated
+        # reconnects, so re-registration can take longer than a fixed sleep.
+        # Poll until the service is reachable again instead of assuming a fixed
+        # window — this test targets object-store growth, not reconnect latency.
+        svc = None
+        for _ in range(60):  # up to ~30s
+            try:
+                svc = await ws.get_service("memory-test-service")
+                break
+            except Exception:
+                await asyncio.sleep(0.5)
+        assert svc is not None, "service did not re-register after reconnect"
         await svc.echo("test")
         await svc.create_data(100)  # Create some temporary data
 

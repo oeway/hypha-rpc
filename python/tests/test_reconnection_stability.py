@@ -720,8 +720,20 @@ async def test_memory_leak_prevention_reconnection(restartable_server):
     # Perform multiple reconnection cycles with operations
     NUM_CYCLES = 5
     for cycle in range(NUM_CYCLES):
-        # Make some calls
-        svc = await ws.get_service("test-service")
+        # After a forced reconnect the client transparently re-registers its
+        # services, but flap-control intentionally escalates reconnect backoff
+        # on rapid repeated reconnects, so re-registration can take longer than
+        # a fixed sleep. Poll until the service is reachable again instead of
+        # assuming a fixed window — this test targets session accumulation, not
+        # reconnect latency, so it must not be brittle to reconnect timing.
+        svc = None
+        for _ in range(60):  # up to ~30s
+            try:
+                svc = await ws.get_service("test-service")
+                break
+            except Exception:
+                await asyncio.sleep(0.5)
+        assert svc is not None, "service did not re-register after reconnect"
         for _ in range(10):
             await svc.ping()
 
